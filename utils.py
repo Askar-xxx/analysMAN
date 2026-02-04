@@ -2,6 +2,7 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 import database
+from gpt_analysis import generate_match_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -74,3 +75,13 @@ def format_match_info(match, include_analysis=False):
     if include_analysis and match['analysis_text']:
         text += f"\n📊 *Анализ:*\n{match['analysis_text']}\n"
     return text
+
+
+async def get_or_generate_analysis(match):
+    """Получить или сгенерировать анализ для матча."""
+    if match['analysis_text']:
+        return match['analysis_text']
+    analysis_text = await generate_match_analysis(match)
+    if analysis_text:
+        database.update_match_analysis(match['id'], analysis_text)
+    return analysis_text

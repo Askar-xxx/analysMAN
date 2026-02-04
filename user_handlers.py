@@ -3,7 +3,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
 import database
 import keyboards
-from utils import safe_edit_message, send_main_menu, format_match_info
+from utils import safe_edit_message, send_main_menu, format_match_info, get_or_generate_analysis
 from datetime import datetime, timedelta
 import urllib.parse
 
@@ -273,15 +273,21 @@ async def handle_match_detail(query, user_id, match_id):
         await safe_edit_message(query, "Матч не найден.",
                                 keyboards.main_menu_keyboard())
         return
+    analysis_text = match['analysis_text']
+    if not analysis_text:
+        analysis_text = await get_or_generate_analysis(match)
     has_purchased = database.has_purchased_analysis(user_id, match_id)
     user_balance = database.get_user_balance(user_id)
     text = format_match_info(match)
     if has_purchased:
-        text += f"\n📊 *Анализ:*\n{match['analysis_text']}\n\n"
+        if analysis_text:
+            text += f"\n📊 *Анализ:*\n{analysis_text}\n\n"
+        else:
+            text += "\n❌ Анализ для этого матча еще не готов.\n\n"
         text += f"✅ Вы уже приобрели этот анализ"
     else:
         text += f"\n💰 *Цена анализа:* {match['price']} руб.\n\n"
-        if match['analysis_text']:
+        if analysis_text:
             text += "Для просмотра анализа необходимо приобрести его."
         else:
             text += "❌ Анализ для этого матча еще не готов."
@@ -292,11 +298,12 @@ async def handle_match_detail(query, user_id, match_id):
         keyboard.append([InlineKeyboardButton("🏠 В главное меню",
                                               callback_data='back_to_menu')])
     else:
-        if user_balance >= match['price']:
-            keyboard.append([InlineKeyboardButton(f"✅ Купить анализ за {match['price']} руб.", callback_data=f'buy_{match_id}')])
-        else:
-            keyboard.append([InlineKeyboardButton("💳 Пополнить баланс",
-                                                  callback_data='deposit')])
+        if analysis_text:
+            if user_balance >= match['price']:
+                keyboard.append([InlineKeyboardButton(f"✅ Купить анализ за {match['price']} руб.", callback_data=f'buy_{match_id}')])
+            else:
+                keyboard.append([InlineKeyboardButton("💳 Пополнить баланс",
+                                                      callback_data='deposit')])
         keyboard.append([InlineKeyboardButton("◀️ Назад",
                                               callback_data='back')])
         keyboard.append([InlineKeyboardButton("🏠 В главное меню",
@@ -319,7 +326,10 @@ async def handle_purchase(query, user_id):
             keyboards.main_menu_keyboard()
         )
         return
-    if not match['analysis_text']:
+    analysis_text = match['analysis_text']
+    if not analysis_text:
+        analysis_text = await get_or_generate_analysis(match)
+    if not analysis_text:
         await safe_edit_message(
             query,
             "❌ Анализ для этого матча еще не готов.",
@@ -339,7 +349,7 @@ async def handle_purchase(query, user_id):
         text += f"🏆 Матч: {match['team1']} vs {match['team2']}\n"
         text += f"💰 Списано: {match['price']} руб.\n"
         text += f"💳 Новый баланс: {database.get_user_balance(user_id)} руб.\n\n"
-        text += f"📊 Анализ:\n{match['analysis_text']}"
+        text += f"📊 Анализ:\n{analysis_text}"
     else:
         text = f"❌ Не удалось купить анализ:\n{message}\n\n"
         text += f"💰 Ваш баланс: {database.get_user_balance(user_id)} руб.\n"
