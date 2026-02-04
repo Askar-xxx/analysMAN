@@ -85,6 +85,54 @@ def create_match(sport, team1, team2, match_date, match_time, price=150):
     return match_id
 
 
+def get_purchased_matches_by_user(user_id):
+    """Получить все купленные матчи пользователя"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT m.*, p.purchase_date 
+        FROM matches m
+        JOIN purchases p ON m.id = p.match_id
+        WHERE p.user_id = ?
+        ORDER BY m.match_date DESC, m.match_time DESC
+    ''', (user_id,))
+    matches = cursor.fetchall()
+    conn.close()
+    return matches
+
+
+def get_purchased_matches_by_sport(user_id, sport):
+    """Получить купленные матчи пользователя по виду спорта"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT m.*, p.purchase_date 
+        FROM matches m
+        JOIN purchases p ON m.id = p.match_id
+        WHERE p.user_id = ? AND m.sport = ?
+        ORDER BY m.match_date DESC, m.match_time DESC
+    ''', (user_id, sport))
+    matches = cursor.fetchall()
+    conn.close()
+    return matches
+
+
+def get_purchased_dates_by_sport(user_id, sport):
+    """Получить даты купленных матчей по виду спорта"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT DISTINCT m.match_date
+        FROM matches m
+        JOIN purchases p ON m.id = p.match_id
+        WHERE p.user_id = ? AND m.sport = ?
+        ORDER BY m.match_date DESC
+    ''', (user_id, sport))
+    dates = cursor.fetchall()
+    conn.close()
+    return [date['match_date'] for date in dates]
+
+
 def get_today_matches(sport):
     conn = get_db_connection()
     cursor = conn.cursor()

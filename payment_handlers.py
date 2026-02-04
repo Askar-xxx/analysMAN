@@ -1,6 +1,6 @@
 import logging
 import urllib.parse
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup  # Добавлен импорт
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ContextTypes,
     CallbackQueryHandler,
@@ -9,20 +9,19 @@ from telegram.ext import (
     ConversationHandler
 )
 import database
-from states import WAITING_CUSTOM_DEPOSIT
-from keyboards import deposit_options_keyboard
+import keyboards
 from utils import safe_edit_message
-from config import MANAGER_USERNAME
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+# Определяем состояния внутри файла
+WAITING_CUSTOM_DEPOSIT = 1
 
 
 async def handle_deposit_menu(update: Update,
                               context: ContextTypes.DEFAULT_TYPE):
     """Меню пополнения баланса"""
-    from keyboards import deposit_menu_keyboard  # Импорт внутри функции
-    
     query = update.callback_query
     await query.answer()
     user_id = update.effective_user.id
@@ -34,25 +33,12 @@ async def handle_deposit_menu(update: Update,
 
 🎁 *Выберите сумму для пополнения:*
 
-• *150 руб.* - 1 анализ матча
-• *300 руб.* +150 бонус = 450 руб. (3 анализа)
-• *600 руб.* - 4 анализа матча
-• *800 руб.* +300 бонус = 1100 руб. (7+ анализов)
-
-💡 *Как работает пополнение:*
-1. Выберите сумму
-2. Вас перекинет на менеджера в Telegram
-3. Оплатите выбранную сумму
-4. Получите подтверждение и бонусы!
-
-⏱️ *Пополнение происходит вручную администратором в течение 15 минут*
-
-👇 *Выберите сумму:*
+👇 *Доступные тарифы (все цены в рублях):*
 """
     await safe_edit_message(
         query,
         text,
-        deposit_menu_keyboard()
+        keyboards.deposit_menu_keyboard()
     )
 
 
@@ -64,18 +50,19 @@ async def handle_deposit_amount(update: Update,
     user_id = update.effective_user.id
     username = update.effective_user.username or "нет username"
     deposit_data = query.data
-    if deposit_data == 'deposit_custom':
-        await handle_custom_deposit_start(query, context)
-        return
     deposit_options = {
         'deposit_150': {'amount': 150, 'bonus': 0, 'total': 150,
                         'description': '150 руб. (1 анализ)'},
         'deposit_300': {'amount': 300, 'bonus': 150, 'total': 450,
-                        'description': '300 руб. +150 бонус = 450 руб.'},
+                        'description': '300 руб. +150 бонус (3 анализа)'},
         'deposit_600': {'amount': 600, 'bonus': 0, 'total': 600,
                         'description': '600 руб. (4 анализа)'},
         'deposit_800': {'amount': 800, 'bonus': 300, 'total': 1100,
-                        'description': '800 руб. +300 бонус = 1100 руб.'}
+                        'description': '800 руб. +300 бонус (7+ анализов)'},
+        'deposit_500': {'amount': 500, 'bonus': 200, 'total': 700,
+                        'description': '500 руб. +200 бонус (4+ анализа)'},
+        'deposit_1000': {'amount': 1000, 'bonus': 400, 'total': 1400,
+                         'description': '1000 руб. +400 бонус (9+ анализов)'}
     }
     if deposit_data not in deposit_options:
         await query.answer("❌ Неверная сумма!", show_alert=True)
@@ -89,7 +76,7 @@ async def handle_custom_deposit_start(query, context):
     await safe_edit_message(
         query,
         "⚙️ *ДРУГАЯ СУММА*\n\n"
-        "Введите сумму для пополнения (минимум 100 руб.):\n"
+        "Введите сумму для пополнения (от 100 до 10 000 руб.):\n"
         "Пример: 500",
         keyboards.back_to_main_keyboard()
     )
@@ -115,8 +102,8 @@ async def handle_custom_deposit_amount(update: Update,
             return WAITING_CUSTOM_DEPOSIT
         if custom_amount > 10000:
             await update.message.reply_text(
-                "❌ Максимальная сумма 10 000 руб."
-                "\nПожалуйста, введите меньшую сумму:"
+                "❌ Максимальная сумма 10 000 руб.\n"
+                "Пожалуйста, введите меньшую сумму:"
             )
             return WAITING_CUSTOM_DEPOSIT
         # Рассчитываем бонус для своей суммы
@@ -134,8 +121,8 @@ async def handle_custom_deposit_amount(update: Update,
             'total': total_amount,
             'description': f'Своя сумма {custom_amount} руб.'
         }
-        await process_deposit_option(update, context, user_id, username,
-                                     option)
+        await process_deposit_option(update, context, user_id,
+                                     username, option)
         context.user_data['awaiting_custom_deposit'] = False
         return ConversationHandler.END
     except ValueError:
@@ -153,18 +140,26 @@ async def process_deposit_option(update: Update,
     context.user_data['deposit_amount'] = option['amount']
     context.user_data['deposit_bonus'] = option['bonus']
     context.user_data['deposit_total'] = option['total']
-    # Автоматическое сообщение для менеджера
-    manager_message = (
-        f"💸 *Заявка на пополнение:*\n\n"
-        f"👤 Пользователь: @{username} (ID: {user_id})\n"
-        f"💰 Сумма: {option['amount']} руб.\n"
-        f"🎁 Бонус: {option['bonus']} руб.\n"
-        f"📊 Итого: {option['total']} руб.\n"
-        f"📝 Описание: {option['description']}\n\n"
-        f"⏱️ Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-    # URL для перехода к менеджеру с авто-сообщением
-    manager_url = f"https://t.me/{MANAGER_USERNAME[1:]}?text=" + urllib.parse.quote(manager_message)
+    # Текст с реквизитами
+    payment_details = f"""
+💳 *Реквизиты для оплаты:*
+
+📱 *СБП (Система быстрых платежей):*
+• Номер телефона: +7 999 123-45-67
+• Банк: Тинькофф
+
+💎 *ЮMoney (Яндекс.Деньги):*
+• Номер кошелька: 4100 1234 5678 9012
+
+📊 *Банковская карта:*
+• Номер карты: 2200 1234 5678 9012
+• Получатель: Иванов И.И.
+
+⚠️ *ВАЖНО:*
+1. При переводе укажите ваш Telegram ID: `{user_id}`
+2. После оплаты нажмите кнопку "Проверить пополнение"
+3. Баланс обновится в течение 15 минут
+"""
     text = f"""
 ✅ *ВЫБРАНА СУММА ПОПОЛНЕНИЯ*
 
@@ -175,28 +170,30 @@ async def process_deposit_option(update: Update,
 
 👇 *Действия:*
 
-1️⃣ *Нажмите на кнопку ниже* для перехода к менеджеру
-2️⃣ *Отправьте сообщение* менеджеру (оно будет автоматически заполнено)
-3️⃣ *Произведите оплату* по реквизитам менеджера
-4️⃣ *Дождитесь подтверждения* (обычно в течение 15 минут)
+1️⃣ *Оплатите* {option['amount']} руб. по реквизитам ниже
+2️⃣ *Обязательно укажите* в комментарии ваш ID: `{user_id}`
+3️⃣ *После оплаты* нажмите "Проверить пополнение"
+4️⃣ *Баланс обновится* автоматически в течение 15 минут
 
-💡 *После подтверждения баланс будет пополнен автоматически*
-
-👨‍💼 *Менеджер:* {MANAGER_USERNAME}
+{payment_details}
 """
     keyboard = [
-        [InlineKeyboardButton(f"📨 Перейти к менеджеру ({MANAGER_USERNAME})", url=manager_url)],
-        [InlineKeyboardButton("🔄 Проверить пополнение", callback_data='check_deposit')],
-        [InlineKeyboardButton("◀️ Выбрать другую сумму", callback_data='deposit')],
-        [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
+        [InlineKeyboardButton("🔄 Проверить пополнение",
+                              callback_data='check_deposit')],
+        [InlineKeyboardButton("◀️ Выбрать другую сумму",
+                              callback_data='deposit')],
+        [InlineKeyboardButton("🏠 В главное меню",
+                              callback_data='back_to_menu')]
     ]
     if hasattr(update, 'callback_query'):
+        print("   → Отправляем информацию о депозите")
         await safe_edit_message(
             update.callback_query,
             text,
             InlineKeyboardMarkup(keyboard)
         )
     else:
+        print("   → Отправляем новое сообщение о депозите")
         await update.message.reply_text(
             text,
             parse_mode='Markdown',
@@ -216,15 +213,15 @@ async def check_deposit_status(update: Update,
 
 💰 Текущий баланс: *{balance} руб.*
 
-📊 Если ваш баланс не изменился после оплаты:
-1. Убедитесь, что вы отправили сообщение менеджеру
+📊 *Статус:* Ожидание оплаты
+
+⚠️ *Если вы оплатили, но баланс не изменился:*
+1. Проверьте, что вы указали правильный ID: `{user_id}`
 2. Проверьте, прошла ли оплата
-3. Подождите еще несколько минут
+3. Подождите 15 минут
+4. Если проблема осталась, попробуйте оплатить снова
 
-⚠️ *Пополнение происходит вручную администратором*
-⏱️ *Время обработки:* до 15 минут
-
-👨‍💼 *Связь с менеджером:* {MANAGER_USERNAME}
+⏱️ *Обработка платежей:* до 15 минут
 
 👇 *Другие действия:*
 """
@@ -249,5 +246,6 @@ def setup_payment_handlers(application):
         },
         fallbacks=[CallbackQueryHandler(handle_deposit_menu,
                                         pattern='^deposit$')],
+        per_message=True
     )
     application.add_handler(custom_deposit_handler)

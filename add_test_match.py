@@ -14,8 +14,8 @@ print(f"Добавляю матч на СЕГОДНЯШНЮЮ дату: {today}"
 
 database.add_match(
     sport='football',
-    team1='Реал Мадрид',
-    team2='Барселона',
+    team1='МЮ',
+    team2='Реал',
     match_date=today,  # СЕГОДНЯ!
     match_time='20:00',
     analysis_text='Прогноз: обе забьют. Основная ставка: тотал больше 2.5'

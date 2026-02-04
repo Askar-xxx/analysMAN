@@ -1,71 +1,47 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
-def main_menu_keyboard(is_admin=False):
+def main_menu_keyboard():
     """Главное меню"""
     keyboard = [
-        # Кнопки выбора спорта
         [InlineKeyboardButton("🎯 ВЫБРАТЬ СПОРТ",
                               callback_data='category_sports')],
-        # Разделитель
-        [InlineKeyboardButton("─" * 15, callback_data='separator')],
-        # Личный кабинет пользователя
         [
-            InlineKeyboardButton("📊 Моя статистика", callback_data='my_stats'),
-            InlineKeyboardButton("💰 Баланс", callback_data='balance')
-        ],
-        # Финансовые операции
-        [
-            InlineKeyboardButton("💳 Пополнить баланс",
-                                 callback_data='deposit'),
-            InlineKeyboardButton("👨‍💼 Поддержка", callback_data='support')
+            InlineKeyboardButton("📊 Мои анализы", callback_data='my_analysis'),
+            InlineKeyboardButton("💳 Пополнить баланс", callback_data='deposit')
         ]
     ]
-    # Добавляем админ-панель если пользователь админ
-    if is_admin:
-        keyboard.append([InlineKeyboardButton("⚙️ Админ-панель",
-                                              callback_data='admin_panel')])
     return InlineKeyboardMarkup(keyboard)
 
 
 def deposit_menu_keyboard():
-    """Меню пополнения баланса"""
+    """Меню пополнения баланса в 2 столбика с бонусами"""
     keyboard = [
-        [InlineKeyboardButton("💳 150 руб. (1 анализ)",
-                              callback_data='deposit_150')],
-        [InlineKeyboardButton("💰 300 руб. +150 бонус = 450",
-                              callback_data='deposit_300')],
-        [InlineKeyboardButton("💎 600 руб. (4 анализа)",
-                              callback_data='deposit_600')],
-        [InlineKeyboardButton("🔥 800 руб. +300 бонус = 1100",
-                              callback_data='deposit_800')],
-        [InlineKeyboardButton("⚙️ Другая сумма",
-                              callback_data='deposit_custom')],
+        # Строка 1: 150 руб.
+        [
+            InlineKeyboardButton("💰 150 руб.", callback_data='deposit_150'),
+            InlineKeyboardButton("📊 1 анализ", callback_data='deposit_150')
+        ],
+        # Строка 2: 300 руб. с бонусом
+        [
+            InlineKeyboardButton("💰 300 руб.", callback_data='deposit_300'),
+            InlineKeyboardButton("📊 3 анализа\n🎁 +150 бонус",
+                                 callback_data='deposit_300')
+        ],
+        # Строка 3: 600 руб.
+        [
+            InlineKeyboardButton("💰 600 руб.", callback_data='deposit_600'),
+            InlineKeyboardButton("📊 4 анализа", callback_data='deposit_600')
+        ],
+        # Строка 4: 800 руб. с бонусом
+        [
+            InlineKeyboardButton("💰 800 руб.", callback_data='deposit_800'),
+            InlineKeyboardButton("📊 7+ анализов\n🎁 +300 бонус",
+                                 callback_data='deposit_800')
+        ],
+        # Кнопка назад
         [InlineKeyboardButton("◀️ Назад", callback_data='back_to_menu')]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-
-def admin_main_keyboard():
-    """Главное меню админ-панели"""
-    keyboard = [
-        [InlineKeyboardButton("➕ Создать матч",
-                              callback_data='admin_create_match')],
-        [InlineKeyboardButton("📝 Добавить анализ",
-                              callback_data='admin_add_analysis')],
-        [InlineKeyboardButton("📋 Все матчи",
-                              callback_data='admin_all_matches')],
-        [InlineKeyboardButton("🗑️ Удалить матч",
-                              callback_data='admin_delete_match')],
-        [InlineKeyboardButton("👥 Все пользователи",
-                              callback_data='admin_all_users')],
-        [InlineKeyboardButton("👨‍💼 Управление админами",
-                              callback_data='admin_manage_admins')],
-        [InlineKeyboardButton("💰 Пополнить баланс",
-                              callback_data='admin_add_balance')],
-        [InlineKeyboardButton("◀️ В главное меню",
-                              callback_data='back_to_menu')]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -75,14 +51,6 @@ def back_to_main_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("◀️ В главное меню",
                               callback_data='back_to_menu')]
-    ])
-
-
-def back_to_admin_keyboard():
-    """Клавиатура с кнопкой назад в админ-панель"""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("◀️ Назад в админ-панель",
-                              callback_data='admin_back')]
     ])
 
 
@@ -103,7 +71,7 @@ def dates_keyboard(dates, current_sport='football'):
     """Клавиатура с датами матчей"""
     keyboard = []
     today = datetime.now().strftime('%Y-%m-%d')
-    tomorrow = (datetime.now().utcnow() + datetime.timedelta(days=1)).strftime('%Y-%m-%d')
+    tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
     for date_str in dates:
         date_obj = datetime.strptime(date_str, '%Y-%m-%d')
         if date_str == today:
@@ -167,26 +135,6 @@ def match_detail_keyboard(match_id, has_purchased, price, user_balance):
     return InlineKeyboardMarkup(keyboard)
 
 
-def admin_manage_admins_keyboard():
-    """Клавиатура управления админами"""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Добавить админа",
-                              callback_data='admin_add_admin')],
-        [InlineKeyboardButton("🗑️ Удалить админа",
-                              callback_data='admin_remove_admin')],
-        [InlineKeyboardButton("◀️ Назад", callback_data='admin_back')]
-    ])
-
-
-def support_keyboard():
-    """Клавиатура поддержки"""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💳 Пополнить баланс", callback_data='deposit')],
-        [InlineKeyboardButton("🏠 В главное меню",
-                              callback_data='back_to_menu')]
-    ])
-
-
 def deposit_options_keyboard():
     """Клавиатура опций пополнения после выбора суммы"""
     return InlineKeyboardMarkup([
@@ -195,3 +143,75 @@ def deposit_options_keyboard():
         [InlineKeyboardButton("🏠 В главное меню",
                               callback_data='back_to_menu')]
     ])
+
+
+def back_to_purchased_sports_keyboard():
+    """Клавиатура для возврата к выбору спорта (покупки)"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("◀️ Назад к выбору спорта",
+                              callback_data='back_to_purchased_sports')],
+        [InlineKeyboardButton("🏠 В главное меню",
+                              callback_data='back_to_menu')]
+    ])
+
+
+def dates_keyboard_with_back(dates, current_sport='football'):
+    """Клавиатура с датами матчей и кнопкой назад"""
+    keyboard = []
+    today = datetime.now().strftime('%Y-%m-%d')
+    tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+    for date_str in dates:
+        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+        if date_str == today:
+            date_label = "⏳ Сегодня"
+        elif date_str == tomorrow:
+            date_label = "🕐 Завтра"
+        else:
+            date_label = date_obj.strftime("%d.%m.%Y")
+        button_text = f"{date_label}"
+        callback_data = f"choose_date_{current_sport}_{date_str}"
+        keyboard.append([InlineKeyboardButton(button_text,
+                                              callback_data=callback_data)])
+    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data='back')])
+    keyboard.append([InlineKeyboardButton("🏠 В главное меню",
+                                          callback_data='back_to_menu')])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def purchased_sports_keyboard(sports_with_counts):
+    """Клавиатура с видами спорта для купленных анализов"""
+    keyboard = []
+    sport_names = {'football': '⚽ Футбол', 'basketball': '🏀 Баскетбол',
+                   'hockey': '🏒 Хоккей'}
+    for sport, count in sports_with_counts.items():
+        sport_display = sport_names.get(sport, sport)
+        button_text = f"{sport_display} ({count} анализов)"
+        callback_data = f"purchased_sport_{sport}"
+        keyboard.append([InlineKeyboardButton(button_text,
+                                              callback_data=callback_data)])
+    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data='back')])
+    keyboard.append([InlineKeyboardButton("🏠 В главное меню",
+                                          callback_data='back_to_menu')])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def purchased_dates_keyboard_with_back(dates, sport):
+    """Клавиатура с датами купленных анализов"""
+    keyboard = []
+    today = datetime.now().date()
+    for date_str in dates:
+        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+        if date_obj.date() == today:
+            date_label = "⏳ Сегодня"
+        elif date_obj.date() == today + timedelta(days=1):
+            date_label = "🕐 Завтра"
+        else:
+            date_label = date_obj.strftime("%d.%m.%Y")
+        button_text = f"{date_label}"
+        callback_data = f"purchased_date_{sport}_{date_str}"
+        keyboard.append([InlineKeyboardButton(button_text,
+                                              callback_data=callback_data)])
+    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data='back')])
+    keyboard.append([InlineKeyboardButton("🏠 В главное меню",
+                                          callback_data='back_to_menu')])
+    return InlineKeyboardMarkup(keyboard)
