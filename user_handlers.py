@@ -4,6 +4,7 @@ from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
 import database
 import keyboards
 from utils import safe_edit_message, send_main_menu, format_match_info
+from ai_generator import generate_match_analysis
 from datetime import datetime, timedelta
 import urllib.parse
 
@@ -281,10 +282,7 @@ async def handle_match_detail(query, user_id, match_id):
         text += f"✅ Вы уже приобрели этот анализ"
     else:
         text += f"\n💰 *Цена анализа:* {match['price']} руб.\n\n"
-        if match['analysis_text']:
-            text += "Для просмотра анализа необходимо приобрести его."
-        else:
-            text += "❌ Анализ для этого матча еще не готов."
+        text += "Для просмотра анализа необходимо приобрести его."
     keyboard = []
     if has_purchased:
         keyboard.append([InlineKeyboardButton("◀️ Назад",
@@ -319,13 +317,6 @@ async def handle_purchase(query, user_id):
             keyboards.main_menu_keyboard()
         )
         return
-    if not match['analysis_text']:
-        await safe_edit_message(
-            query,
-            "❌ Анализ для этого матча еще не готов.",
-            keyboards.main_menu_keyboard()
-        )
-        return
     if database.has_purchased_analysis(user_id, match_id):
         await safe_edit_message(
             query,
@@ -333,13 +324,41 @@ async def handle_purchase(query, user_id):
             keyboards.main_menu_keyboard()
         )
         return
+
+    # Если анализ ещё не сгенерирован — генерируем через AI
+    analysis_text = match['analysis_text']
+    if not analysis_text:
+        await safe_edit_message(
+            query,
+            f"⏳ Генерируем анализ для матча {match['team1']} vs {match['team2']}...\n\nПожалуйста, подождите 10-15 секунд.",
+            None
+        )
+        try:
+            analysis_text = await generate_match_analysis(
+                team1=match['team1'],
+                team2=match['team2'],
+                sport=match['sport'],
+                date=match['match_date']
+            )
+            # Сохраняем анализ в БД, чтобы не генерировать повторно
+            database.update_match_analysis(match_id, analysis_text)
+        except Exception as e:
+            logger.error(f"Ошибка генерации анализа: {e}")
+            await safe_edit_message(
+                query,
+                "❌ Не удалось сгенерировать анализ. Попробуйте позже.",
+                keyboards.main_menu_keyboard()
+            )
+            return
+
+    # Выполняем покупку (списание средств)
     success, message = database.purchase_analysis(user_id, match_id)
     if success:
         text = f"✅ Покупка успешна!\n\n"
         text += f"🏆 Матч: {match['team1']} vs {match['team2']}\n"
         text += f"💰 Списано: {match['price']} руб.\n"
         text += f"💳 Новый баланс: {database.get_user_balance(user_id)} руб.\n\n"
-        text += f"📊 Анализ:\n{match['analysis_text']}"
+        text += f"📊 Анализ:\n{analysis_text}"
     else:
         text = f"❌ Не удалось купить анализ:\n{message}\n\n"
         text += f"💰 Ваш баланс: {database.get_user_balance(user_id)} руб.\n"

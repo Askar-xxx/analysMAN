@@ -13,12 +13,12 @@ today = datetime.now().strftime('%Y-%m-%d')
 print(f"Добавляю матч на СЕГОДНЯШНЮЮ дату: {today}")
 
 database.add_match(
-    sport='football',
-    team1='МЮ',
-    team2='Реал',
+    sport='football',  # ВАЖНО: используем английские ключи: football, basketball, hockey
+    team1='ЦСКА',
+    team2='Динамо',
     match_date=today,  # СЕГОДНЯ!
-    match_time='20:00',
-    analysis_text='Прогноз: обе забьют. Основная ставка: тотал больше 2.5'
+    match_time='12:00',
+    analysis_text=None  # Анализ будет сгенерирован через AI при покупке
 )
 
 print("Тестовый матч добавлен на сегодня!")

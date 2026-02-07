@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(del \"C:\\\\Users\\\\user\\\\analysMAN\\\\ANALYS_PROMT.md\")",
+      "Bash(python -m pytest:*)",
+      "Bash(python -m flake8:*)"
+    ]
+  }
+}
