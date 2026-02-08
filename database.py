@@ -11,6 +11,7 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
+    # ОБНОВЛЕННАЯ ТАБЛИЦА matches
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS matches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -19,11 +20,20 @@ def init_db():
             team2 TEXT NOT NULL,
             match_date TEXT NOT NULL,
             match_time TEXT NOT NULL,
+            league TEXT,
+            venue TEXT,
+            api_event_id TEXT UNIQUE,
+            status TEXT DEFAULT 'Scheduled',
             analysis_text TEXT,
             price INTEGER DEFAULT 150,
-            is_active BOOLEAN DEFAULT 1
+            is_active BOOLEAN DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    # Добавляем индекс для быстрого поиска
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_match_date ON matches(match_date)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_api_event_id ON matches(api_event_id)')
+    # Остальные таблицы без изменений
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -51,38 +61,205 @@ def init_db():
             added_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    # ПРОВЕРЯЕМ И ОБНОВЛЯЕМ СУЩЕСТВУЮЩУЮ ТАБЛИЦУ
+    # Если таблица уже существует, добавляем недостающие поля
+    cursor.execute("PRAGMA table_info(matches)")
+    existing_columns = [col[1] for col in cursor.fetchall()]
+    # Список новых полей для добавления
+    new_columns = [
+        ('league', 'TEXT'),
+        ('venue', 'TEXT'),
+        ('api_event_id', 'TEXT'),
+        ('status', 'TEXT DEFAULT "Scheduled"'),
+        ('created_at', 'TEXT DEFAULT CURRENT_TIMESTAMP')
+    ]
+    for column_name, column_type in new_columns:
+        if column_name not in existing_columns:
+            try:
+                cursor.execute(f'ALTER TABLE matches ADD COLUMN {column_name} {column_type}')
+                print(f"✅ Добавлено поле {column_name} в таблицу matches")
+            except sqlite3.OperationalError as e:
+                print(f"⚠️ Не удалось добавить поле {column_name}: {e}")
     conn.commit()
     conn.close()
+    print("✅ База данных инициализирована")
 
 
-# Функции для матчей
-def add_match(sport, team1, team2, match_date, match_time, analysis_text=None,
-              price=150):
+# ОБНОВЛЕННАЯ ФУНКЦИЯ ДОБАВЛЕНИЯ МАТЧА
+def add_match(sport, team1, team2, match_date, match_time,
+              analysis_text=None, price=150, league=None, venue=None,
+              api_event_id=None, status='Scheduled'):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO matches (sport, team1, team2, match_date, match_time,
-                   analysis_text, price)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    ''', (sport, team1, team2, match_date, match_time, analysis_text, price))
+                   analysis_text, price, league, venue, api_event_id, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (sport, team1, team2, match_date, match_time,
+          analysis_text, price, league, venue, api_event_id, status))
     match_id = cursor.lastrowid
     conn.commit()
     conn.close()
     return match_id
 
 
-def create_match(sport, team1, team2, match_date, match_time, price=150):
+# ОБНОВЛЕННАЯ ФУНКЦИЯ СОЗДАНИЯ МАТЧА (для админов)
+def create_match(sport, team1, team2, match_date, match_time,
+                 price=150, league=None, venue=None):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO matches (sport, team1, team2, match_date, match_time,
-                   price)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ''', (sport, team1, team2, match_date, match_time, price))
+                   price, league, venue, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Scheduled')
+    ''', (sport, team1, team2, match_date, match_time,
+          price, league, venue))
     match_id = cursor.lastrowid
     conn.commit()
     conn.close()
     return match_id
+
+
+# ФУНКЦИЯ ДЛЯ СИНХРОНИЗАЦИИ (новая)
+def sync_match_from_api(match_data):
+    """
+    Синхронизировать матч из API с базой данных
+    match_data должен содержать:
+    - sport, team1, team2, match_date, match_time
+    - league, venue, api_event_id, status (опционально)
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    # Проверяем, существует ли уже матч с таким api_event_id
+    api_event_id = match_data.get('api_event_id')
+    if api_event_id:
+        cursor.execute('SELECT id FROM matches WHERE api_event_id = ?', (api_event_id,))
+        existing = cursor.fetchone()
+        if existing:
+            conn.close()
+            return existing['id'], False  # ID, is_new=False
+    # Проверяем по командам и дате (резервный вариант)
+    cursor.execute('''
+        SELECT id FROM matches
+        WHERE team1 = ? AND team2 = ? AND match_date = ?
+    ''', (match_data['team1'], match_data['team2'], match_data['match_date']))
+    existing = cursor.fetchone()
+    if existing:
+        conn.close()
+        return existing['id'], False
+    # Добавляем новый матч
+    cursor.execute('''
+        INSERT INTO matches
+        (sport, team1, team2, match_date, match_time,
+         league, venue, api_event_id, status, price)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        match_data.get('sport', 'football'),
+        match_data['team1'],
+        match_data['team2'],
+        match_data['match_date'],
+        match_data['match_time'],
+        match_data.get('league'),
+        match_data.get('venue'),
+        match_data.get('api_event_id'),
+        match_data.get('status', 'Scheduled'),
+        match_data.get('price', 150)
+    ))
+    match_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return match_id, True  # ID, is_new=True
+
+
+# ОБНОВЛЕННАЯ ФУНКЦИЯ ПОЛУЧЕНИЯ МАТЧА
+def get_match_by_id(match_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM matches WHERE id = ?', (match_id,))
+    match = cursor.fetchone()
+    conn.close()
+    return match
+
+
+# ОБНОВЛЕННАЯ ФУНКЦИЯ ПОЛУЧЕНИЯ ВСЕХ МАТЧЕЙ
+def get_all_matches():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT * FROM matches
+        ORDER BY match_date DESC, match_time DESC
+    ''')
+    matches = cursor.fetchall()
+    conn.close()
+    return matches
+
+
+# ОБНОВЛЕННАЯ ФУНКЦИЯ ПОЛУЧЕНИЯ МАТЧЕЙ ПО ДАТЕ
+def get_matches_by_date(sport, match_date):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT * FROM matches
+        WHERE sport = ? AND match_date = ? AND is_active = 1
+        ORDER BY match_time
+    ''', (sport, match_date))
+    matches = cursor.fetchall()
+    conn.close()
+    return matches
+
+
+# НОВАЯ ФУНКЦИЯ: Проверка структуры БД
+def check_database_structure():
+    """Проверить и исправить структуру базы данных"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    print("🔍 Проверка структуры базы данных...")
+    # Проверяем таблицу matches
+    cursor.execute("PRAGMA table_info(matches)")
+    columns = cursor.fetchall()
+    print("📊 Таблица 'matches':")
+    required_columns = {
+        'id': 'INTEGER PRIMARY KEY',
+        'sport': 'TEXT',
+        'team1': 'TEXT',
+        'team2': 'TEXT',
+        'match_date': 'TEXT',
+        'match_time': 'TEXT',
+        'league': 'TEXT',
+        'venue': 'TEXT',
+        'api_event_id': 'TEXT',
+        'status': 'TEXT',
+        'analysis_text': 'TEXT',
+        'price': 'INTEGER',
+        'is_active': 'BOOLEAN',
+        'created_at': 'TEXT'
+    }
+    existing_columns = {}
+    for col in columns:
+        existing_columns[col[1]] = col[2]
+        print(f"  - {col[1]}: {col[2]}")
+    # Проверяем отсутствующие столбцы
+    missing_columns = []
+    for col_name, col_type in required_columns.items():
+        if col_name not in existing_columns:
+            missing_columns.append((col_name, col_type))
+    if missing_columns:
+        print("\n⚠️  Отсутствующие столбцы:")
+        for col_name, col_type in missing_columns:
+            print(f"  - {col_name}: {col_type}")
+        # Добавляем недостающие столбцы
+        print("\n🔄 Добавление недостающих столбцов...")
+        for col_name, col_type in missing_columns:
+            try:
+                cursor.execute(f'ALTER TABLE matches ADD COLUMN {col_name} {col_type}')
+                print(f"✅ Добавлен столбец: {col_name}")
+            except Exception as e:
+                print(f"❌ Ошибка при добавлении {col_name}: {e}")
+    else:
+        print("✅ Все необходимые столбцы присутствуют")
+    conn.commit()
+    conn.close()
+    return len(missing_columns) == 0
 
 
 def get_purchased_matches_by_user(user_id):
@@ -90,7 +267,7 @@ def get_purchased_matches_by_user(user_id):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT m.*, p.purchase_date 
+        SELECT m.*, p.purchase_date
         FROM matches m
         JOIN purchases p ON m.id = p.match_id
         WHERE p.user_id = ?
@@ -106,7 +283,7 @@ def get_purchased_matches_by_sport(user_id, sport):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT m.*, p.purchase_date 
+        SELECT m.*, p.purchase_date
         FROM matches m
         JOIN purchases p ON m.id = p.match_id
         WHERE p.user_id = ? AND m.sport = ?
@@ -328,7 +505,7 @@ def get_user_stats(user_id):
     cursor = conn.cursor()
     cursor.execute('''
         SELECT balance, total_analysis_bought
-        FROM users 
+        FROM users
         WHERE user_id = ?
     ''', (user_id,))
     stats = cursor.fetchone()
@@ -403,7 +580,3 @@ def get_all_admins():
     admins = cursor.fetchall()
     conn.close()
     return admins
-
-
-# Инициализация при импорте
-init_db()
