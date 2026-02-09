@@ -451,6 +451,27 @@ class SportsDBSyncer:
                 conn.close()
         return results
 
+    def cache_teams_from_matches(self, matches: List[Dict]) -> Dict:
+        """Кэшировать все команды из списка матчей (отдельный шаг)"""
+        results = {'cached': 0, 'already_cached': 0, 'errors': 0}
+        seen_ids = set()
+        for match in matches:
+            for tid in (match.get('home_team_id'), match.get('away_team_id')):
+                if tid and tid not in seen_ids:
+                    seen_ids.add(tid)
+        logger.info(f"Кэширование {len(seen_ids)} уникальных команд...")
+        for tid in seen_ids:
+            try:
+                result = self.cache_team(tid)
+                if result:
+                    results['cached'] += 1
+                else:
+                    results['errors'] += 1
+            except Exception as e:
+                logger.error(f"Ошибка кэширования команды {tid}: {e}")
+                results['errors'] += 1
+        return results
+
     def cache_team(self, team_id: str) -> Optional[Dict]:
         """Кэшировать команду из lookupteam API (TTL 24h)"""
         if not team_id:
@@ -516,6 +537,11 @@ def main():
         type=int,
         default=15,
         help='Размер батча для сохранения (по умолчанию: 15)'
+    )
+    parser.add_argument(
+        '--cache-teams',
+        action='store_true',
+        help='После sync кэшировать данные команд (доп. API запросы)'
     )
     parser.add_argument(
         '--dry-run',
@@ -612,6 +638,13 @@ def main():
             print("Матчи успешно сохранены в БД!")
         else:
             print("Новых матчей не найдено")
+        # Кэшируем команды если запрошено
+        if args.cache_teams:
+            print("\nКэширование данных команд...")
+            team_results = syncer.cache_teams_from_matches(matches)
+            print(f"Команд закэшировано: {team_results['cached']}")
+            if team_results['errors'] > 0:
+                print(f"Ошибок (429/timeout): {team_results['errors']}")
     else:
         print("Dry-run режим - матчи НЕ сохранены")
     return 0
