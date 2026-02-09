@@ -1,10 +1,11 @@
 import sys
-import os
 import argparse
+import json
 import logging
 from datetime import datetime, timedelta
 import sqlite3
 from typing import List, Dict, Optional
+from threading import Lock
 import requests
 import time
 from collections import defaultdict
@@ -18,13 +19,20 @@ logger = logging.getLogger(__name__)
 
 
 class RateLimitedAPI:
-    """Класс для работы с лимитированным API"""
+    """Класс для работы с лимитированным API (token bucket)"""
 
-    def __init__(self):
+    def __init__(self, capacity=25, refill_rate=25):
         self.api_key = "123"
         self.base_url = f"https://www.thesportsdb.com/api/v1/json/{self.api_key}"
-        self.requests_per_minute = 28
-        self.requests_made = []
+        # Token bucket
+        self.capacity = capacity
+        self.refill_rate = refill_rate  # tokens per 60 seconds
+        self.tokens = float(capacity)
+        self.last_refill = time.time()
+        self._lock = Lock()
+        # Backoff
+        self.max_retries = 3
+        self.base_backoff = 2.0
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -33,37 +41,60 @@ class RateLimitedAPI:
         self.session.verify = False
 
     def make_request(self, endpoint: str, params: Dict = None) -> Dict:
-        """Выполнить запрос с учетом лимита"""
-        self._check_rate_limit()
-        try:
-            url = f"{self.base_url}/{endpoint}"
-            response = self.session.get(url, params=params, timeout=10)
-            if response.status_code != 200:
-                logger.debug(f"Статус {response.status_code} для {endpoint}")
+        """Выполнить запрос с token bucket + exponential backoff на 429"""
+        for attempt in range(self.max_retries + 1):
+            self._acquire_token()
+            try:
+                url = f"{self.base_url}/{endpoint}"
+                response = self.session.get(url, params=params, timeout=10)
+                if response.status_code == 429:
+                    wait = self.base_backoff ** (attempt + 1)
+                    logger.warning(
+                        f"HTTP 429, backoff {wait:.1f}s (attempt {attempt + 1})"
+                    )
+                    time.sleep(wait)
+                    continue
+                if response.status_code != 200:
+                    logger.debug(f"Статус {response.status_code} для {endpoint}")
+                    return {}
+                return response.json()
+            except Exception as e:
+                logger.error(f"Ошибка запроса: {e}")
                 return {}
-            return response.json()
-        except Exception as e:
-            logger.error(f"Ошибка запроса: {e}")
-            return {}
+        logger.error(f"Все {self.max_retries} попыток исчерпаны для {endpoint}")
+        return {}
 
-    def _check_rate_limit(self):
-        """Проверить и соблюдать лимит запросов"""
-        now = time.time()
-        minute_ago = now - 60
-        self.requests_made = [t for t in self.requests_made if t > minute_ago]
-        if len(self.requests_made) >= self.requests_per_minute:
-            wait_time = 61
-            logger.info(f"⚠️ Лимит запросов. Ждем {wait_time} секунд...")
-            time.sleep(wait_time)
-            self.requests_made = []
+    def _acquire_token(self):
+        """Token bucket: ждать пока появится токен"""
+        with self._lock:
+            now = time.time()
+            elapsed = now - self.last_refill
+            self.tokens = min(
+                self.capacity,
+                self.tokens + elapsed * (self.refill_rate / 60.0)
+            )
+            self.last_refill = now
+            if self.tokens < 1.0:
+                wait = (1.0 - self.tokens) / (self.refill_rate / 60.0)
+                logger.debug(f"Rate limit: ожидание {wait:.2f}s")
+                time.sleep(wait)
+                self.tokens = 0.0
+                self.last_refill = time.time()
+            else:
+                self.tokens -= 1.0
 
 
 class SportsDBSyncer:
-    """Синхронизатор для получения ВСЕХ матчей из топ-лиг и кубков на неделю"""
+    """Синхронизатор матчей из TheSportsDB"""
 
-    def __init__(self, db_path: str = "sports_bot.db"):
+    def __init__(self, db_path: str = "sports_bot.db", mode: str = "top3",
+                 limit: int = 3, batch_size: int = 15):
         self.db_path = db_path
         self.api = RateLimitedAPI()
+        self.mode = mode
+        self.limit = limit
+        self.batch_size = batch_size
+        self.source = "TheSportsDB"
         # 5 популярных лиг
         self.top_leagues = [
             {'id': '4328', 'name': 'Premier League'},
@@ -81,6 +112,41 @@ class SportsDBSyncer:
             {'id': '4487', 'name': 'Copa del Rey'},
         ]
 
+    def sync(self) -> List[Dict]:
+        """Основной метод: выбирает режим sync"""
+        if self.mode == "top3":
+            return self.get_top3_matches()
+        else:
+            return self.get_week_matches()
+
+    def get_top3_matches(self) -> List[Dict]:
+        """Получить top-N матчей (default mode) из первых лиг"""
+        all_matches = []
+        logger.info(f"Режим top3: получение {self.limit} матчей...")
+        for league in self.top_leagues:
+            if len(all_matches) >= self.limit:
+                break
+            try:
+                logger.info(f"Получение матчей из: {league['name']}")
+                data = self.api.make_request(
+                    "eventsnextleague.php", {"id": league['id']}
+                )
+                if not data or 'events' not in data or not data['events']:
+                    continue
+                for event in data['events']:
+                    if len(all_matches) >= self.limit:
+                        break
+                    match = self._parse_event(event)
+                    if match and self._is_within_week(match['match_date']):
+                        all_matches.append(match)
+                time.sleep(0.5)
+            except Exception as e:
+                logger.error(f"Ошибка для {league['name']}: {e}")
+                continue
+        unique = self._remove_duplicates(all_matches)
+        unique.sort(key=lambda x: (x['match_date'], x['match_time']))
+        return unique[:self.limit]
+
     def get_week_matches(self) -> List[Dict]:
         """
         Получить ВСЕ матчи из всех лиг и кубков на неделю вперед
@@ -88,12 +154,16 @@ class SportsDBSyncer:
         """
         all_matches = []
         all_leagues = self.top_leagues + self.cups
-        logger.info(f"Поиск матчей из {len(all_leagues)} лиг/кубков на неделю...")
+        logger.info(
+            f"Поиск матчей из {len(all_leagues)} лиг/кубков на неделю..."
+        )
         # МЕТОД 1: Получение матчей по лигам (eventsnextleague.php)
         for league in all_leagues:
             try:
                 logger.info(f"Метод 1: Получение матчей из: {league['name']}")
-                data = self.api.make_request("eventsnextleague.php", {"id": league['id']})
+                data = self.api.make_request(
+                    "eventsnextleague.php", {"id": league['id']}
+                )
                 if not data or 'events' not in data:
                     logger.warning(f"Пустой ответ для {league['name']}")
                     continue
@@ -101,7 +171,9 @@ class SportsDBSyncer:
                 if not events:
                     logger.info(f"Нет матчей для {league['name']}")
                     continue
-                logger.info(f"Найдено {len(events)} событий в {league['name']}")
+                logger.info(
+                    f"Найдено {len(events)} событий в {league['name']}"
+                )
                 for event in events:
                     match = self._parse_event(event)
                     if match and self._is_within_week(match['match_date']):
@@ -117,7 +189,6 @@ class SportsDBSyncer:
             current_date = today + timedelta(days=day_offset)
             try:
                 logger.info(f"Поиск матчей на {current_date}")
-                # Ищем матчи на конкретную дату
                 data = self.api.make_request("eventsday.php", {
                     "d": current_date.strftime('%Y-%m-%d')
                 })
@@ -127,7 +198,6 @@ class SportsDBSyncer:
                 for event in events:
                     match = self._parse_event(event)
                     if match:
-                        # Проверяем, что матч из нужных лиг/кубков
                         league_name = match.get('league', '')
                         is_target_league = any(
                             target_league['name'] in league_name
@@ -142,10 +212,9 @@ class SportsDBSyncer:
         # МЕТОД 3: Для АПЛ получаем матчи турнирного круга
         logger.info("Метод 3: Дополнительный поиск матчей АПЛ...")
         try:
-            # Ищем матчи Premier League отдельно
-            for round_num in range(25, 31):  # Примерно с 25 по 30 тур
+            for round_num in range(25, 31):
                 data = self.api.make_request("eventsround.php", {
-                    "id": "4328",  # Premier League ID
+                    "id": "4328",
                     "r": str(round_num)
                 })
                 if data and 'events' in data:
@@ -159,8 +228,10 @@ class SportsDBSyncer:
         # Удаляем дубликаты
         unique_matches = self._remove_duplicates(all_matches)
         unique_matches.sort(key=lambda x: (x['match_date'], x['match_time']))
-        logger.info(f"Итого найдено уникальных матчей на неделю: {
-            len(unique_matches)}")
+        logger.info(
+            f"Итого найдено уникальных матчей на неделю: "
+            f"{len(unique_matches)}"
+        )
         return unique_matches
 
     def _is_within_week(self, match_date) -> bool:
@@ -172,18 +243,30 @@ class SportsDBSyncer:
     def _parse_event(self, event: Dict) -> Optional[Dict]:
         """Парсить событие с конвертацией времени в МСК"""
         try:
+            # Сохраняем raw JSON
+            raw_json = json.dumps(event, ensure_ascii=False)
+
             date_str = event.get('dateEvent')
             time_str = event.get('strTime', '18:00:00')
             if not date_str:
                 return None
+
+            # Team IDs
+            home_team_id = event.get('idHomeTeam', '')
+            away_team_id = event.get('idAwayTeam', '')
+
             # Парсим дату и время
             try:
                 if time_str:
                     dt_str = f"{date_str} {time_str}"
-                    match_datetime = datetime.strptime(dt_str, '%Y-%m-%d %H:%M:%S')
+                    match_datetime = datetime.strptime(
+                        dt_str, '%Y-%m-%d %H:%M:%S'
+                    )
                 else:
                     match_datetime = datetime.strptime(date_str, '%Y-%m-%d')
-                    match_datetime = match_datetime.replace(hour=18, minute=0)
+                    match_datetime = match_datetime.replace(
+                        hour=18, minute=0
+                    )
             except Exception as e:
                 logger.debug(f"Ошибка парсинга даты: {e}")
                 return None
@@ -201,7 +284,6 @@ class SportsDBSyncer:
             def clean_name(name):
                 if not name:
                     return "Unknown Team"
-                # Убираем приставки
                 replacements = [
                     (' FC', ''),
                     (' AFC', ''),
@@ -211,15 +293,19 @@ class SportsDBSyncer:
                     (' U19', ''),
                     (' U21', ''),
                     (' U23', ''),
-                    (' B', ''),  # Убираем резервные команды
+                    (' B', ''),
                     (' II', ''),
                 ]
                 for old, new in replacements:
                     name = name.replace(old, new)
                 return name.strip()
+
             # Конвертируем время в МСК (UTC+3)
-            # Время в API обычно в UTC, добавляем 3 часа для МСК
             match_datetime_msk = match_datetime + timedelta(hours=3)
+            # UTC datetime в ISO8601
+            match_datetime_utc = match_datetime.strftime(
+                '%Y-%m-%dT%H:%M:%S+00:00'
+            )
             # Создаем ID события
             api_event_id = event.get('idEvent')
             if not api_event_id:
@@ -236,33 +322,43 @@ class SportsDBSyncer:
                 'team1': clean_name(home_team),
                 'team2': clean_name(away_team),
                 'match_date': match_datetime.date(),
-                'match_datetime': match_datetime_msk,  # Сохраняем с МСК временем
-                'match_time': match_datetime_msk.time().strftime('%H:%M'),  # Время в МСК
-                'league': round_display,  # Включаем номер тура
+                'match_datetime': match_datetime_msk,
+                'match_time': match_datetime_msk.time().strftime('%H:%M'),
+                'league': round_display,
                 'venue': event.get('strVenue', 'Unknown Stadium'),
                 'api_event_id': api_event_id,
                 'status': event.get('strStatus', 'Scheduled'),
                 'price': 150,
                 'is_active': 1,
-                'round': round_info
+                'round': round_info,
+                # Новые поля для tracing
+                'raw_json': raw_json,
+                'source': self.source,
+                'home_team_id': str(home_team_id),
+                'away_team_id': str(away_team_id),
+                'home_score': event.get('intHomeScore'),
+                'away_score': event.get('intAwayScore'),
+                'match_datetime_utc': match_datetime_utc,
             }
         except Exception as e:
             logger.debug(f"Ошибка парсинга: {e}")
             return None
 
     def _remove_duplicates(self, matches: List[Dict]) -> List[Dict]:
-        """Удалить дубликаты матчей"""
+        """Удалить дубликаты матчей (по api_event_id или team+date)"""
         unique_matches = []
         seen = set()
         for match in matches:
-            key = (match['team1'], match['team2'], str(match['match_date']))
+            key = match.get('api_event_id') or (
+                match['team1'], match['team2'], str(match['match_date'])
+            )
             if key not in seen:
                 seen.add(key)
                 unique_matches.append(match)
         return unique_matches
 
     def save_matches_to_db(self, matches: List[Dict]) -> Dict:
-        """Сохранить матчи в БД"""
+        """Сохранить матчи в БД (idempotent: проверка по api_event_id)"""
         results = {
             'total': len(matches),
             'inserted': 0,
@@ -275,43 +371,72 @@ class SportsDBSyncer:
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            for match in matches:
+            for i, match in enumerate(matches):
                 try:
-                    # Форматируем дату как строку
                     match_date_str = match['match_date'].strftime('%Y-%m-%d')
-                    # Проверяем существование по нескольким критериям
-                    cursor.execute('''
-                        SELECT id FROM matches
-                        WHERE team1 = ? AND team2 = ? AND match_date = ?
-                    ''', (match['team1'], match['team2'], match_date_str))
-                    existing = cursor.fetchone()
+                    # Проверяем по api_event_id (приоритет)
+                    api_eid = match.get('api_event_id')
+                    existing = None
+                    if api_eid:
+                        cursor.execute(
+                            'SELECT id FROM matches WHERE api_event_id = ?',
+                            (api_eid,)
+                        )
+                        existing = cursor.fetchone()
+                    # Fallback: проверка по team+date
+                    if not existing:
+                        cursor.execute('''
+                            SELECT id FROM matches
+                            WHERE team1 = ? AND team2 = ? AND match_date = ?
+                        ''', (match['team1'], match['team2'], match_date_str))
+                        existing = cursor.fetchone()
                     if existing:
                         results['skipped'] += 1
-                        logger.debug(f"Пропущен дубликат: {match['team1']} vs {match['team2']}")
+                        logger.debug(
+                            f"Пропущен дубликат: "
+                            f"{match['team1']} vs {match['team2']}"
+                        )
                     else:
-                        # Вставляем новый матч
                         cursor.execute('''
                             INSERT INTO matches
                             (sport, team1, team2, match_date, match_time,
                              league, venue, api_event_id, status, price,
-                                        is_active)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             is_active, raw_json, source, home_team_id,
+                             away_team_id, home_score, away_score,
+                             match_datetime)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                    ?, ?, ?, ?, ?, ?, ?)
                         ''', (
                             match['sport'],
                             match['team1'],
                             match['team2'],
                             match_date_str,
-                            match['match_time'],  # Сохраняем время в МСК
+                            match['match_time'],
                             match['league'],
                             match['venue'],
                             match['api_event_id'],
                             match['status'],
                             match['price'],
-                            match['is_active']
+                            match['is_active'],
+                            match.get('raw_json'),
+                            match.get('source'),
+                            match.get('home_team_id'),
+                            match.get('away_team_id'),
+                            match.get('home_score'),
+                            match.get('away_score'),
+                            match.get('match_datetime_utc'),
                         ))
                         results['inserted'] += 1
-                        logger.info(f"✅ Добавлен: {match['team1']} vs {match['team2']} ({match['match_time']} МСК)")
+                        logger.info(
+                            f"Добавлен: {match['team1']} vs "
+                            f"{match['team2']} ({match['match_time']} МСК)"
+                        )
                     conn.commit()
+                    # Batch checkpoint
+                    if (i + 1) % self.batch_size == 0:
+                        logger.info(
+                            f"Batch checkpoint: {i + 1}/{len(matches)}"
+                        )
                 except sqlite3.IntegrityError:
                     conn.rollback()
                     results['skipped'] += 1
@@ -326,10 +451,71 @@ class SportsDBSyncer:
                 conn.close()
         return results
 
+    def cache_team(self, team_id: str) -> Optional[Dict]:
+        """Кэшировать команду из lookupteam API (TTL 24h)"""
+        if not team_id:
+            return None
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        # Проверяем кэш (TTL 24 часа)
+        cursor.execute('''
+            SELECT team_id, name, short_name, badge_url, sport, raw_json,
+                   source, cached_at
+            FROM teams WHERE team_id = ? AND
+            datetime(cached_at, '+24 hours') > datetime('now')
+        ''', (team_id,))
+        cached = cursor.fetchone()
+        if cached:
+            conn.close()
+            cols = ['team_id', 'name', 'short_name', 'badge_url',
+                    'sport', 'raw_json', 'source', 'cached_at']
+            return dict(zip(cols, cached))
+        # Запрос к API
+        data = self.api.make_request("lookupteam.php", {"id": team_id})
+        if data and 'teams' in data and data['teams']:
+            team = data['teams'][0]
+            cursor.execute('''
+                INSERT OR REPLACE INTO teams
+                (team_id, name, short_name, badge_url, sport,
+                 raw_json, source, cached_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ''', (
+                team.get('idTeam'),
+                team.get('strTeam'),
+                team.get('strTeamShort', ''),
+                team.get('strBadge', ''),
+                'football',
+                json.dumps(team, ensure_ascii=False),
+                self.source,
+            ))
+            conn.commit()
+            conn.close()
+            return team
+        conn.close()
+        return None
+
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Получение ВСЕХ матчей из 5 топ-лиг и кубков на неделю'
+        description='Синхронизация матчей из TheSportsDB API'
+    )
+    parser.add_argument(
+        '--mode',
+        choices=['top3', 'all'],
+        default='top3',
+        help='Режим: top3 (по умолчанию) или all (bulk import)'
+    )
+    parser.add_argument(
+        '--limit',
+        type=int,
+        default=3,
+        help='Макс. количество матчей в режиме top3 (по умолчанию: 3)'
+    )
+    parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=15,
+        help='Размер батча для сохранения (по умолчанию: 15)'
     )
     parser.add_argument(
         '--dry-run',
@@ -357,19 +543,25 @@ def main():
         logger.setLevel(logging.DEBUG)
     if args.debug:
         logger.setLevel(logging.DEBUG)
-    print("🚀 ПОЛУЧЕНИЕ МАТЧЕЙ НА НЕДЕЛЮ")
-    print("="*60)
-    print("⚽ 5 топ-лиг + дополнительные кубки")
-    print("📅 Строго на неделю вперед")
-    print("🕐 Время показано в МСК (UTC+3)")
-    print("="*60)
-    syncer = SportsDBSyncer(db_path=args.db)
-    print("🔄 Поиск матчей...")
-    matches = syncer.get_week_matches()
+    print(f"Синхронизация матчей (режим: {args.mode})")
+    print("=" * 60)
+    if args.mode == 'top3':
+        print(f"Top-{args.limit} матчей из топ-лиг")
+    else:
+        print("5 топ-лиг + дополнительные кубки (bulk)")
+    print("На неделю вперед")
+    print("Время показано в МСК (UTC+3)")
+    print("=" * 60)
+    syncer = SportsDBSyncer(
+        db_path=args.db, mode=args.mode,
+        limit=args.limit, batch_size=args.batch_size
+    )
+    print("Поиск матчей...")
+    matches = syncer.sync()
     if not matches:
-        print("\n❌ Не удалось получить матчи")
+        print("\nНе удалось получить матчи")
         return 1
-    print(f"✅ Найдено {len(matches)} матчей")
+    print(f"Найдено {len(matches)} матчей")
     # Группируем по датам и лигам
     matches_by_date_league = defaultdict(lambda: defaultdict(list))
     for match in matches:
@@ -377,49 +569,51 @@ def main():
         league = match['league']
         matches_by_date_league[date_str][league].append(match)
     # Показываем матчи
-    print("\n📋 МАТЧИ НА НЕДЕЛЮ (время в МСК):")
-    print("="*70)
+    print("\nМатчи (время в МСК):")
+    print("=" * 70)
     total_matches = 0
     for date_str in sorted(matches_by_date_league.keys()):
         date_display = datetime.strptime(
             date_str, '%Y-%m-%d').strftime('%d.%m.%Y')
         date_matches = matches_by_date_league[date_str]
-        date_total = sum(len(league_matches) for league_matches
-                         in date_matches.values())
+        date_total = sum(
+            len(league_matches) for league_matches in date_matches.values()
+        )
         total_matches += date_total
-        print(f"\n📅 {date_display} ({date_total} матчей):")
-        print("-"*50)
+        print(f"\n{date_display} ({date_total} матчей):")
+        print("-" * 50)
         for league in sorted(date_matches.keys()):
             league_matches = date_matches[league]
-            print(f"\n🏆 {league}:")
-            for match in sorted(league_matches, key=lambda x: x['match_time']):
-                # Форматируем вывод
+            print(f"\n  {league}:")
+            for match in sorted(
+                league_matches, key=lambda x: x['match_time']
+            ):
                 teams = f"{match['team1']} - {match['team2']}"
                 time_display = match['match_time']
-                print(f"  ⚽ {teams:40} 🕐 {time_display}")     
-                # Если есть информация о стадионе
-                if match.get('venue') and match['venue'] != 'Unknown Stadium':
-                    print(f"    🏟 {match['venue'][:30]}")
-    print("\n" + "="*70)
-    print(f"📊 ВСЕГО МАТЧЕЙ НА НЕДЕЛЮ: {total_matches}")
-    print("="*70)
+                print(f"    {teams:40} {time_display}")
+                if (match.get('venue')
+                        and match['venue'] != 'Unknown Stadium'):
+                    print(f"      {match['venue'][:30]}")
+    print("\n" + "=" * 70)
+    print(f"Всего матчей: {total_matches}")
+    print("=" * 70)
     # Сохраняем если не dry-run
     if not args.dry_run:
-        print(f"\n💾 Сохранение в БД: {args.db}")
+        print(f"\nСохранение в БД: {args.db}")
         results = syncer.save_matches_to_db(matches)
-        print("\n📊 РЕЗУЛЬТАТЫ:")
-        print("="*60)
-        print(f"📈 Всего обработано: {results['total']}")
-        print(f"✅ Новых добавлено: {results['inserted']}")
-        print(f"⏭️  Пропущено (дубли): {results['skipped']}")
-        print(f"❌ Ошибок: {results['errors']}")
-        print("="*60)
+        print("\nРезультаты:")
+        print("=" * 60)
+        print(f"Всего обработано: {results['total']}")
+        print(f"Новых добавлено: {results['inserted']}")
+        print(f"Пропущено (дубли): {results['skipped']}")
+        print(f"Ошибок: {results['errors']}")
+        print("=" * 60)
         if results['inserted'] > 0:
-            print("🎉 Матчи успешно сохранены в БД!")
+            print("Матчи успешно сохранены в БД!")
         else:
-            print("ℹ️  Новых матчей не найдено")
+            print("Новых матчей не найдено")
     else:
-        print("⚠️  Dry-run режим - матчи НЕ сохранены")
+        print("Dry-run режим - матчи НЕ сохранены")
     return 0
 
 
@@ -430,7 +624,7 @@ if __name__ == "__main__":
         exit_code = main()
         sys.exit(exit_code)
     except KeyboardInterrupt:
-        print("\n⏹️  Прервано")
+        print("\nПрервано")
         sys.exit(130)
     except Exception as e:
         logger.error(f"Ошибка: {e}")
