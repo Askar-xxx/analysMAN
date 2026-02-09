@@ -37,10 +37,6 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    # Добавляем индекс для быстрого поиска
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_match_date ON matches(match_date)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_api_event_id ON matches(api_event_id)')
-
     # Таблица teams (кэш lookupteam)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS teams (
@@ -109,6 +105,9 @@ def init_db():
                 print(f"✅ Добавлено поле {column_name} в таблицу matches")
             except sqlite3.OperationalError as e:
                 print(f"⚠️ Не удалось добавить поле {column_name}: {e}")
+    # Индексы создаём ПОСЛЕ миграции, чтобы столбцы гарантированно существовали
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_match_date ON matches(match_date)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_api_event_id ON matches(api_event_id)')
     conn.commit()
     conn.close()
     print("✅ База данных инициализирована")
