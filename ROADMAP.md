@@ -29,7 +29,7 @@
 
 ---
 
-### Sprint 0 — Setup & Baseline
+### Sprint 0 — Setup & Baseline (DONE)
 **Цели:**
 - Текущий код: ревью `ai_generator.py`, `utils.py`, `database.py`.
 - Внедрить `ANALYSIS_PROMPT.md` как источник истины.
@@ -39,7 +39,7 @@
 
 ---
 
-### Sprint 1 — Stable Generation & Postprocessing
+### Sprint 1 — Stable Generation & Postprocessing (DONE)
 **Цели:**
 - Жёсткая пост‑обработка (clean_and_truncate), контроль эмодзи, banned words.
 - Улучшить split_for_telegram и тесты.
@@ -49,7 +49,7 @@
 
 ---
 
-### Sprint 2 — Payment Flow Robustness & Caching
+### Sprint 2 — Payment Flow Robustness & Caching (DONE)
 **Цели:**
 - Idempotency: purchase_state workflow (pending/paid/processing/done).
 - Кэширование: сохранение анализа, get_cached_analysis, regen endpoint.
@@ -59,12 +59,38 @@
 
 ---
 
+### Sprint 2.5 — API Integration Testing & Manual Sync (DONE)
+**Цели:**
+- Создать admin‑команду: `/sync_sport <sport_type>` — получить топ‑3 актуальных матчей из спортивного API.
+- Проверить полный flow: API → парсинг → запись в БД (matches table) → отображение в UI.
+- Валидация данных: все обязательные поля заполнены (home_team, away_team, match_date, ect.).
+- UI smoke‑test: корректное отображение списка матчей, цены, кнопок покупки.
+
+**Deliverables:**
+- `python sync_matches.py` возвращает top‑3 матча + подтверждение записи в БД.
+- `python sync_matches.py --mode all` — bulk import всех матчей из 10 лиг/кубков.
+- UI показывает новые матчи с актуальными данными (команды, дата, время).
+- Интеграционные тесты: mock API → assert DB records (6 тестов).
+
+**Acceptance:**
+- Ручной запуск корректно заполняет БД без дублей (idempotent по api_event_id).
+- UI отображает все поля без ошибок.
+- Логируются source, raw_json, home_team_id, away_team_id, match_datetime для каждого матча.
+- Token bucket rate limiter (25 req/min) + exponential backoff.
+- Таблица teams с кэшем lookupteam (TTL 24h).
+- Cooldown tracking: скрипт автоматически ждёт сброса API лимита.
+
+**Реализовано в:** ветка `fix/sync-parametrize-and-trace`, подробности в `CHANGELOG_SPRINT_2_5.md`.
+
+---
+
 ### Sprint 3 — Source Automation
 **Цели:**
-- Implement `integrations/fetcher.py` adapter (Пока на этапе выбора спортивного API).
-- `sync_matches.py` + APScheduler job (sync next 3 days).
+- APScheduler job для автоматического периодического sync (cron).
+- Telegram admin‑команда `/sync_sport <sport_type>` для ручного запуска из бота.
+- Обновление счёта завершённых матчей (home_score, away_score).
 
-**Acceptance:** автоматический import матчей; matches have `source` + `source_id` + `raw_json`.
+**Acceptance:** автоматический периодический import матчей; admin может запустить sync из Telegram.
 
 ---
 
