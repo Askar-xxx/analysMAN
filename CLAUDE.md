@@ -36,16 +36,21 @@ Telegram bot for selling sports match analyses (football, basketball, hockey). U
 - ✅ Постобработка анализов: `clean_and_truncate()` — фильтрация запрещённых слов, лимит эмодзи, контроль длины
 - ✅ Разбиение длинных текстов: `split_for_telegram()` — безопасное разбиение по границам абзацев/предложений
 - ✅ Unit-тесты (pytest) и CI (GitHub Actions)
-- ❌ НЕ реализовано: автоматическое обновление матчей через спортивный API
+- ✅ Синхронизация матчей через TheSportsDB API: `sync_matches.py` (top3 default / bulk via --mode all)
+- ✅ Tracing: raw_json, source, home_team_id, away_team_id, match_datetime для каждого матча
+- ✅ Token bucket rate limiter (25 req/min) + exponential backoff на HTTP 429
+- ✅ Таблица teams с кэшем lookupteam (TTL 24h)
+- ✅ Интеграционные тесты sync (top3, idempotence, tracing)
 - ❌ НЕ реализовано: реальная выдача анализа пользователю после покупки (purchase flow)
 
 **Выполненные спринты (см. ROADMAP.md):**
 - ✅ Sprint 0 — Setup & Baseline: ревью кода, `ANALYSIS_PROMPT.md` как источник промпта, CI (pytest + flake8)
 - ✅ Sprint 1 — Stable Generation & Postprocessing: `clean_and_truncate()`, контроль эмодзи, banned words, `split_for_telegram()`, тесты, логирование метрик
+- ✅ Sprint 2.5 — API Integration & Manual Sync: sync_matches.py (top3/all), DB tracing, token bucket, teams cache, интеграционные тесты
 
 **Следующие этапы (см. ROADMAP.md):**
 1. Sprint 2: Payment Flow Robustness & Caching — idempotency (purchase_state), кэширование анализов, интеграционные тесты покупки
-2. Sprint 3: Source Automation — автоматический импорт матчей через спортивный API, `sync_matches.py`
+2. Sprint 3: Source Automation — APScheduler job, автоматический периодический импорт
 3. Stabilise & Launch Prep — end-to-end QA, документация, cost-per-analysis
 
 ## Commands
@@ -68,6 +73,13 @@ python -m flake8 . --max-line-length=120 --exclude=.git,__pycache__,.venv,venv
 python add_balance_manually.py    # Manually add balance to a user
 python add_test_match.py          # Insert a test match for today
 python check_matches.py           # Inspect all matches in the database
+
+# Sync matches from TheSportsDB API
+python sync_matches.py                    # Default: top-3 matches
+python sync_matches.py --mode all         # Bulk: all matches from 5 leagues + cups
+python sync_matches.py --mode top3 --limit 5  # Top-5 matches
+python sync_matches.py --dry-run          # Preview without saving to DB
+python sync_matches.py --batch-size 10    # Custom batch size
 ```
 
 ## Architecture
@@ -77,7 +89,8 @@ python check_matches.py           # Inspect all matches in the database
 **Core modules:**
 
 - `ai_generator.py` — Генерация анализов через DeepSeek API (OpenAI-совместимый клиент). Промпт загружается из `ANALYSIS_PROMPT.md` при импорте. Результат проходит через `clean_and_truncate()` для постобработки.
-- `database.py` — SQLite data layer. All DB functions open/close their own connections (`sports_bot.db`). Tables: `matches`, `users`, `purchases`, `admins`. Note: `init_db()` is called both at module import time and explicitly in `main.py`.
+- `sync_matches.py` — Синхронизация матчей из TheSportsDB API. Два режима: `--mode top3` (default, top-3 матча) и `--mode all` (bulk import). Token bucket rate limiter (25 req/min), exponential backoff на 429. Сохраняет raw_json, source, team IDs. Кэширует команды через lookupteam (TTL 24h).
+- `database.py` — SQLite data layer. All DB functions open/close their own connections (`sports_bot.db`). Tables: `matches`, `users`, `purchases`, `admins`, `teams`. Note: `init_db()` is called both at module import time and explicitly in `main.py`.
 - `user_handlers.py` — Main callback query handler (`button_handler`) that routes all inline button presses via `callback_data` string patterns. Manages menu navigation history via `context.user_data['menu_history']` with constants like `MENU_MAIN`, `MENU_SPORT_SELECTION`, etc.
 - `payment_handlers.py` — Deposit flow handlers. Uses a `ConversationHandler` for custom deposit amounts. Deposit tiers have bonus amounts (e.g., 300 RUB deposit gives +150 bonus). Payment is manual (bank transfer) — no payment gateway integration.
 - `keyboards.py` — All `InlineKeyboardMarkup` builders. Returns keyboard layouts for menus, sport selection, date selection, match lists, deposit options, and purchased analyses navigation.
@@ -88,6 +101,7 @@ python check_matches.py           # Inspect all matches in the database
 **Tests:**
 - `tests/test_utils.py` — тесты `clean_and_truncate` и `split_for_telegram`
 - `tests/test_ai_generator.py` — тесты постобработки и наличия файла промпта
+- `tests/test_sync_matches.py` — интеграционные тесты sync: top3 (ровно 3 матча), idempotence (нет дублей), tracing (raw_json, source, team_ids), bulk mode
 
 **CI:** `.github/workflows/ci.yml` — GitHub Actions: flake8 + pytest на ubuntu-latest, Python 3.11.
 
