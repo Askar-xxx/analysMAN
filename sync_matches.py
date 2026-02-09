@@ -449,11 +449,62 @@ class SportsDBSyncer:
             logger.error(f"Ошибка БД: {e}")
             if conn:
                 conn.close()
+        # Записываем timestamp последнего sync
+        self._save_sync_timestamp()
         return results
+
+    def _save_sync_timestamp(self):
+        """Сохранить время последнего sync в sync_meta"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS sync_meta (
+                    key TEXT PRIMARY KEY, value TEXT
+                )
+            ''')
+            conn.execute('''
+                INSERT OR REPLACE INTO sync_meta (key, value)
+                VALUES ('last_sync_at', datetime('now'))
+            ''')
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.debug(f"Не удалось сохранить timestamp sync: {e}")
+
+    def get_seconds_since_last_sync(self) -> Optional[float]:
+        """Сколько секунд прошло с последнего sync (None если не было)"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT value FROM sync_meta WHERE key = 'last_sync_at'
+            ''')
+            row = cursor.fetchone()
+            conn.close()
+            if not row:
+                return None
+            last_sync = datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S')
+            now = datetime.utcnow()
+            return (now - last_sync).total_seconds()
+        except Exception:
+            return None
 
     def cache_teams_from_matches(self, matches: List[Dict]) -> Dict:
         """Кэшировать все команды из списка матчей (отдельный шаг)"""
+        cooldown = 65  # секунд после sync перед кэшированием
         results = {'cached': 0, 'already_cached': 0, 'errors': 0}
+
+        # Проверяем cooldown после последнего sync
+        elapsed = self.get_seconds_since_last_sync()
+        if elapsed is not None and elapsed < cooldown:
+            wait = int(cooldown - elapsed)
+            print(
+                f"Последний sync был {int(elapsed)}с назад. "
+                f"Ожидание {wait}с для сброса API лимита..."
+            )
+            time.sleep(wait)
+            print("Готово, начинаю кэширование.")
+
         seen_ids = set()
         for match in matches:
             for tid in (match.get('home_team_id'), match.get('away_team_id')):
@@ -544,6 +595,11 @@ def main():
         help='После sync кэшировать данные команд (доп. API запросы)'
     )
     parser.add_argument(
+        '--only-cache-teams',
+        action='store_true',
+        help='Только кэшировать команды (без sync матчей)'
+    )
+    parser.add_argument(
         '--dry-run',
         action='store_true',
         help='Только просмотр, без сохранения в БД'
@@ -569,6 +625,31 @@ def main():
         logger.setLevel(logging.DEBUG)
     if args.debug:
         logger.setLevel(logging.DEBUG)
+
+    # Режим: только кэширование команд (без sync)
+    if args.only_cache_teams:
+        syncer = SportsDBSyncer(db_path=args.db)
+        # Загружаем team_id из существующих матчей в БД
+        conn = sqlite3.connect(args.db)
+        rows = conn.execute(
+            'SELECT DISTINCT home_team_id, away_team_id FROM matches '
+            'WHERE home_team_id IS NOT NULL'
+        ).fetchall()
+        conn.close()
+        if not rows:
+            print("В БД нет матчей с team_id. Сначала запустите sync.")
+            return 1
+        # Собираем фейковый список матчей для cache_teams_from_matches
+        fake_matches = [
+            {'home_team_id': r[0], 'away_team_id': r[1]} for r in rows
+        ]
+        print(f"Кэширование команд из {len(rows)} матчей в БД...")
+        team_results = syncer.cache_teams_from_matches(fake_matches)
+        print(f"Команд закэшировано: {team_results['cached']}")
+        if team_results['errors'] > 0:
+            print(f"Ошибок (429/timeout): {team_results['errors']}")
+        return 0
+
     print(f"Синхронизация матчей (режим: {args.mode})")
     print("=" * 60)
     if args.mode == 'top3':

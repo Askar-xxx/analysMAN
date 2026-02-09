@@ -51,6 +51,14 @@ def init_db():
         )
     ''')
 
+    # Таблица sync_meta (метаданные синхронизации)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sync_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
+
     # Остальные таблицы без изменений
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
