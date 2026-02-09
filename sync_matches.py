@@ -510,21 +510,36 @@ class SportsDBSyncer:
             for tid in (match.get('home_team_id'), match.get('away_team_id')):
                 if tid and tid not in seen_ids:
                     seen_ids.add(tid)
-        logger.info(f"Кэширование {len(seen_ids)} уникальных команд...")
-        for tid in seen_ids:
+        total = len(seen_ids)
+        logger.info(f"Кэширование {total} уникальных команд...")
+        for i, tid in enumerate(seen_ids, 1):
             try:
                 result = self.cache_team(tid)
                 if result:
-                    results['cached'] += 1
+                    from_cache = result.pop('_from_cache', False)
+                    name = result.get('strTeam', result.get('name', tid))
+                    if from_cache:
+                        results['already_cached'] += 1
+                        logger.debug(f"[{i}/{total}] Из кэша: {name}")
+                    else:
+                        results['cached'] += 1
+                        logger.info(
+                            f"[{i}/{total}] Закэширована: {name}"
+                        )
+                        # Пауза только после реального API-вызова
+                        if i < total:
+                            time.sleep(2.5)
                 else:
                     results['errors'] += 1
+                    logger.warning(f"[{i}/{total}] Не удалось: {tid}")
             except Exception as e:
                 logger.error(f"Ошибка кэширования команды {tid}: {e}")
                 results['errors'] += 1
         return results
 
     def cache_team(self, team_id: str) -> Optional[Dict]:
-        """Кэшировать команду из lookupteam API (TTL 24h)"""
+        """Кэшировать команду из lookupteam API (TTL 24h).
+        Возвращает dict с ключом '_from_cache'=True если из кэша."""
         if not team_id:
             return None
         conn = sqlite3.connect(self.db_path)
@@ -541,7 +556,9 @@ class SportsDBSyncer:
             conn.close()
             cols = ['team_id', 'name', 'short_name', 'badge_url',
                     'sport', 'raw_json', 'source', 'cached_at']
-            return dict(zip(cols, cached))
+            result = dict(zip(cols, cached))
+            result['_from_cache'] = True
+            return result
         # Запрос к API
         data = self.api.make_request("lookupteam.php", {"id": team_id})
         if data and 'teams' in data and data['teams']:
