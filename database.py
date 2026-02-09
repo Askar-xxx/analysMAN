@@ -23,6 +23,13 @@ def init_db():
             league TEXT,
             venue TEXT,
             api_event_id TEXT UNIQUE,
+            raw_json TEXT,
+            source TEXT,
+            home_team_id TEXT,
+            away_team_id TEXT,
+            home_score INTEGER,
+            away_score INTEGER,
+            match_datetime TEXT,
             status TEXT DEFAULT 'Scheduled',
             analysis_text TEXT,
             price INTEGER DEFAULT 150,
@@ -33,6 +40,21 @@ def init_db():
     # Добавляем индекс для быстрого поиска
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_match_date ON matches(match_date)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_api_event_id ON matches(api_event_id)')
+
+    # Таблица teams (кэш lookupteam)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS teams (
+            team_id TEXT PRIMARY KEY,
+            name TEXT,
+            short_name TEXT,
+            badge_url TEXT,
+            sport TEXT DEFAULT 'football',
+            raw_json TEXT,
+            source TEXT,
+            cached_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
     # Остальные таблицы без изменений
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
@@ -71,7 +93,14 @@ def init_db():
         ('venue', 'TEXT'),
         ('api_event_id', 'TEXT'),
         ('status', 'TEXT DEFAULT "Scheduled"'),
-        ('created_at', 'TEXT DEFAULT CURRENT_TIMESTAMP')
+        ('created_at', 'TEXT DEFAULT CURRENT_TIMESTAMP'),
+        ('raw_json', 'TEXT'),
+        ('source', 'TEXT'),
+        ('home_team_id', 'TEXT'),
+        ('away_team_id', 'TEXT'),
+        ('home_score', 'INTEGER'),
+        ('away_score', 'INTEGER'),
+        ('match_datetime', 'TEXT'),
     ]
     for column_name, column_type in new_columns:
         if column_name not in existing_columns:
