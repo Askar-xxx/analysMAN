@@ -30,6 +30,11 @@ def init_db():
             home_score INTEGER,
             away_score INTEGER,
             match_datetime TEXT,
+            round TEXT,
+            h2h_json TEXT,
+            h2h_fetched_at TEXT,
+            standings_json TEXT,
+            standings_fetched_at TEXT,
             status TEXT DEFAULT 'Scheduled',
             analysis_text TEXT,
             price INTEGER DEFAULT 150,
@@ -105,6 +110,11 @@ def init_db():
         ('home_score', 'INTEGER'),
         ('away_score', 'INTEGER'),
         ('match_datetime', 'TEXT'),
+        ('round', 'TEXT'),
+        ('h2h_json', 'TEXT'),
+        ('h2h_fetched_at', 'TEXT'),
+        ('standings_json', 'TEXT'),
+        ('standings_fetched_at', 'TEXT'),
     ]
     for column_name, column_type in new_columns:
         if column_name not in existing_columns:

@@ -83,6 +83,11 @@ CREATE_MATCHES_SQL = '''
         home_score INTEGER,
         away_score INTEGER,
         match_datetime TEXT,
+        round TEXT,
+        h2h_json TEXT,
+        h2h_fetched_at TEXT,
+        standings_json TEXT,
+        standings_fetched_at TEXT,
         status TEXT DEFAULT 'Scheduled',
         analysis_text TEXT,
         price INTEGER DEFAULT 150,
@@ -260,5 +265,182 @@ class TestBulkMode:
             # Все матчи должны быть вставлены (без дублей)
             assert results['errors'] == 0
             assert results['inserted'] + results['skipped'] == results['total']
+        finally:
+            os.unlink(db_path)
+
+
+class TestEnrichment:
+    """Тесты: обогащение матчей H2H и standings."""
+
+    @patch('sync_matches.RateLimitedAPI.make_request')
+    @patch('sync_matches.SportsDBSyncer._is_within_week', return_value=True)
+    def test_enrich_h2h_saves_to_db(self, mock_week, mock_api):
+        """H2H данные сохраняются в БД с timestamp."""
+        # Mock для sync
+        mock_api.return_value = MOCK_EVENTS_RESPONSE
+
+        db_path = _create_test_db()
+        try:
+            syncer = SportsDBSyncer(db_path=db_path, mode="top3", limit=1)
+            matches = syncer.sync()
+            syncer.save_matches_to_db(matches)
+
+            # Mock для H2H API
+            mock_h2h_response = {
+                "event": [
+                    {
+                        "dateEvent": "2025-08-25",
+                        "strHomeTeam": "Arsenal",
+                        "strAwayTeam": "Chelsea",
+                        "intHomeScore": 2,
+                        "intAwayScore": 1
+                    }
+                ]
+            }
+
+            with patch.object(syncer.api, 'make_request', return_value=mock_h2h_response):
+                # Получаем match_id
+                conn = sqlite3.connect(db_path)
+                match_id = conn.execute('SELECT id FROM matches LIMIT 1').fetchone()[0]
+                conn.close()
+
+                # Вызываем fetch_h2h напрямую
+                result = syncer.fetch_h2h(match_id, "Arsenal", "Chelsea")
+
+                # Проверяем что данные сохранились
+                conn = sqlite3.connect(db_path)
+                conn.row_factory = sqlite3.Row
+                row = conn.execute('SELECT h2h_json, h2h_fetched_at FROM matches WHERE id = ?',
+                                   (match_id,)).fetchone()
+                conn.close()
+
+                assert row['h2h_json'] is not None
+                assert row['h2h_fetched_at'] is not None
+                assert "Arsenal" in row['h2h_json']
+                assert result is not None
+
+        finally:
+            os.unlink(db_path)
+
+    @patch('sync_matches.RateLimitedAPI.make_request')
+    @patch('sync_matches.SportsDBSyncer._is_within_week', return_value=True)
+    def test_enrich_standings_saves_to_db(self, mock_week, mock_api):
+        """Standings данные сохраняются в БД с timestamp."""
+        # Mock для sync
+        mock_api.return_value = MOCK_EVENTS_RESPONSE
+
+        db_path = _create_test_db()
+        try:
+            syncer = SportsDBSyncer(db_path=db_path, mode="top3", limit=1)
+            matches = syncer.sync()
+            syncer.save_matches_to_db(matches)
+
+            # Mock для standings API
+            mock_standings_response = {
+                "table": [
+                    {
+                        "strTeam": "Arsenal",
+                        "intRank": "1",
+                        "intPoints": "56",
+                        "strForm": "WWDWL",
+                        "intGoalDifference": "32",
+                        "intGoalsFor": "49",
+                        "intGoalsAgainst": "17"
+                    }
+                ]
+            }
+
+            with patch.object(syncer.api, 'make_request', return_value=mock_standings_response):
+                # Получаем match_id
+                conn = sqlite3.connect(db_path)
+                row = conn.execute('SELECT id, raw_json FROM matches LIMIT 1').fetchone()
+                match_id = row[0]
+                raw_json_str = row[1]
+                conn.close()
+
+                # Добавляем idLeague и strSeason в raw_json для теста
+                raw_json = json.loads(raw_json_str)
+                raw_json['idLeague'] = '4328'
+                raw_json['strSeason'] = '2025-2026'
+
+                conn = sqlite3.connect(db_path)
+                conn.execute('UPDATE matches SET raw_json = ? WHERE id = ?',
+                             (json.dumps(raw_json), match_id))
+                conn.commit()
+                conn.close()
+
+                # Вызываем fetch_standings
+                result = syncer.fetch_standings(match_id, '4328', '2025-2026', '133604', '133610')
+
+                # Проверяем что данные сохранились
+                conn = sqlite3.connect(db_path)
+                conn.row_factory = sqlite3.Row
+                row = conn.execute('SELECT standings_json, standings_fetched_at FROM matches WHERE id = ?',
+                                   (match_id,)).fetchone()
+                conn.close()
+
+                assert row['standings_json'] is not None
+                assert row['standings_fetched_at'] is not None
+                assert "Arsenal" in row['standings_json']
+                assert result is not None
+
+        finally:
+            os.unlink(db_path)
+
+    @patch('sync_matches.RateLimitedAPI.make_request')
+    @patch('sync_matches.SportsDBSyncer._is_within_week', return_value=True)
+    def test_enrich_matches_full_flow(self, mock_week, mock_api):
+        """Полный flow enrich_matches: матчи обогащаются H2H и standings."""
+        # Mock для sync
+        mock_api.return_value = MOCK_EVENTS_RESPONSE
+
+        db_path = _create_test_db()
+        try:
+            syncer = SportsDBSyncer(db_path=db_path, mode="top3", limit=1)
+            matches = syncer.sync()
+            syncer.save_matches_to_db(matches)
+
+            # Добавляем idLeague и strSeason в raw_json
+            conn = sqlite3.connect(db_path)
+            rows = conn.execute('SELECT id, raw_json FROM matches').fetchall()
+            for row in rows:
+                raw_json = json.loads(row[1])
+                raw_json['idLeague'] = '4328'
+                raw_json['strSeason'] = '2025-2026'
+                conn.execute('UPDATE matches SET raw_json = ? WHERE id = ?',
+                             (json.dumps(raw_json), row[0]))
+            conn.commit()
+            conn.close()
+
+            # Mock для H2H и standings API
+            mock_h2h = {"event": [{"dateEvent": "2025-08-25", "strHomeTeam": "Arsenal",
+                                   "strAwayTeam": "Chelsea", "intHomeScore": 2, "intAwayScore": 1}]}
+            mock_standings = {"table": [{"strTeam": "Arsenal", "intRank": "1", "intPoints": "56"}]}
+
+            def mock_request_side_effect(endpoint, params=None):
+                if 'searchevents' in endpoint:
+                    return mock_h2h
+                elif 'lookuptable' in endpoint:
+                    return mock_standings
+                return {}
+
+            with patch.object(syncer.api, 'make_request', side_effect=mock_request_side_effect):
+                # Вызываем enrich_matches
+                stats = syncer.enrich_matches()
+
+                # Проверяем результаты
+                assert stats['h2h_enriched'] >= 1
+                assert stats['standings_enriched'] >= 1
+
+                # Проверяем БД
+                conn = sqlite3.connect(db_path)
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute('SELECT h2h_json, standings_json FROM matches').fetchall()
+                conn.close()
+
+                for row in rows:
+                    assert row['h2h_json'] is not None
+                    assert row['standings_json'] is not None
+
         finally:
             os.unlink(db_path)

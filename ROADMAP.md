@@ -84,21 +84,66 @@
 
 ---
 
-### Sprint 3 — Source Automation
+### Sprint 2.7 — H2H & Standings Enrichment (DONE)
 **Цели:**
-- APScheduler job для автоматического периодического sync (cron).
-- Telegram admin‑команда `/sync_sport <sport_type>` для ручного запуска из бота.
-- Обновление счёта завершённых матчей (home_score, away_score).
+- Обогащение матчей данными H2H (история личных встреч) и standings (турнирная таблица).
+- Интеграция реальных данных в AI-промпт: форма (WWDWL), позиция, очки, разница мячей.
+- Устранение «абстрактных» анализов — AI пишет с реальными фактами, а не домыслами.
 
-**Acceptance:** автоматический периодический import матчей; admin может запустить sync из Telegram.
+**Deliverables:**
+- `fetch_h2h()`, `fetch_standings()`, `enrich_matches()` в `sync_matches.py`.
+- Флаг `--enrich` для sync_matches.py.
+- `_format_h2h()`, `_format_standings()`, `_extract_team_standings()` в `ai_generator.py`.
+- DB migration: `h2h_json`, `h2h_fetched_at`, `standings_json`, `standings_fetched_at`.
+- TTL‑кэширование (24h) — повторный enrich не перезапрашивает свежие данные.
+- 12 новых тестов (9 unit + 3 integration), итого 46 тестов.
+- Обновлённый `ANALYSIS_PROMPT.md` с правилами DO NOT INVENT NUMBERS / CITE SOURCE.
+
+**Баги исправлены:**
+- Пробелы в названиях команд для H2H запросов (`Leeds United` → `Leeds`).
+- Суффиксы в названиях (`United`, `City`, `FC`, `Wanderers` и др.) убираются при поиске H2H.
+- API ключ: `"123"` (ограничен 2 результата) → `"3"` (полные данные, 20+ H2H).
+- Standings данные интегрированы в обзоры команд (секции 2-3), а не отдельным блоком.
+
+**Acceptance:**
+- Анализы для команд в топ-5 содержат реальную форму, позицию, очки.
+- H2H содержит 2-7 матчей с датами и счетами (вместо 0-1).
+- 46/46 тестов проходят.
+
+**Известные ограничения (бесплатный API):**
+- `lookuptable` — только топ-5 команд лиги.
+- Нет статистики игроков.
 
 ---
 
-### Stabilise & Launch Prep 
+### Sprint 3 — Source Automation
+**Цели:**
+- APScheduler job для автоматического периодического sync + enrich (cron).
+- Telegram admin‑команда `/sync` для ручного запуска из бота.
+- Обновление счёта завершённых матчей (home_score, away_score).
+- Автоматическая очистка устаревших матчей (> 2 дней после завершения).
+
+**Acceptance:** автоматический периодический import + enrich матчей; admin может запустить sync из Telegram.
+
+---
+
+### Sprint 4 — Purchase Flow & Analysis Delivery
+**Цели:**
+- Реализовать полный flow: покупка → генерация анализа → выдача пользователю.
+- Idempotency: `purchase_state` workflow (pending → paid → processing → done).
+- Кэширование: повторная покупка отдаёт готовый анализ без повторной генерации.
+- Интеграционные тесты покупки.
+
+**Acceptance:** двойной callback не приводит к двойной генерации; пользователь получает анализ.
+
+---
+
+### Stabilise & Launch Prep
 **Цели:**
 - End‑to‑end QA (20 real match flows).
-- Документация: README, prompts, runbook for ops.
+- Документация: README, runbook for ops.
 - Денежный расчёт: cost-per-analysis estimator.
+- Рассмотреть гибридный подход (API-Football для полных standings).
 
 **Go/No‑Go критерии:** 95% KR1 выполнен; error rate <2%; минимум 50 тестовых пользователей в пилоте.
 
@@ -125,17 +170,20 @@
 
 ---
 
-## Быстрые wins
-1. Подменить prompt на `ANALYSIS_PROMPT.md`.  
-2. Добавить один‑два unit теста на очистку текста.  
-3. Включить логирование длины и truncated флага.
+## Быстрые wins (все выполнены)
+1. ~~Подменить prompt на `ANALYSIS_PROMPT.md`.~~
+2. ~~Добавить unit тесты на очистку текста.~~
+3. ~~Включить логирование длины и truncated флага.~~
+4. ~~Обогащение H2H и standings для качественных анализов.~~
 
 ---
 
 ## Backlog / Nice‑to‑have (после MVP)
-- Hybrid source: scraper fallback.  
-- Few‑shot templates per sport.  
-- Multilanguage support.  
+- Hybrid API: API-Football для полных standings (все команды, не только топ-5).
+- Hybrid source: scraper fallback.
+- Few‑shot templates per sport.
+- Multilanguage support.
 - Subscription model, bulk purchases.
+- Статистика игроков (требует платного API или парсинг).
 
 ---

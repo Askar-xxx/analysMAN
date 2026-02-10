@@ -334,12 +334,7 @@ async def handle_purchase(query, user_id):
             None
         )
         try:
-            analysis_text = await generate_match_analysis(
-                team1=match['team1'],
-                team2=match['team2'],
-                sport=match['sport'],
-                date=match['match_date']
-            )
+            analysis_text = await generate_match_analysis(match)
             # Сохраняем анализ в БД, чтобы не генерировать повторно
             database.update_match_analysis(match_id, analysis_text)
         except Exception as e:

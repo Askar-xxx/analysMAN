@@ -22,7 +22,9 @@ class RateLimitedAPI:
     """Класс для работы с лимитированным API (token bucket)"""
 
     def __init__(self, capacity=25, refill_rate=25):
-        self.api_key = "123"
+        # API key "3" - test/development key (возвращает полные данные)
+        # API key "123" - public patreon key (ограничен: searchevents=2, lookuptable=top5, eventslast=1)
+        self.api_key = "3"
         self.base_url = f"https://www.thesportsdb.com/api/v1/json/{self.api_key}"
         # Token bucket
         self.capacity = capacity
@@ -403,9 +405,9 @@ class SportsDBSyncer:
                              league, venue, api_event_id, status, price,
                              is_active, raw_json, source, home_team_id,
                              away_team_id, home_score, away_score,
-                             match_datetime)
+                             match_datetime, round)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                                    ?, ?, ?, ?, ?, ?, ?)
+                                    ?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (
                             match['sport'],
                             match['team1'],
@@ -425,6 +427,7 @@ class SportsDBSyncer:
                             match.get('home_score'),
                             match.get('away_score'),
                             match.get('match_datetime_utc'),
+                            match.get('round'),
                         ))
                         results['inserted'] += 1
                         logger.info(
@@ -583,6 +586,333 @@ class SportsDBSyncer:
         conn.close()
         return None
 
+    def fetch_h2h(self, match_id: int, team1: str, team2: str) -> Optional[Dict]:
+        """
+        Получить историю личных встреч (H2H) через searchevents.php.
+
+        Args:
+            match_id: ID матча в БД для обновления h2h_json
+            team1: Название команды-хозяина
+            team2: Название команды-гостя
+
+        Returns:
+            Dict с raw JSON от API или None при ошибке
+
+        Примечание:
+            - Сохраняет результат в БД (h2h_json, h2h_fetched_at)
+            - При ошибках API не прерывает выполнение, логирует и возвращает None
+            - Rate limiting: задержка 2.5s после вызова API
+        """
+        try:
+            # searchevents.php принимает формат: "Team1_vs_Team2"
+            # Пример: "Arsenal_vs_Chelsea"
+            # ВАЖНО: очищаем названия команд от суффиксов и заменяем пробелы
+            def clean_team_name_for_h2h(name: str) -> str:
+                """Очистка названия команды для H2H запроса."""
+                # Убираем распространенные суффиксы
+                suffixes = [
+                    ' United', ' City', ' FC', ' AFC', ' CF',
+                    ' Wanderers', ' Rovers', ' Town', ' County',
+                    ' Athletic', ' Albion', ' Villa'
+                ]
+                cleaned = name
+                for suffix in suffixes:
+                    if cleaned.endswith(suffix):
+                        cleaned = cleaned[:-len(suffix)]
+                        break
+                # Заменяем пробелы на подчеркивания
+                return cleaned.replace(' ', '_')
+
+            team1_clean = clean_team_name_for_h2h(team1)
+            team2_clean = clean_team_name_for_h2h(team2)
+            search_query = f"{team1_clean}_vs_{team2_clean}"
+
+            logger.info(f"Получение H2H для {search_query} (оригинал: {team1} vs {team2})")
+            data = self.api.make_request("searchevents.php", {"e": search_query})
+
+            # Задержка после API вызова (rate limiting)
+            time.sleep(2.5)
+
+            if not data:
+                logger.warning(f"Пустой ответ H2H для {search_query}")
+                # Сохраняем пустой JSON чтобы не запрашивать повторно
+                self._save_h2h_to_db(match_id, json.dumps({"events": []}, ensure_ascii=False))
+                return None
+
+            # API возвращает {"event": [...]} для searchevents
+            events = data.get('event', [])
+            if not events:
+                logger.info(f"H2H не найдено для {search_query}")
+                self._save_h2h_to_db(match_id, json.dumps({"events": []}, ensure_ascii=False))
+                return None
+
+            logger.debug(f"API вернул событий: {len(events)}")
+
+            # Фильтруем только завершённые матчи (intHomeScore != None)
+            completed_events = [
+                e for e in events
+                if e.get('intHomeScore') is not None
+            ]
+
+            logger.debug(f"Завершенных матчей после фильтрации: {len(completed_events)}")
+
+            # Берём последние 5-7 матчей
+            h2h_data = {
+                "events": completed_events[:7],
+                "total": len(completed_events)
+            }
+
+            h2h_json = json.dumps(h2h_data, ensure_ascii=False)
+            self._save_h2h_to_db(match_id, h2h_json)
+
+            logger.info(f"H2H сохранено: {len(completed_events[:7])} матчей для {search_query}")
+            return h2h_data
+
+        except Exception as e:
+            logger.error(f"Ошибка при получении H2H для match_id={match_id}: {e}")
+            return None
+
+    def _save_h2h_to_db(self, match_id: int, h2h_json: str):
+        """Сохранить H2H JSON в БД с timestamp"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE matches
+                SET h2h_json = ?, h2h_fetched_at = datetime('now')
+                WHERE id = ?
+            ''', (h2h_json, match_id))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Ошибка сохранения H2H для match_id={match_id}: {e}")
+
+    def fetch_standings(self, match_id: int, league_id: str, season: str,
+                        home_team_id: str, away_team_id: str) -> Optional[Dict]:
+        """
+        Получить турнирную таблицу через lookuptable.php.
+
+        Args:
+            match_id: ID матча в БД для обновления standings_json
+            league_id: ID лиги (из raw_json → idLeague)
+            season: Сезон (из raw_json → strSeason, например "2025-2026")
+            home_team_id: ID команды-хозяина (для фильтрации в таблице)
+            away_team_id: ID команды-гостя (для фильтрации в таблице)
+
+        Returns:
+            Dict с raw JSON от API или None при ошибке
+
+        Примечание:
+            - Бесплатный ключ: только топ-5 команд в таблице
+            - Сохраняет результат в БД (standings_json, standings_fetched_at)
+            - При ошибках API не прерывает выполнение
+            - Rate limiting: задержка 2.5s после вызова API
+        """
+        try:
+            if not league_id or not season:
+                logger.warning(f"Пропуск standings для match_id={match_id}: league_id или season отсутствуют")
+                return None
+
+            logger.info(f"Получение таблицы для league_id={league_id}, season={season}")
+            data = self.api.make_request("lookuptable.php", {"l": league_id, "s": season})
+
+            # Задержка после API вызова (rate limiting)
+            time.sleep(2.5)
+
+            if not data:
+                logger.warning(f"Пустой ответ standings для league={league_id}")
+                # Сохраняем маркер что таблица недоступна
+                self._save_standings_to_db(
+                    match_id,
+                    json.dumps({"table": [], "table_missing": True}, ensure_ascii=False)
+                )
+                return None
+
+            # API возвращает {"table": [...]}
+            table = data.get('table', [])
+            if not table:
+                logger.info(f"Таблица пуста для league={league_id}, season={season}")
+                self._save_standings_to_db(
+                    match_id,
+                    json.dumps({"table": [], "table_missing": True}, ensure_ascii=False)
+                )
+                return None
+
+            # Фильтруем только команды из этого матча (для экономии места)
+            # Но сохраняем всю таблицу для контекста позиций
+            standings_data = {
+                "table": table,
+                "league_id": league_id,
+                "season": season,
+                "total_teams": len(table)
+            }
+
+            standings_json = json.dumps(standings_data, ensure_ascii=False)
+            self._save_standings_to_db(match_id, standings_json)
+
+            logger.info(f"Standings сохранено: {len(table)} команд для league={league_id}")
+            return standings_data
+
+        except Exception as e:
+            logger.error(f"Ошибка при получении standings для match_id={match_id}: {e}")
+            return None
+
+    def _save_standings_to_db(self, match_id: int, standings_json: str):
+        """Сохранить standings JSON в БД с timestamp"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE matches
+                SET standings_json = ?, standings_fetched_at = datetime('now')
+                WHERE id = ?
+            ''', (standings_json, match_id))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Ошибка сохранения standings для match_id={match_id}: {e}")
+
+    def enrich_matches(self, ttl_hours: int = 24) -> Dict:
+        """
+        Обогатить матчи данными H2H и standings.
+
+        Для каждого матча без h2h_json/standings_json или с устаревшими данными
+        (старше ttl_hours часов) вызывает fetch_h2h() и fetch_standings().
+
+        Args:
+            ttl_hours: TTL кэша в часах (по умолчанию 24)
+
+        Returns:
+            Dict со статистикой: {"h2h_enriched": N, "standings_enriched": M, "errors": K}
+
+        Примечание:
+            - Не прерывает выполнение при ошибках API
+            - Rate limiting встроен в fetch_h2h/fetch_standings (2.5s каждый)
+        """
+        stats = {
+            "h2h_enriched": 0,
+            "standings_enriched": 0,
+            "errors": 0
+        }
+
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            # Получаем матчи требующие обогащения
+            # h2h_json IS NULL OR h2h_fetched_at устарел (> ttl_hours)
+            # standings_json IS NULL OR standings_fetched_at устарел
+            cursor.execute(f'''
+                SELECT id, team1, team2, home_team_id, away_team_id,
+                       raw_json, h2h_json, h2h_fetched_at,
+                       standings_json, standings_fetched_at
+                FROM matches
+                WHERE is_active = 1
+                AND (
+                    h2h_json IS NULL
+                    OR datetime(h2h_fetched_at, '+{ttl_hours} hours') < datetime('now')
+                    OR standings_json IS NULL
+                    OR datetime(standings_fetched_at, '+{ttl_hours} hours') < datetime('now')
+                )
+                ORDER BY match_date, match_time
+            ''')
+
+            matches_to_enrich = cursor.fetchall()
+            conn.close()
+
+            if not matches_to_enrich:
+                logger.info("Все матчи уже обогащены актуальными данными")
+                return stats
+
+            logger.info(f"Найдено {len(matches_to_enrich)} матчей для обогащения")
+
+            for match_row in matches_to_enrich:
+                # Конвертируем sqlite3.Row в dict для использования .get()
+                match = dict(match_row)
+                match_id = match['id']
+                team1 = match['team1']
+                team2 = match['team2']
+
+                # Проверка H2H
+                needs_h2h = (
+                    match['h2h_json'] is None or
+                    self._is_data_stale(match['h2h_fetched_at'], ttl_hours)
+                )
+
+                if needs_h2h:
+                    logger.info(f"Обогащение H2H для match_id={match_id}: {team1} vs {team2}")
+                    try:
+                        result = self.fetch_h2h(match_id, team1, team2)
+                        if result is not None:
+                            stats["h2h_enriched"] += 1
+                    except Exception as e:
+                        logger.error(f"Ошибка H2H для match_id={match_id}: {e}")
+                        stats["errors"] += 1
+
+                # Проверка standings
+                needs_standings = (
+                    match['standings_json'] is None or
+                    self._is_data_stale(match['standings_fetched_at'], ttl_hours)
+                )
+
+                if needs_standings:
+                    # Извлекаем league_id и season из raw_json
+                    raw_json = match.get('raw_json')
+                    if raw_json:
+                        try:
+                            event_data = json.loads(raw_json)
+                            league_id = event_data.get('idLeague')
+                            season = event_data.get('strSeason')
+                            home_team_id = match['home_team_id']
+                            away_team_id = match['away_team_id']
+
+                            if league_id and season:
+                                logger.info(
+                                    f"Обогащение standings для match_id={match_id}: "
+                                    f"league={league_id}, season={season}"
+                                )
+                                result = self.fetch_standings(
+                                    match_id, league_id, season,
+                                    home_team_id, away_team_id
+                                )
+                                if result is not None:
+                                    stats["standings_enriched"] += 1
+                            else:
+                                logger.warning(
+                                    f"Пропуск standings для match_id={match_id}: "
+                                    f"нет league_id или season в raw_json"
+                                )
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Ошибка парсинга raw_json для match_id={match_id}: {e}")
+                            stats["errors"] += 1
+                        except Exception as e:
+                            logger.error(f"Ошибка standings для match_id={match_id}: {e}")
+                            stats["errors"] += 1
+
+            logger.info(
+                f"Обогащение завершено: H2H={stats['h2h_enriched']}, "
+                f"Standings={stats['standings_enriched']}, Ошибки={stats['errors']}"
+            )
+            return stats
+
+        except Exception as e:
+            logger.error(f"Критическая ошибка enrich_matches: {e}")
+            stats["errors"] += 1
+            return stats
+
+    def _is_data_stale(self, fetched_at: Optional[str], ttl_hours: int) -> bool:
+        """Проверить устарели ли данные (fetched_at старше ttl_hours)"""
+        if not fetched_at:
+            return True
+        try:
+            fetched_time = datetime.fromisoformat(fetched_at)
+            now = datetime.now()
+            age = (now - fetched_time).total_seconds() / 3600  # в часах
+            return age >= ttl_hours
+        except Exception:
+            return True  # Если ошибка парсинга — считаем устаревшим
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -615,6 +945,11 @@ def main():
         '--only-cache-teams',
         action='store_true',
         help='Только кэшировать команды (без sync матчей)'
+    )
+    parser.add_argument(
+        '--enrich',
+        action='store_true',
+        help='Обогатить матчи данными H2H и standings после sync'
     )
     parser.add_argument(
         '--dry-run',
@@ -743,6 +1078,14 @@ def main():
             print(f"Команд закэшировано: {team_results['cached']}")
             if team_results['errors'] > 0:
                 print(f"Ошибок (429/timeout): {team_results['errors']}")
+        # Обогащаем H2H и standings если запрошено
+        if args.enrich:
+            print("\nОбогащение матчей данными H2H и standings...")
+            enrich_results = syncer.enrich_matches()
+            print(f"H2H обогащено: {enrich_results['h2h_enriched']}")
+            print(f"Standings обогащено: {enrich_results['standings_enriched']}")
+            if enrich_results['errors'] > 0:
+                print(f"Ошибок: {enrich_results['errors']}")
     else:
         print("Dry-run режим - матчи НЕ сохранены")
     return 0

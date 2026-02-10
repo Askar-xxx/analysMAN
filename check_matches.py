@@ -18,8 +18,7 @@ for match in matches:
     print(f"Команды: {match['team1']} vs {match['team2']}")
     print(f"Дата: {match['match_date']}")
     print(f"Время: {match['match_time']}")
-    print(f"Аналитика: {match['analysis_text'][:50] if match['analysis_text']
-                        else 'Нет'}")
+    print(f"Аналитика: {match['analysis_text'][:50] if match['analysis_text'] else 'Нет'}")
     print("-" * 30)
 conn.close()
 # Проверяем матчи на сегодня
