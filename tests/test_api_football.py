@@ -14,7 +14,7 @@ import os
 # Добавляем родительскую папку в путь для импорта
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from sync_api_football import (
+from sync_api_football import (  # noqa: E402
     APIFootballClient,
     QuotaExceededError
 )

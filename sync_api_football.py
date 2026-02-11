@@ -171,7 +171,7 @@ class APIFootballClient:
             return None
 
     def fetch_team_statistics(self, team_id: str, league_id: str,
-                             season: str) -> Optional[Dict]:
+                              season: str) -> Optional[Dict]:
         """
         Получить статистику команды из API-Football.
 
@@ -260,7 +260,7 @@ class APIFootballClient:
             return None
 
     def fetch_injuries(self, team_id: str, league_id: str,
-                      season: str) -> Optional[Dict]:
+                       season: str) -> Optional[Dict]:
         """
         Получить список травмированных игроков.
 
@@ -309,7 +309,6 @@ class APIFootballClient:
 
             for injury in response:
                 player = injury.get('player', {})
-                fixture = injury.get('fixture', {})
 
                 injuries_list.append({
                     "player_name": player.get('name', 'Unknown'),
@@ -337,7 +336,7 @@ class APIFootballClient:
             return None
 
     def fetch_top_scorers(self, league_id: str, season: str,
-                         limit: int = 10) -> Optional[Dict]:
+                          limit: int = 10) -> Optional[Dict]:
         """
         Получить топ-бомбардиров лиги.
 
@@ -557,7 +556,6 @@ def main():
 
     # Тестовые параметры
     CHELSEA_ID = "49"
-    MAN_CITY_ID = "50"
     EPL_ID = "39"
     SEASON = "2024"
 
