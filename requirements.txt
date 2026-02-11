@@ -3,3 +3,4 @@ APScheduler==3.11.2
 pytz==2025.2
 tzlocal==5.3.1
 openai>=1.0.0
+requests>=2.28.0

@@ -23,6 +23,12 @@ jobs:
           pip install -r requirements.txt
           pip install pytest flake8
 
+      - name: Create config stub
+        run: |
+          echo 'TOKEN = "test"' > config.py
+          echo 'DEEPSEEK_API_KEY = "test"' >> config.py
+          echo 'API_FOOTBALL_KEY = "test"' >> config.py
+
       - name: Lint with flake8
         run: |
           flake8 . --max-line-length=120 --exclude=.git,__pycache__,.venv,venv
