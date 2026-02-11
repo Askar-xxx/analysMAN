@@ -1,0 +1,340 @@
+$ python sync_matches.py --mode all --enrich
+Синхронизация матчей (режим: all)
+============================================================
+5 топ-лиг + дополнительные кубки (bulk)
+На неделю вперед
+Время показано в МСК (UTC+3)
+============================================================
+Поиск матчей...
+2026-02-10 18:54:51,950 - __main__ - INFO - Поиск матчей из 10 лиг/кубков на неделю...
+2026-02-10 18:54:51,950 - __main__ - INFO - Метод 1: Получение матчей из: Premier League
+2026-02-10 18:54:52,516 - __main__ - INFO - Найдено 15 событий в Premier League
+2026-02-10 18:54:53,019 - __main__ - INFO - Метод 1: Получение матчей из: La Liga
+2026-02-10 18:54:53,538 - __main__ - INFO - Найдено 15 событий в La Liga
+2026-02-10 18:54:54,039 - __main__ - INFO - Метод 1: Получение матчей из: Bundesliga
+2026-02-10 18:54:54,196 - __main__ - INFO - Найдено 15 событий в Bundesliga
+2026-02-10 18:54:54,698 - __main__ - INFO - Метод 1: Получение матчей из: Serie A
+2026-02-10 18:54:54,854 - __main__ - INFO - Найдено 15 событий в Serie A
+2026-02-10 18:54:55,355 - __main__ - INFO - Метод 1: Получение матчей из: Ligue 1
+2026-02-10 18:54:55,510 - __main__ - INFO - Найдено 15 событий в Ligue 1
+2026-02-10 18:54:56,011 - __main__ - INFO - Метод 1: Получение матчей из: UEFA Champions League
+2026-02-10 18:54:56,168 - __main__ - INFO - Найдено 15 событий в UEFA Champions League
+2026-02-10 18:54:56,669 - __main__ - INFO - Метод 1: Получение матчей из: UEFA Europa League
+2026-02-10 18:54:56,824 - __main__ - INFO - Найдено 15 событий в UEFA Europa League
+2026-02-10 18:54:57,325 - __main__ - INFO - Метод 1: Получение матчей из: FA Cup
+2026-02-10 18:54:57,477 - __main__ - INFO - Найдено 15 событий в FA Cup
+2026-02-10 18:54:57,979 - __main__ - INFO - Метод 1: Получение матчей из: EFL Cup
+2026-02-10 18:54:58,379 - __main__ - INFO - Найдено 15 событий в EFL Cup
+2026-02-10 18:54:58,881 - __main__ - INFO - Метод 1: Получение матчей из: Copa del Rey
+2026-02-10 18:54:59,045 - __main__ - INFO - Найдено 15 событий в Copa del Rey
+2026-02-10 18:54:59,547 - __main__ - INFO - Метод 2: Поиск матчей по дням недели...
+2026-02-10 18:54:59,547 - __main__ - INFO - Поиск матчей на 2026-02-10
+2026-02-10 18:55:00,008 - __main__ - INFO - Поиск матчей на 2026-02-11
+2026-02-10 18:55:00,463 - __main__ - INFO - Поиск матчей на 2026-02-12
+2026-02-10 18:55:00,928 - __main__ - INFO - Поиск матчей на 2026-02-13
+2026-02-10 18:55:01,757 - __main__ - INFO - Поиск матчей на 2026-02-14
+2026-02-10 18:55:02,217 - __main__ - INFO - Поиск матчей на 2026-02-15
+2026-02-10 18:55:03,024 - __main__ - INFO - Поиск матчей на 2026-02-16
+2026-02-10 18:55:03,481 - __main__ - INFO - Поиск матчей на 2026-02-17
+2026-02-10 18:55:03,940 - __main__ - INFO - Метод 3: Дополнительный поиск матчей АПЛ...
+2026-02-10 18:55:08,068 - __main__ - INFO - Итого найдено уникальных матчей на неделю: 25
+Найдено 25 матчей
+
+Матчи (время в МСК):
+======================================================================
+
+10.02.2026 (7 матчей):
+--------------------------------------------------
+
+  English League 1. 16 тур:
+    Mansfield Town - Peterborough United     22:45
+      One Call Stadium
+    Wigan Athletic - Reading                 22:45
+      The Brick Community Stadium
+
+  English League 1. 7 тур:
+    Stevenage - Barnsley                     22:45
+      Lamex Stadium
+
+  English Premier League. 26 тур:
+    Chelsea - Leeds United                   22:30
+      Stamford Bridge
+    Everton - Bournemouth                    22:30
+      Hill Dickinson Stadium
+    Tottenham Hotspur - Newcastle United     22:30
+      Tottenham Hotspur Stadium
+    West Ham United - Manchester United      23:15
+      London Stadium
+
+11.02.2026 (5 матчей):
+--------------------------------------------------
+
+  English Premier League. 26 тур:
+    Aston Villa - Brighton and Hove Albion   22:30
+      Villa Park
+    Crystal Palace - Burnley                 22:30
+      Selhurst Park
+    Manchester City - Fulham                 22:30
+      Etihad Stadium
+    Nottingham Forest - Wolverhampton Wanderers 22:30
+      City Ground
+    Sunderland - Liverpool                   23:15
+      Stadium of Light
+
+12.02.2026 (1 матчей):
+--------------------------------------------------
+
+  English Premier League. 26 тур:
+    Brentford - Arsenal                      23:00
+      Brentford Community Stadium
+
+14.02.2026 (10 матчей):
+--------------------------------------------------
+
+  English League 1. 32 тур:
+    Reading - Wycombe Wanderers              15:30
+      Select Car Leasing Stadium
+    Stevenage - Huddersfield Town            15:30
+      Lamex Stadium
+    Barnsley - AFC Wimbledon                 18:00
+      Oakwell
+    Blackpool - Plymouth Argyle              18:00
+      Bloomfield Road
+    Bradford City - Peterborough United      18:00
+      University of Bradford Stadium
+    Doncaster Rovers - Port Vale             18:00
+      The Eco-Power Stadium
+    Exeter City - Northampton Town           18:00
+      St James Park Exeter
+    Leyton Orient - Mansfield Town           18:00
+      BetWright Stadium
+    Lincoln City - Bolton Wanderers          18:00
+      LNER Stadium
+    Cardiff City - Luton Town                18:00
+      Cardiff City Stadium
+
+17.02.2026 (2 матчей):
+--------------------------------------------------
+
+  English League 1. 33 тур:
+    Barnsley - Peterborough United           22:45
+      Oakwell
+    Blackpool - Mansfield Town               23:00
+      Bloomfield Road
+
+======================================================================
+Всего матчей: 25
+======================================================================
+
+Сохранение в БД: sports_bot.db
+2026-02-10 18:55:08,077 - __main__ - INFO - Добавлен: Chelsea vs Leeds United (22:30 МСК)
+2026-02-10 18:55:08,149 - __main__ - INFO - Добавлен: Everton vs Bournemouth (22:30 МСК)
+2026-02-10 18:55:08,240 - __main__ - INFO - Добавлен: Tottenham Hotspur vs Newcastle United (22:30 МСК)
+2026-02-10 18:55:08,340 - __main__ - INFO - Добавлен: Stevenage vs Barnsley (22:45 МСК)
+2026-02-10 18:55:08,425 - __main__ - INFO - Добавлен: Mansfield Town vs Peterborough United (22:45 МСК)
+2026-02-10 18:55:08,517 - __main__ - INFO - Добавлен: Wigan Athletic vs Reading (22:45 МСК)
+2026-02-10 18:55:08,599 - __main__ - INFO - Добавлен: West Ham United vs Manchester United (23:15 МСК)
+2026-02-10 18:55:08,682 - __main__ - INFO - Добавлен: Aston Villa vs Brighton and Hove Albion (22:30 МСК)
+2026-02-10 18:55:08,757 - __main__ - INFO - Добавлен: Crystal Palace vs Burnley (22:30 МСК)
+2026-02-10 18:55:08,850 - __main__ - INFO - Добавлен: Manchester City vs Fulham (22:30 МСК)
+2026-02-10 18:55:08,926 - __main__ - INFO - Добавлен: Nottingham Forest vs Wolverhampton Wanderers (22:30 МСК)
+2026-02-10 18:55:08,992 - __main__ - INFO - Добавлен: Sunderland vs Liverpool (23:15 МСК)
+2026-02-10 18:55:09,117 - __main__ - INFO - Добавлен: Brentford vs Arsenal (23:00 МСК)
+2026-02-10 18:55:09,201 - __main__ - INFO - Добавлен: Reading vs Wycombe Wanderers (15:30 МСК)
+2026-02-10 18:55:09,282 - __main__ - INFO - Добавлен: Stevenage vs Huddersfield Town (15:30 МСК)
+2026-02-10 18:55:09,350 - __main__ - INFO - Batch checkpoint: 15/25
+2026-02-10 18:55:09,351 - __main__ - INFO - Добавлен: Barnsley vs AFC Wimbledon (18:00 МСК)
+2026-02-10 18:55:09,433 - __main__ - INFO - Добавлен: Blackpool vs Plymouth Argyle (18:00 МСК)
+2026-02-10 18:55:09,500 - __main__ - INFO - Добавлен: Bradford City vs Peterborough United (18:00 МСК)
+2026-02-10 18:55:09,582 - __main__ - INFO - Добавлен: Doncaster Rovers vs Port Vale (18:00 МСК)
+2026-02-10 18:55:09,667 - __main__ - INFO - Добавлен: Exeter City vs Northampton Town (18:00 МСК)
+2026-02-10 18:55:09,732 - __main__ - INFO - Добавлен: Leyton Orient vs Mansfield Town (18:00 МСК)
+2026-02-10 18:55:09,784 - __main__ - INFO - Добавлен: Lincoln City vs Bolton Wanderers (18:00 МСК)
+2026-02-10 18:55:09,857 - __main__ - INFO - Добавлен: Cardiff City vs Luton Town (18:00 МСК)
+2026-02-10 18:55:09,933 - __main__ - INFO - Добавлен: Barnsley vs Peterborough United (22:45 МСК)
+2026-02-10 18:55:10,034 - __main__ - INFO - Добавлен: Blackpool vs Mansfield Town (23:00 МСК)
+
+Результаты:
+============================================================
+Всего обработано: 25
+Новых добавлено: 25
+Пропущено (дубли): 0
+Ошибок: 0
+============================================================
+Матчи успешно сохранены в БД!
+
+Обогащение матчей данными H2H и standings...
+2026-02-10 18:55:10,192 - __main__ - INFO - Найдено 25 матчей для обогащения
+2026-02-10 18:55:10,192 - __main__ - INFO - Обогащение H2H для match_id=151: Chelsea vs Leeds United
+2026-02-10 18:55:10,192 - __main__ - INFO - Получение H2H для Chelsea_vs_Leeds (оригинал: Chelsea vs Leeds United)
+2026-02-10 18:55:12,973 - __main__ - INFO - H2H сохранено: 7 матчей для Chelsea_vs_Leeds
+2026-02-10 18:55:12,974 - __main__ - INFO - Обогащение standings для match_id=151: league=4328, season=2025-2026
+2026-02-10 18:55:12,974 - __main__ - INFO - Получение таблицы для league_id=4328, season=2025-2026
+2026-02-10 18:55:15,805 - __main__ - INFO - Standings сохранено: 5 команд для league=4328
+2026-02-10 18:55:15,806 - __main__ - INFO - Обогащение H2H для match_id=152: Everton vs Bournemouth
+2026-02-10 18:55:15,806 - __main__ - INFO - Получение H2H для Everton_vs_Bournemouth (оригинал: Everton vs Bournemouth)
+2026-02-10 18:55:18,598 - __main__ - INFO - H2H сохранено: 7 матчей для Everton_vs_Bournemouth
+2026-02-10 18:55:18,598 - __main__ - INFO - Обогащение standings для match_id=152: league=4328, season=2025-2026
+2026-02-10 18:55:18,599 - __main__ - INFO - Получение таблицы для league_id=4328, season=2025-2026
+2026-02-10 18:55:21,341 - __main__ - INFO - Standings сохранено: 5 команд для league=4328
+2026-02-10 18:55:21,341 - __main__ - INFO - Обогащение H2H для match_id=153: Tottenham Hotspur vs Newcastle United
+2026-02-10 18:55:21,342 - __main__ - INFO - Получение H2H для Tottenham_Hotspur_vs_Newcastle (оригинал: Tottenham Hotspur vs Newcastle United)
+2026-02-10 18:55:24,109 - __main__ - INFO - H2H сохранено: 2 матчей для Tottenham_Hotspur_vs_Newcastle
+2026-02-10 18:55:24,109 - __main__ - INFO - Обогащение standings для match_id=153: league=4328, season=2025-2026
+2026-02-10 18:55:24,109 - __main__ - INFO - Получение таблицы для league_id=4328, season=2025-2026
+2026-02-10 18:55:26,916 - __main__ - INFO - Standings сохранено: 5 команд для league=4328
+2026-02-10 18:55:26,916 - __main__ - INFO - Обогащение H2H для match_id=154: Stevenage vs Barnsley
+2026-02-10 18:55:26,916 - __main__ - INFO - Получение H2H для Stevenage_vs_Barnsley (оригинал: Stevenage vs Barnsley)
+2026-02-10 18:55:29,656 - __main__ - INFO - H2H сохранено: 2 матчей для Stevenage_vs_Barnsley
+2026-02-10 18:55:29,656 - __main__ - INFO - Обогащение standings для match_id=154: league=4396, season=2025-2026
+2026-02-10 18:55:29,657 - __main__ - INFO - Получение таблицы для league_id=4396, season=2025-2026
+2026-02-10 18:55:32,399 - __main__ - INFO - Standings сохранено: 5 команд для league=4396
+2026-02-10 18:55:32,399 - __main__ - INFO - Обогащение H2H для match_id=155: Mansfield Town vs Peterborough United
+2026-02-10 18:55:32,399 - __main__ - INFO - Получение H2H для Mansfield_vs_Peterborough (оригинал: Mansfield Town vs Peterborough United)
+2026-02-10 18:55:35,054 - __main__ - INFO - H2H не найдено для Mansfield_vs_Peterborough
+2026-02-10 18:55:35,214 - __main__ - INFO - Обогащение standings для match_id=155: league=4396, season=2025-2026
+2026-02-10 18:55:35,215 - __main__ - INFO - Получение таблицы для league_id=4396, season=2025-2026
+2026-02-10 18:55:37,973 - __main__ - INFO - Standings сохранено: 5 команд для league=4396
+2026-02-10 18:55:37,973 - __main__ - INFO - Обогащение H2H для match_id=156: Wigan Athletic vs Reading
+2026-02-10 18:55:37,973 - __main__ - INFO - Получение H2H для Wigan_vs_Reading (оригинал: Wigan Athletic vs Reading)
+2026-02-10 18:55:40,689 - __main__ - INFO - H2H сохранено: 7 матчей для Wigan_vs_Reading
+2026-02-10 18:55:40,690 - __main__ - INFO - Обогащение standings для match_id=156: league=4396, season=2025-2026
+2026-02-10 18:55:40,690 - __main__ - INFO - Получение таблицы для league_id=4396, season=2025-2026
+2026-02-10 18:55:43,456 - __main__ - INFO - Standings сохранено: 5 команд для league=4396
+2026-02-10 18:55:43,456 - __main__ - INFO - Обогащение H2H для match_id=157: West Ham United vs Manchester United
+2026-02-10 18:55:43,456 - __main__ - INFO - Получение H2H для West_Ham_vs_Manchester (оригинал: West Ham United vs Manchester United)
+2026-02-10 18:55:46,197 - __main__ - INFO - H2H сохранено: 4 матчей для West_Ham_vs_Manchester
+2026-02-10 18:55:46,197 - __main__ - INFO - Обогащение standings для match_id=157: league=4328, season=2025-2026
+2026-02-10 18:55:46,197 - __main__ - INFO - Получение таблицы для league_id=4328, season=2025-2026
+2026-02-10 18:55:48,972 - __main__ - INFO - Standings сохранено: 5 команд для league=4328
+2026-02-10 18:55:48,973 - __main__ - INFO - Обогащение H2H для match_id=158: Aston Villa vs Brighton and Hove Albion
+2026-02-10 18:55:48,973 - __main__ - INFO - Получение H2H для Aston_vs_Brighton_and_Hove (оригинал: Aston Villa vs Brighton and Hove Albion)
+2026-02-10 18:55:51,627 - __main__ - INFO - H2H не найдено для Aston_vs_Brighton_and_Hove
+2026-02-10 18:55:51,681 - __main__ - INFO - Обогащение standings для match_id=158: league=4328, season=2025-2026
+2026-02-10 18:55:51,681 - __main__ - INFO - Получение таблицы для league_id=4328, season=2025-2026
+2026-02-10 18:55:54,422 - __main__ - INFO - Standings сохранено: 5 команд для league=4328
+2026-02-10 18:55:54,422 - __main__ - INFO - Обогащение H2H для match_id=159: Crystal Palace vs Burnley
+2026-02-10 18:55:54,423 - __main__ - INFO - Получение H2H для Crystal_Palace_vs_Burnley (оригинал: Crystal Palace vs Burnley)
+2026-02-10 18:55:54,558 - __main__ - WARNING - HTTP 429, backoff 2.0s (attempt 1)
+2026-02-10 18:55:56,691 - __main__ - WARNING - HTTP 429, backoff 4.0s (attempt 2)
+2026-02-10 18:56:00,822 - __main__ - WARNING - HTTP 429, backoff 8.0s (attempt 3)
+2026-02-10 18:56:08,954 - __main__ - WARNING - HTTP 429, backoff 16.0s (attempt 4)
+2026-02-10 18:56:24,955 - __main__ - ERROR - Все 3 попыток исчерпаны для searchevents.php
+2026-02-10 18:56:27,455 - __main__ - WARNING - Пустой ответ H2H для Crystal_Palace_vs_Burnley
+2026-02-10 18:56:27,521 - __main__ - INFO - Обогащение standings для match_id=159: league=4328, season=2025-2026
+2026-02-10 18:56:27,522 - __main__ - INFO - Получение таблицы для league_id=4328, season=2025-2026
+2026-02-10 18:56:27,652 - __main__ - WARNING - HTTP 429, backoff 2.0s (attempt 1)
+2026-02-10 18:56:29,786 - __main__ - WARNING - HTTP 429, backoff 4.0s (attempt 2)
+2026-02-10 18:56:33,920 - __main__ - WARNING - HTTP 429, backoff 8.0s (attempt 3)
+2026-02-10 18:56:42,050 - __main__ - WARNING - HTTP 429, backoff 16.0s (attempt 4)
+2026-02-10 18:56:58,051 - __main__ - ERROR - Все 3 попыток исчерпаны для lookuptable.php
+2026-02-10 18:57:00,552 - __main__ - WARNING - Пустой ответ standings для league=4328
+2026-02-10 18:57:00,612 - __main__ - INFO - Обогащение H2H для match_id=160: Manchester City vs Fulham
+2026-02-10 18:57:00,612 - __main__ - INFO - Получение H2H для Manchester_vs_Fulham (оригинал: Manchester City vs Fulham)
+2026-02-10 18:57:00,742 - __main__ - WARNING - HTTP 429, backoff 2.0s (attempt 1)
+2026-02-10 18:57:02,873 - __main__ - WARNING - HTTP 429, backoff 4.0s (attempt 2)
+2026-02-10 18:57:07,005 - __main__ - WARNING - HTTP 429, backoff 8.0s (attempt 3)
+2026-02-10 18:57:15,135 - __main__ - WARNING - HTTP 429, backoff 16.0s (attempt 4)
+2026-02-10 18:57:31,136 - __main__ - ERROR - Все 3 попыток исчерпаны для searchevents.php
+2026-02-10 18:57:33,637 - __main__ - WARNING - Пустой ответ H2H для Manchester_vs_Fulham
+2026-02-10 18:57:33,703 - __main__ - INFO - Обогащение standings для match_id=160: league=4328, season=2025-2026
+2026-02-10 18:57:33,703 - __main__ - INFO - Получение таблицы для league_id=4328, season=2025-2026
+2026-02-10 18:57:33,838 - __main__ - WARNING - HTTP 429, backoff 2.0s (attempt 1)
+2026-02-10 18:57:35,970 - __main__ - WARNING - HTTP 429, backoff 4.0s (attempt 2)
+2026-02-10 18:57:40,102 - __main__ - WARNING - HTTP 429, backoff 8.0s (attempt 3)
+2026-02-10 18:57:48,234 - __main__ - WARNING - HTTP 429, backoff 16.0s (attempt 4)
+2026-02-10 18:58:04,234 - __main__ - ERROR - Все 3 попыток исчерпаны для lookuptable.php
+2026-02-10 18:58:06,735 - __main__ - WARNING - Пустой ответ standings для league=4328
+2026-02-10 18:58:06,802 - __main__ - INFO - Обогащение H2H для match_id=161: Nottingham Forest vs Wolverhampton Wanderers
+2026-02-10 18:58:06,802 - __main__ - INFO - Получение H2H для Nottingham_Forest_vs_Wolverhampton (оригинал: Nottingham Forest vs Wolverhampton Wanderers)
+2026-02-10 18:58:09,570 - __main__ - INFO - H2H сохранено: 1 матчей для Nottingham_Forest_vs_Wolverhampton
+2026-02-10 18:58:09,570 - __main__ - INFO - Обогащение standings для match_id=161: league=4328, season=2025-2026
+2026-02-10 18:58:09,570 - __main__ - INFO - Получение таблицы для league_id=4328, season=2025-2026
+2026-02-10 18:58:12,544 - __main__ - INFO - Standings сохранено: 5 команд для league=4328
+2026-02-10 18:58:12,544 - __main__ - INFO - Обогащение H2H для match_id=162: Sunderland vs Liverpool
+2026-02-10 18:58:12,544 - __main__ - INFO - Получение H2H для Sunderland_vs_Liverpool (оригинал: Sunderland vs Liverpool)
+2026-02-10 18:58:15,335 - __main__ - INFO - H2H сохранено: 7 матчей для Sunderland_vs_Liverpool
+2026-02-10 18:58:15,335 - __main__ - INFO - Обогащение standings для match_id=162: league=4328, season=2025-2026
+2026-02-10 18:58:15,335 - __main__ - INFO - Получение таблицы для league_id=4328, season=2025-2026
+2026-02-10 18:58:18,076 - __main__ - INFO - Standings сохранено: 5 команд для league=4328
+2026-02-10 18:58:18,077 - __main__ - INFO - Обогащение H2H для match_id=163: Brentford vs Arsenal
+2026-02-10 18:58:18,077 - __main__ - INFO - Получение H2H для Brentford_vs_Arsenal (оригинал: Brentford vs Arsenal)
+2026-02-10 18:58:20,860 - __main__ - INFO - H2H сохранено: 7 матчей для Brentford_vs_Arsenal
+2026-02-10 18:58:20,860 - __main__ - INFO - Обогащение standings для match_id=163: league=4328, season=2025-2026
+2026-02-10 18:58:20,860 - __main__ - INFO - Получение таблицы для league_id=4328, season=2025-2026
+2026-02-10 18:58:23,610 - __main__ - INFO - Standings сохранено: 5 команд для league=4328
+2026-02-10 18:58:23,610 - __main__ - INFO - Обогащение H2H для match_id=164: Reading vs Wycombe Wanderers
+2026-02-10 18:58:23,611 - __main__ - INFO - Получение H2H для Reading_vs_Wycombe (оригинал: Reading vs Wycombe Wanderers)
+2026-02-10 18:58:26,368 - __main__ - INFO - H2H сохранено: 3 матчей для Reading_vs_Wycombe
+2026-02-10 18:58:26,369 - __main__ - INFO - Обогащение standings для match_id=164: league=4396, season=2025-2026
+2026-02-10 18:58:26,369 - __main__ - INFO - Получение таблицы для league_id=4396, season=2025-2026
+2026-02-10 18:58:29,342 - __main__ - INFO - Standings сохранено: 5 команд для league=4396
+2026-02-10 18:58:29,343 - __main__ - INFO - Обогащение H2H для match_id=165: Stevenage vs Huddersfield Town
+2026-02-10 18:58:29,343 - __main__ - INFO - Получение H2H для Stevenage_vs_Huddersfield (оригинал: Stevenage vs Huddersfield Town)
+2026-02-10 18:58:32,094 - __main__ - INFO - H2H сохранено: 1 матчей для Stevenage_vs_Huddersfield
+2026-02-10 18:58:32,094 - __main__ - INFO - Обогащение standings для match_id=165: league=4396, season=2025-2026
+2026-02-10 18:58:32,095 - __main__ - INFO - Получение таблицы для league_id=4396, season=2025-2026
+2026-02-10 18:58:34,859 - __main__ - INFO - Standings сохранено: 5 команд для league=4396
+2026-02-10 18:58:34,860 - __main__ - INFO - Обогащение H2H для match_id=166: Barnsley vs AFC Wimbledon
+2026-02-10 18:58:34,860 - __main__ - INFO - Получение H2H для Barnsley_vs_AFC_Wimbledon (оригинал: Barnsley vs AFC Wimbledon)
+2026-02-10 18:58:37,593 - __main__ - INFO - H2H сохранено: 0 матчей для Barnsley_vs_AFC_Wimbledon
+2026-02-10 18:58:37,594 - __main__ - INFO - Обогащение standings для match_id=166: league=4396, season=2025-2026
+2026-02-10 18:58:37,594 - __main__ - INFO - Получение таблицы для league_id=4396, season=2025-2026
+2026-02-10 18:58:40,335 - __main__ - INFO - Standings сохранено: 5 команд для league=4396
+2026-02-10 18:58:40,335 - __main__ - INFO - Обогащение H2H для match_id=167: Blackpool vs Plymouth Argyle
+2026-02-10 18:58:40,335 - __main__ - INFO - Получение H2H для Blackpool_vs_Plymouth_Argyle (оригинал: Blackpool vs Plymouth Argyle)
+2026-02-10 18:58:43,068 - __main__ - INFO - H2H сохранено: 0 матчей для Blackpool_vs_Plymouth_Argyle
+2026-02-10 18:58:43,068 - __main__ - INFO - Обогащение standings для match_id=167: league=4396, season=2025-2026
+2026-02-10 18:58:43,068 - __main__ - INFO - Получение таблицы для league_id=4396, season=2025-2026
+2026-02-10 18:58:45,872 - __main__ - INFO - Standings сохранено: 5 команд для league=4396
+2026-02-10 18:58:45,872 - __main__ - INFO - Обогащение H2H для match_id=168: Bradford City vs Peterborough United
+2026-02-10 18:58:45,872 - __main__ - INFO - Получение H2H для Bradford_vs_Peterborough (оригинал: Bradford City vs Peterborough United)
+2026-02-10 18:58:48,528 - __main__ - INFO - H2H не найдено для Bradford_vs_Peterborough
+2026-02-10 18:58:48,594 - __main__ - INFO - Обогащение standings для match_id=168: league=4396, season=2025-2026
+2026-02-10 18:58:48,594 - __main__ - INFO - Получение таблицы для league_id=4396, season=2025-2026
+2026-02-10 18:58:51,343 - __main__ - INFO - Standings сохранено: 5 команд для league=4396
+2026-02-10 18:58:51,343 - __main__ - INFO - Обогащение H2H для match_id=169: Doncaster Rovers vs Port Vale
+2026-02-10 18:58:51,343 - __main__ - INFO - Получение H2H для Doncaster_vs_Port_Vale (оригинал: Doncaster Rovers vs Port Vale)
+2026-02-10 18:58:54,093 - __main__ - INFO - H2H сохранено: 7 матчей для Doncaster_vs_Port_Vale
+2026-02-10 18:58:54,093 - __main__ - INFO - Обогащение standings для match_id=169: league=4396, season=2025-2026
+2026-02-10 18:58:54,093 - __main__ - INFO - Получение таблицы для league_id=4396, season=2025-2026
+2026-02-10 18:58:56,893 - __main__ - INFO - Standings сохранено: 5 команд для league=4396
+2026-02-10 18:58:56,893 - __main__ - INFO - Обогащение H2H для match_id=170: Exeter City vs Northampton Town
+2026-02-10 18:58:56,893 - __main__ - INFO - Получение H2H для Exeter_vs_Northampton (оригинал: Exeter City vs Northampton Town)
+2026-02-10 18:58:59,709 - __main__ - INFO - H2H сохранено: 7 матчей для Exeter_vs_Northampton
+2026-02-10 18:58:59,709 - __main__ - INFO - Обогащение standings для match_id=170: league=4396, season=2025-2026
+2026-02-10 18:58:59,710 - __main__ - INFO - Получение таблицы для league_id=4396, season=2025-2026
+2026-02-10 18:59:02,467 - __main__ - INFO - Standings сохранено: 5 команд для league=4396
+2026-02-10 18:59:02,468 - __main__ - INFO - Обогащение H2H для match_id=171: Leyton Orient vs Mansfield Town
+2026-02-10 18:59:02,468 - __main__ - INFO - Получение H2H для Leyton_Orient_vs_Mansfield (оригинал: Leyton Orient vs Mansfield Town)
+2026-02-10 18:59:05,261 - __main__ - INFO - H2H сохранено: 7 матчей для Leyton_Orient_vs_Mansfield
+2026-02-10 18:59:05,261 - __main__ - INFO - Обогащение standings для match_id=171: league=4396, season=2025-2026
+2026-02-10 18:59:05,262 - __main__ - INFO - Получение таблицы для league_id=4396, season=2025-2026
+2026-02-10 18:59:08,008 - __main__ - INFO - Standings сохранено: 5 команд для league=4396
+2026-02-10 18:59:08,009 - __main__ - INFO - Обогащение H2H для match_id=172: Lincoln City vs Bolton Wanderers
+2026-02-10 18:59:08,009 - __main__ - INFO - Получение H2H для Lincoln_vs_Bolton (оригинал: Lincoln City vs Bolton Wanderers)
+2026-02-10 18:59:10,751 - __main__ - INFO - H2H сохранено: 7 матчей для Lincoln_vs_Bolton
+2026-02-10 18:59:10,751 - __main__ - INFO - Обогащение standings для match_id=172: league=4396, season=2025-2026
+2026-02-10 18:59:10,751 - __main__ - INFO - Получение таблицы для league_id=4396, season=2025-2026
+2026-02-10 18:59:13,526 - __main__ - INFO - Standings сохранено: 5 команд для league=4396
+2026-02-10 18:59:13,526 - __main__ - INFO - Обогащение H2H для match_id=173: Cardiff City vs Luton Town
+2026-02-10 18:59:13,526 - __main__ - INFO - Получение H2H для Cardiff_vs_Luton (оригинал: Cardiff City vs Luton Town)
+2026-02-10 18:59:16,284 - __main__ - INFO - H2H сохранено: 7 матчей для Cardiff_vs_Luton
+2026-02-10 18:59:16,284 - __main__ - INFO - Обогащение standings для match_id=173: league=4396, season=2025-2026
+2026-02-10 18:59:16,284 - __main__ - INFO - Получение таблицы для league_id=4396, season=2025-2026
+2026-02-10 18:59:19,025 - __main__ - INFO - Standings сохранено: 5 команд для league=4396
+2026-02-10 18:59:19,026 - __main__ - INFO - Обогащение H2H для match_id=174: Barnsley vs Peterborough United
+2026-02-10 18:59:19,026 - __main__ - INFO - Получение H2H для Barnsley_vs_Peterborough (оригинал: Barnsley vs Peterborough United)
+2026-02-10 18:59:21,768 - __main__ - INFO - H2H сохранено: 1 матчей для Barnsley_vs_Peterborough
+2026-02-10 18:59:21,769 - __main__ - INFO - Обогащение standings для match_id=174: league=4396, season=2025-2026
+2026-02-10 18:59:21,769 - __main__ - INFO - Получение таблицы для league_id=4396, season=2025-2026
+2026-02-10 18:59:24,519 - __main__ - INFO - Standings сохранено: 5 команд для league=4396
+2026-02-10 18:59:24,519 - __main__ - INFO - Обогащение H2H для match_id=175: Blackpool vs Mansfield Town
+2026-02-10 18:59:24,519 - __main__ - INFO - Получение H2H для Blackpool_vs_Mansfield (оригинал: Blackpool vs Mansfield Town)
+2026-02-10 18:59:27,258 - __main__ - INFO - H2H сохранено: 3 матчей для Blackpool_vs_Mansfield
+2026-02-10 18:59:27,259 - __main__ - INFO - Обогащение standings для match_id=175: league=4396, season=2025-2026
+2026-02-10 18:59:27,259 - __main__ - INFO - Получение таблицы для league_id=4396, season=2025-2026
+2026-02-10 18:59:30,025 - __main__ - INFO - Standings сохранено: 5 команд для league=4396
+2026-02-10 18:59:30,025 - __main__ - INFO - Обогащение завершено: H2H=20, Standings=23, Ошибки=0
+H2H обогащено: 20
+Standings обогащено: 23
