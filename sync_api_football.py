@@ -11,6 +11,7 @@ import json
 import logging
 import time
 import requests
+import argparse
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict
 from pathlib import Path
@@ -19,13 +20,22 @@ from threading import Lock
 # Импортируем API ключ из config
 from config import API_FOOTBALL_KEY
 
-# Импортируем database функции для team mapping
+# Импортируем database функции для team mapping и сохранения
 try:
-    from database import get_apif_team_id, set_apif_team_id
+    from database import (
+        get_apif_team_id,
+        set_apif_team_id,
+        update_match_apif_enrichment,
+        update_match_apif_top_scorers,
+        get_all_matches
+    )
 except ImportError:
     # Для тестирования без БД
     get_apif_team_id = None
     set_apif_team_id = None
+    update_match_apif_enrichment = None
+    update_match_apif_top_scorers = None
+    get_all_matches = None
 
 # Настройка логирования
 logging.basicConfig(
@@ -678,6 +688,382 @@ def find_or_search_team_id(sportsdb_team_id: str, team_name: str,
     return apif_team_id
 
 
+def _get_field(obj, field: str, default=None):
+    """
+    Безопасно получить поле из dict или sqlite3.Row.
+
+    Args:
+        obj: dict или sqlite3.Row объект
+        field: Имя поля
+        default: Значение по умолчанию
+
+    Returns:
+        Значение поля или default
+    """
+    try:
+        if field in obj.keys():
+            return obj[field]
+        return default
+    except (KeyError, TypeError, AttributeError):
+        return default
+
+
+def _is_data_fresh(fetched_at_str: str, ttl_hours: int = 12) -> bool:
+    """
+    Проверить актуальность данных по timestamp.
+
+    Args:
+        fetched_at_str: ISO8601 timestamp (например, "2026-02-11T15:30:00")
+        ttl_hours: TTL в часах (по умолчанию 12h)
+
+    Returns:
+        True если данные свежие (< TTL), False если устарели
+    """
+    if not fetched_at_str:
+        return False
+
+    try:
+        fetched_at = datetime.fromisoformat(fetched_at_str)
+        now = datetime.now()
+        age = now - fetched_at
+        is_fresh = age < timedelta(hours=ttl_hours)
+
+        logger.debug(
+            f"Данные {'свежие' if is_fresh else 'устарели'}: "
+            f"возраст {age}, TTL {ttl_hours}h"
+        )
+
+        return is_fresh
+
+    except Exception as e:
+        logger.error(f"Ошибка парсинга timestamp '{fetched_at_str}': {e}")
+        return False
+
+
+def _needs_enrichment(match: Dict, field: str, ttl_hours: int = 12) -> bool:
+    """
+    Проверить нужно ли обогащать поле матча.
+
+    Args:
+        match: Словарь или sqlite3.Row с данными матча из БД
+        field: Имя поля ('stats', 'injuries', 'full_standings', 'top_scorers')
+        ttl_hours: TTL в часах
+
+    Returns:
+        True если нужно обогатить (пусто или устарело)
+    """
+    json_field = f'apif_{field}_json'
+    ts_field = f'apif_{field.replace("full_", "")}_fetched_at'
+
+    # Проверка наличия данных (поддержка dict и Row)
+    try:
+        json_value = match[json_field] if json_field in match.keys() else None
+    except (KeyError, TypeError):
+        json_value = None
+
+    if not json_value:
+        logger.debug(f"Поле {json_field} пусто → нужно обогатить")
+        return True
+
+    # Проверка TTL
+    try:
+        timestamp = match[ts_field] if ts_field in match.keys() else None
+    except (KeyError, TypeError):
+        timestamp = None
+
+    if not _is_data_fresh(timestamp, ttl_hours):
+        logger.debug(f"Поле {json_field} устарело → нужно обогатить")
+        return True
+
+    logger.debug(f"Поле {json_field} актуально → пропускаем")
+    return False
+
+
+# Маппинг лиг TheSportsDB → API-Football
+LEAGUE_MAPPING = {
+    "4328": "39",   # Premier League
+    "4335": "140",  # La Liga
+    "4331": "78",   # Bundesliga
+    "4332": "135",  # Serie A
+    "4334": "61",   # Ligue 1
+}
+
+
+def enrich_match(match: Dict, client: APIFootballClient,
+                 force: bool = False) -> Dict:
+    """
+    Обогатить один матч данными из API-Football.
+
+    Args:
+        match: Словарь с данными матча из БД
+        client: APIFootballClient экземпляр
+        force: Игнорировать TTL и обновить всё
+
+    Returns:
+        Dict со статистикой: {stats_added, injuries_added, ...}
+    """
+    stats = {
+        'stats_added': 0,
+        'injuries_added': 0,
+        'standings_added': 0,
+        'scorers_added': 0,
+        'errors': 0
+    }
+
+    match_id = match['id']
+    home_team = match['team1']
+    away_team = match['team2']
+    home_team_id_sdb = _get_field(match, 'home_team_id')
+    away_team_id_sdb = _get_field(match, 'away_team_id')
+
+    logger.info(f"Обогащение матча #{match_id}: {home_team} vs {away_team}")
+
+    # Определить лигу и сезон
+    league_sdb_id = _get_field(match, 'league_id')
+    season = "2024"  # TODO: определять из match_date
+
+    # Маппинг лиги
+    league_apif_id = LEAGUE_MAPPING.get(str(league_sdb_id)) if league_sdb_id else "39"
+
+    # Получить API-Football team IDs
+    home_team_id_apif = find_or_search_team_id(
+        home_team_id_sdb, home_team, league_apif_id, client
+    ) if home_team_id_sdb else None
+
+    away_team_id_apif = find_or_search_team_id(
+        away_team_id_sdb, away_team, league_apif_id, client
+    ) if away_team_id_sdb else None
+
+    if not home_team_id_apif or not away_team_id_apif:
+        logger.warning(
+            f"Не найдены API-Football team IDs для матча #{match_id}, пропускаем"
+        )
+        stats['errors'] += 1
+        return stats
+
+    # 1. Team Statistics (home + away)
+    if force or _needs_enrichment(match, 'stats', ttl_hours=12):
+        try:
+            home_stats = client.fetch_team_statistics(
+                home_team_id_apif, league_apif_id, season
+            )
+            away_stats = client.fetch_team_statistics(
+                away_team_id_apif, league_apif_id, season
+            )
+
+            if home_stats and away_stats:
+                combined_stats = {
+                    'home_stats': home_stats,
+                    'away_stats': away_stats
+                }
+                update_match_apif_enrichment(match_id, 'stats', combined_stats)
+                stats['stats_added'] = 1
+                logger.info(f"✓ Добавлены team stats для #{match_id}")
+            else:
+                logger.warning(f"Не удалось получить team stats для #{match_id}")
+                stats['errors'] += 1
+
+        except Exception as e:
+            logger.error(f"Ошибка получения stats для #{match_id}: {e}")
+            stats['errors'] += 1
+
+    # 2. Injuries (home + away)
+    if force or _needs_enrichment(match, 'injuries', ttl_hours=12):
+        try:
+            home_injuries = client.fetch_injuries(
+                home_team_id_apif, league_apif_id, season
+            )
+            away_injuries = client.fetch_injuries(
+                away_team_id_apif, league_apif_id, season
+            )
+
+            if home_injuries or away_injuries:
+                combined_injuries = {
+                    'home_injuries': home_injuries.get('injuries', []) if home_injuries else [],
+                    'away_injuries': away_injuries.get('injuries', []) if away_injuries else []
+                }
+                update_match_apif_enrichment(match_id, 'injuries', combined_injuries)
+                stats['injuries_added'] = 1
+                logger.info(f"✓ Добавлены injuries для #{match_id}")
+            else:
+                logger.warning(f"Нет injuries для #{match_id}")
+
+        except Exception as e:
+            logger.error(f"Ошибка получения injuries для #{match_id}: {e}")
+            stats['errors'] += 1
+
+    # 3. Full Standings (если команды вне топ-5 TheSportsDB)
+    if force or _needs_enrichment(match, 'full_standings', ttl_hours=24):
+        # Проверить есть ли standings от TheSportsDB
+        sdb_standings = _get_field(match, 'standings_json')
+
+        if not sdb_standings or 'table_missing' in str(sdb_standings):
+            # Нужны standings от API-Football
+            try:
+                standings = client.fetch_full_standings(league_apif_id, season)
+
+                if standings:
+                    update_match_apif_enrichment(match_id, 'full_standings', standings)
+                    stats['standings_added'] = 1
+                    logger.info(f"✓ Добавлены standings для #{match_id}")
+                else:
+                    logger.warning(f"Не удалось получить standings для #{match_id}")
+                    stats['errors'] += 1
+
+            except Exception as e:
+                logger.error(f"Ошибка получения standings для #{match_id}: {e}")
+                stats['errors'] += 1
+
+    # 4. Top Scorers (1 раз на лигу, кэшируется)
+    if force or _needs_enrichment(match, 'top_scorers', ttl_hours=24):
+        try:
+            scorers = client.fetch_top_scorers(league_apif_id, season)
+
+            if scorers:
+                update_match_apif_top_scorers(match_id, scorers)
+                stats['scorers_added'] = 1
+                logger.info(f"✓ Добавлены top scorers для #{match_id}")
+            else:
+                logger.warning(f"Не удалось получить top scorers для #{match_id}")
+                stats['errors'] += 1
+
+        except Exception as e:
+            logger.error(f"Ошибка получения top scorers для #{match_id}: {e}")
+            stats['errors'] += 1
+
+    return stats
+
+
+def fill_gaps(limit: int = None, force: bool = False,
+              dry_run: bool = False) -> Dict:
+    """
+    Заполнить пробелы в данных матчей через API-Football.
+
+    CLI entry point для обогащения всех матчей.
+
+    Args:
+        limit: Ограничить количество матчей (для тестирования)
+        force: Игнорировать TTL и обновить всё
+        dry_run: Режим preview (не сохранять в БД)
+
+    Returns:
+        Dict со статистикой обогащения
+    """
+    print("=" * 70)
+    print("API-Football: Заполнение пробелов в данных матчей")
+    print("=" * 70)
+    print()
+
+    if not get_all_matches:
+        print("[ERROR] Модуль database не доступен")
+        return {'error': 'Database module not available'}
+
+    # Получить все матчи
+    all_matches = get_all_matches()
+
+    if not all_matches:
+        print("[INFO] Нет матчей в БД")
+        return {'total': 0}
+
+    # Ограничить количество если указано
+    if limit:
+        all_matches = all_matches[:limit]
+
+    print(f"Найдено матчей: {len(all_matches)}")
+    print(f"Режим: {'DRY RUN (preview)' if dry_run else 'LIVE'}")
+    print(f"Force update: {'ДА' if force else 'НЕТ (TTL проверка)'}")
+    print()
+
+    if dry_run:
+        print("[DRY RUN] Изменения НЕ будут сохранены в БД")
+        print()
+
+    client = APIFootballClient()
+
+    total_stats = {
+        'total': len(all_matches),
+        'processed': 0,
+        'stats_added': 0,
+        'injuries_added': 0,
+        'standings_added': 0,
+        'scorers_added': 0,
+        'errors': 0,
+        'skipped': 0
+    }
+
+    for i, match in enumerate(all_matches, 1):
+        match_id = match['id']
+        home = match['team1']
+        away = match['team2']
+
+        print(f"[{i}/{len(all_matches)}] Матч #{match_id}: {home} vs {away}")
+
+        if dry_run:
+            # Preview: только показать что будет обогащено
+            needs_stats = force or _needs_enrichment(match, 'stats', 12)
+            needs_injuries = force or _needs_enrichment(match, 'injuries', 12)
+            needs_standings = force or _needs_enrichment(match, 'full_standings', 24)
+            needs_scorers = force or _needs_enrichment(match, 'top_scorers', 24)
+
+            if needs_stats or needs_injuries or needs_standings or needs_scorers:
+                print("  > Будет обогащено:")
+                if needs_stats:
+                    print("    - team stats")
+                if needs_injuries:
+                    print("    - injuries")
+                if needs_standings:
+                    print("    - standings")
+                if needs_scorers:
+                    print("    - top scorers")
+            else:
+                print("  > Пропущено (данные актуальны)")
+                total_stats['skipped'] += 1
+
+            total_stats['processed'] += 1
+            continue
+
+        # LIVE mode: обогащение
+        try:
+            match_stats = enrich_match(match, client, force=force)
+
+            total_stats['stats_added'] += match_stats['stats_added']
+            total_stats['injuries_added'] += match_stats['injuries_added']
+            total_stats['standings_added'] += match_stats['standings_added']
+            total_stats['scorers_added'] += match_stats['scorers_added']
+            total_stats['errors'] += match_stats['errors']
+            total_stats['processed'] += 1
+
+            print(f"  [OK] Обработано (добавлено: {sum(match_stats.values())} полей)")
+
+        except QuotaExceededError as e:
+            print(f"  [ERROR] Квота исчерпана: {e}")
+            print("\nОстановка: достигнут дневной лимит API")
+            break
+
+        except Exception as e:
+            logger.error(f"Ошибка обогащения матча #{match_id}: {e}")
+            total_stats['errors'] += 1
+            print(f"  [ERROR] {e}")
+
+        print()
+
+    # Итоговая статистика
+    print("=" * 70)
+    print("ИТОГО:")
+    print("=" * 70)
+    print(f"Обработано матчей:     {total_stats['processed']}/{total_stats['total']}")
+    print(f"Team stats добавлено:  {total_stats['stats_added']}")
+    print(f"Injuries добавлено:    {total_stats['injuries_added']}")
+    print(f"Standings добавлено:   {total_stats['standings_added']}")
+    print(f"Top scorers добавлено: {total_stats['scorers_added']}")
+    print(f"Ошибок:                {total_stats['errors']}")
+    print(f"Пропущено:             {total_stats['skipped']}")
+    print(f"Использовано запросов: {client.requests_made}/{client.daily_limit}")
+    print("=" * 70)
+
+    return total_stats
+
+
 def main():
     """
     Тестирование всех endpoints и сбор примеров JSON.
@@ -813,8 +1199,44 @@ def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="API-Football integration tool"
+    )
+    parser.add_argument(
+        '--fill-gaps',
+        action='store_true',
+        help='Заполнить пробелы в данных матчей'
+    )
+    parser.add_argument(
+        '--limit',
+        type=int,
+        help='Ограничить количество матчей (для тестирования)'
+    )
+    parser.add_argument(
+        '--force',
+        action='store_true',
+        help='Игнорировать TTL и обновить всё'
+    )
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Режим preview (не сохранять в БД)'
+    )
+
+    args = parser.parse_args()
+
     try:
-        main()
+        if args.fill_gaps:
+            # CLI mode: fill gaps
+            fill_gaps(
+                limit=args.limit,
+                force=args.force,
+                dry_run=args.dry_run
+            )
+        else:
+            # Demo mode: test endpoints
+            main()
+
     except KeyboardInterrupt:
         print("\n\nПрервано пользователем")
     except Exception as e:
