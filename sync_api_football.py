@@ -19,6 +19,14 @@ from threading import Lock
 # Импортируем API ключ из config
 from config import API_FOOTBALL_KEY
 
+# Импортируем database функции для team mapping
+try:
+    from database import get_apif_team_id, set_apif_team_id
+except ImportError:
+    # Для тестирования без БД
+    get_apif_team_id = None
+    set_apif_team_id = None
+
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
@@ -512,6 +520,72 @@ class APIFootballClient:
             logger.error(f"Ошибка парсинга standings: {e}")
             return None
 
+    def search_team_by_name(self, team_name: str,
+                            league_id: str = None) -> Optional[str]:
+        """
+        Найти API-Football team_id по названию команды.
+
+        Endpoint: GET /teams
+
+        Args:
+            team_name: Название команды (например, "Chelsea")
+            league_id: ID лиги для фильтрации (опционально)
+
+        Returns:
+            team_id (str) или None если не найдено
+
+        Пример использования:
+            team_id = client.search_team_by_name("Chelsea", "39")
+            # Вернёт "49"
+        """
+        params = {"search": team_name}
+
+        data = self.make_request("teams", params)
+
+        if not data or 'response' not in data:
+            logger.warning(f"Не найдено команд для '{team_name}'")
+            return None
+
+        teams = data['response']
+
+        if not teams:
+            logger.warning(f"Нет результатов поиска для '{team_name}'")
+            return None
+
+        # Если указана лига, фильтруем результаты
+        if league_id:
+            filtered = []
+            for team in teams:
+                # Проверяем доступные лиги команды
+                team_id = str(team.get('team', {}).get('id', ''))
+                team_full_name = team.get('team', {}).get('name', '')
+
+                # Некоторые команды возвращают список venue с league_id
+                # Простая проверка: если team найден, берём первый
+                filtered.append({
+                    'id': team_id,
+                    'name': team_full_name
+                })
+
+            if filtered:
+                result_id = filtered[0]['id']
+                result_name = filtered[0]['name']
+                logger.info(
+                    f"Найдена команда: '{result_name}' (ID: {result_id})"
+                )
+                return result_id
+        else:
+            # Берём первый результат
+            team_id = str(teams[0].get('team', {}).get('id', ''))
+            team_full_name = teams[0].get('team', {}).get('name', '')
+            logger.info(
+                f"Найдена команда: '{team_full_name}' (ID: {team_id})"
+            )
+            return team_id
+
+        logger.warning(f"Не найдено подходящих команд для '{team_name}'")
+        return None
+
 
 class QuotaExceededError(Exception):
     """Исключение при превышении дневной квоты"""
@@ -536,6 +610,72 @@ def save_example_json(data: Dict, filename: str, output_dir: str = "api_examples
         json.dump(data, f, ensure_ascii=False, indent=2)
 
     logger.info(f"Пример сохранён: {file_path}")
+
+
+def find_or_search_team_id(sportsdb_team_id: str, team_name: str,
+                           league_id: str = None,
+                           client: APIFootballClient = None) -> Optional[str]:
+    """
+    Гибридный поиск API-Football team_id.
+
+    Алгоритм:
+    1. Проверить БД: есть ли apif_team_id для этой команды?
+    2. Если есть → вернуть
+    3. Если нет → поиск через API
+    4. Сохранить в БД
+    5. Вернуть ID
+
+    Args:
+        sportsdb_team_id: TheSportsDB team_id команды
+        team_name: Название команды для поиска
+        league_id: API-Football league_id (опционально)
+        client: APIFootballClient экземпляр (создаст новый если None)
+
+    Returns:
+        API-Football team_id (str) или None если не найдено
+
+    Пример:
+        team_id = find_or_search_team_id("133604", "Arsenal", "39")
+        # Вернёт "49" (сначала проверит БД, потом API если нужно)
+    """
+    # Шаг 1: Проверка БД
+    if get_apif_team_id:
+        cached_id = get_apif_team_id(sportsdb_team_id)
+        if cached_id:
+            logger.info(
+                f"Team ID найден в БД: {team_name} → {cached_id} "
+                f"(TheSportsDB: {sportsdb_team_id})"
+            )
+            return cached_id
+
+    # Шаг 2: Поиск через API
+    logger.info(
+        f"Team ID не найден в БД, поиск через API: '{team_name}'"
+    )
+
+    if client is None:
+        client = APIFootballClient()
+
+    apif_team_id = client.search_team_by_name(team_name, league_id)
+
+    if not apif_team_id:
+        logger.warning(
+            f"Не удалось найти API-Football team_id для '{team_name}'"
+        )
+        return None
+
+    # Шаг 3: Сохранение в БД
+    if set_apif_team_id:
+        try:
+            set_apif_team_id(sportsdb_team_id, apif_team_id)
+            logger.info(
+                f"Сохранён mapping: {team_name} → {apif_team_id} "
+                f"(TheSportsDB: {sportsdb_team_id})"
+            )
+        except Exception as e:
+            logger.error(f"Ошибка сохранения mapping: {e}")
+
+    return apif_team_id
 
 
 def main():
