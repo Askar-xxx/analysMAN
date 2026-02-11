@@ -440,6 +440,79 @@ class TestQuotaExceededError:
         assert str(error) == "Test error message"
 
 
+class TestTeamMapping:
+    """Тесты для функций team ID mapping (Issue #6)"""
+
+    @patch('sync_api_football.APIFootballClient.make_request')
+    def test_search_team_by_name_success(self, mock_request):
+        """Тест поиска команды по названию"""
+        # Mock ответ API
+        mock_request.return_value = {
+            "response": [
+                {
+                    "team": {
+                        "id": 49,
+                        "name": "Chelsea"
+                    }
+                }
+            ]
+        }
+
+        client = APIFootballClient(api_key="test_key")
+        team_id = client.search_team_by_name("Chelsea", league_id="39")
+
+        assert team_id == "49"
+        mock_request.assert_called_once_with("teams", {"search": "Chelsea"})
+
+    @patch('sync_api_football.APIFootballClient.make_request')
+    def test_search_team_by_name_not_found(self, mock_request):
+        """Тест когда команда не найдена"""
+        mock_request.return_value = {
+            "response": []
+        }
+
+        client = APIFootballClient(api_key="test_key")
+        team_id = client.search_team_by_name("NonExistentTeam")
+
+        assert team_id is None
+
+    @patch('sync_api_football.APIFootballClient.make_request')
+    def test_search_team_by_name_multiple_results(self, mock_request):
+        """Тест когда найдено несколько команд (берём первую)"""
+        mock_request.return_value = {
+            "response": [
+                {"team": {"id": 15653, "name": "Wigan Athletic U23"}},
+                {"team": {"id": 53, "name": "Wigan Athletic"}}
+            ]
+        }
+
+        client = APIFootballClient(api_key="test_key")
+        team_id = client.search_team_by_name("Wigan Athletic")
+
+        # Должен вернуть первый результат
+        assert team_id == "15653"
+
+    def test_league_mapping_exists(self):
+        """Тест наличия маппинга лиг"""
+        from sync_api_football import LEAGUE_MAPPING
+
+        # Проверяем наличие топ-5 лиг
+        assert "4328" in LEAGUE_MAPPING  # Premier League
+        assert LEAGUE_MAPPING["4328"] == "39"
+
+        assert "4335" in LEAGUE_MAPPING  # La Liga
+        assert LEAGUE_MAPPING["4335"] == "140"
+
+        assert "4331" in LEAGUE_MAPPING  # Bundesliga
+        assert LEAGUE_MAPPING["4331"] == "78"
+
+        assert "4332" in LEAGUE_MAPPING  # Serie A
+        assert LEAGUE_MAPPING["4332"] == "135"
+
+        assert "4334" in LEAGUE_MAPPING  # Ligue 1
+        assert LEAGUE_MAPPING["4334"] == "61"
+
+
 # === Интеграционные тесты (опционально) ===
 
 @pytest.mark.integration
