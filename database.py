@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from datetime import datetime, timedelta
 
@@ -35,6 +36,14 @@ def init_db():
             h2h_fetched_at TEXT,
             standings_json TEXT,
             standings_fetched_at TEXT,
+            apif_stats_json TEXT,
+            apif_stats_fetched_at TEXT,
+            apif_injuries_json TEXT,
+            apif_injuries_fetched_at TEXT,
+            apif_full_standings_json TEXT,
+            apif_standings_fetched_at TEXT,
+            apif_top_scorers_json TEXT,
+            apif_scorers_fetched_at TEXT,
             status TEXT DEFAULT 'Scheduled',
             analysis_text TEXT,
             price INTEGER DEFAULT 150,
@@ -52,7 +61,8 @@ def init_db():
             sport TEXT DEFAULT 'football',
             raw_json TEXT,
             source TEXT,
-            cached_at TEXT DEFAULT CURRENT_TIMESTAMP
+            cached_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            apif_team_id TEXT
         )
     ''')
 
@@ -115,6 +125,14 @@ def init_db():
         ('h2h_fetched_at', 'TEXT'),
         ('standings_json', 'TEXT'),
         ('standings_fetched_at', 'TEXT'),
+        ('apif_stats_json', 'TEXT'),
+        ('apif_stats_fetched_at', 'TEXT'),
+        ('apif_injuries_json', 'TEXT'),
+        ('apif_injuries_fetched_at', 'TEXT'),
+        ('apif_full_standings_json', 'TEXT'),
+        ('apif_standings_fetched_at', 'TEXT'),
+        ('apif_top_scorers_json', 'TEXT'),
+        ('apif_scorers_fetched_at', 'TEXT'),
     ]
     for column_name, column_type in new_columns:
         if column_name not in existing_columns:
@@ -123,6 +141,16 @@ def init_db():
                 print(f"✅ Добавлено поле {column_name} в таблицу matches")
             except sqlite3.OperationalError as e:
                 print(f"⚠️ Не удалось добавить поле {column_name}: {e}")
+    # Миграция таблицы teams: добавляем apif_team_id
+    cursor.execute("PRAGMA table_info(teams)")
+    teams_columns = [col[1] for col in cursor.fetchall()]
+    if 'apif_team_id' not in teams_columns:
+        try:
+            cursor.execute('ALTER TABLE teams ADD COLUMN apif_team_id TEXT')
+            print("✅ Добавлено поле apif_team_id в таблицу teams")
+        except sqlite3.OperationalError as e:
+            print(f"⚠️ Не удалось добавить поле apif_team_id: {e}")
+
     # Индексы создаём ПОСЛЕ миграции, чтобы столбцы гарантированно существовали
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_match_date ON matches(match_date)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_api_event_id ON matches(api_event_id)')
@@ -441,6 +469,72 @@ def update_match_analysis(match_id, analysis_text):
         SET analysis_text = ?
         WHERE id = ?
     ''', (analysis_text, match_id))
+    conn.commit()
+    conn.close()
+
+
+def update_match_apif_enrichment(match_id, field_name, json_data):
+    """
+    Обновить поле обогащения API-Football для матча.
+
+    Args:
+        match_id: ID матча
+        field_name: Имя поля без суффикса (stats, injuries, full_standings)
+        json_data: Данные для сохранения (dict → сериализуется в JSON)
+    """
+    allowed = ('stats', 'injuries', 'full_standings')
+    if field_name not in allowed:
+        raise ValueError(f"Недопустимое поле: {field_name}. Допустимые: {allowed}")
+
+    json_col = f'apif_{field_name}_json'
+    ts_col = f'apif_{field_name}_fetched_at'
+    now = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(f'''
+        UPDATE matches
+        SET {json_col} = ?, {ts_col} = ?
+        WHERE id = ?
+    ''', (json.dumps(json_data, ensure_ascii=False), now, match_id))
+    conn.commit()
+    conn.close()
+
+
+def update_match_apif_top_scorers(match_id, json_data):
+    """Обновить топ-бомбардиров лиги для матча."""
+    now = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE matches
+        SET apif_top_scorers_json = ?, apif_scorers_fetched_at = ?
+        WHERE id = ?
+    ''', (json.dumps(json_data, ensure_ascii=False), now, match_id))
+    conn.commit()
+    conn.close()
+
+
+def get_apif_team_id(sportsdb_team_id):
+    """Получить API-Football team_id по TheSportsDB team_id."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT apif_team_id FROM teams WHERE team_id = ?',
+        (sportsdb_team_id,)
+    )
+    result = cursor.fetchone()
+    conn.close()
+    return result['apif_team_id'] if result and result['apif_team_id'] else None
+
+
+def set_apif_team_id(sportsdb_team_id, apif_team_id):
+    """Сохранить mapping TheSportsDB → API-Football team_id."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE teams SET apif_team_id = ? WHERE team_id = ?
+    ''', (str(apif_team_id), str(sportsdb_team_id)))
     conn.commit()
     conn.close()
 
