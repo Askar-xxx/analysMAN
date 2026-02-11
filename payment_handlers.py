@@ -1,5 +1,4 @@
 import logging
-import urllib.parse
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ContextTypes,
@@ -11,7 +10,6 @@ from telegram.ext import (
 import database
 import keyboards
 from utils import safe_edit_message
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 

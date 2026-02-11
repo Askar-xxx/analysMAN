@@ -4,6 +4,7 @@
 
 from sync_api_football import APIFootballClient, find_or_search_team_id
 
+
 def test_search_team():
     """Тест поиска команды через API"""
     print("=" * 70)

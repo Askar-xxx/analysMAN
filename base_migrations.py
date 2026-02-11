@@ -1,29 +1,30 @@
 # database.py (КОРОТКАЯ ВЕРСИЯ ДЛЯ МИГРАЦИИ)
 import sqlite3
-from datetime import datetime, timedelta
+
 
 def get_db_connection():
     conn = sqlite3.connect('sports_bot.db', check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
+
 def migrate_database():
     """Добавить недостающие поля в таблицу matches"""
     conn = get_db_connection()
     cursor = conn.cursor()
-    
+
     print("🔄 Миграция базы данных sports_bot.db...")
-    
+
     # 1. Проверяем текущую структуру
     cursor.execute("PRAGMA table_info(matches)")
     columns = cursor.fetchall()
-    
+
     print("\n📊 Текущие поля в таблице 'matches':")
     existing_columns = []
     for col in columns:
         print(f"  - {col[1]}: {col[2]}")
         existing_columns.append(col[1])
-    
+
     # 2. Определяем какие поля нужно добавить
     fields_to_add = [
         ('league', 'TEXT'),
@@ -32,7 +33,7 @@ def migrate_database():
         ('status', 'TEXT DEFAULT "Scheduled"'),
         ('created_at', 'TEXT DEFAULT CURRENT_TIMESTAMP')
     ]
-    
+
     # 3. Добавляем недостающие поля
     added_fields = []
     for field_name, field_type in fields_to_add:
@@ -50,7 +51,7 @@ def migrate_database():
         try:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_api_event_id ON matches(api_event_id)')
             print("✅ Создан индекс для api_event_id")
-        except:
+        except Exception:
             print("⚠️ Не удалось создать индекс для api_event_id")
     conn.commit()
     # 5. Показываем итоговую структуру
@@ -66,6 +67,7 @@ def migrate_database():
         print("\n✅ Все поля уже добавлены, миграция не требуется")
 
     return True
+
 
 if __name__ == "__main__":
     migrate_database()

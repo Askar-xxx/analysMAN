@@ -438,29 +438,6 @@ def get_available_dates_with_matches(sport):
     return [date['match_date'] for date in dates]
 
 
-# Функция для получения матчей на конкретную дату
-def get_matches_by_date(sport, match_date):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT * FROM matches
-        WHERE sport = ? AND match_date = ? AND is_active = 1
-        ORDER BY match_time
-    ''', (sport, match_date))
-    matches = cursor.fetchall()
-    conn.close()
-    return matches
-
-
-def get_match_by_id(match_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM matches WHERE id = ?', (match_id,))
-    match = cursor.fetchone()
-    conn.close()
-    return match
-
-
 def update_match_analysis(match_id, analysis_text):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -545,15 +522,6 @@ def delete_match(match_id):
     cursor.execute('DELETE FROM matches WHERE id = ?', (match_id,))
     conn.commit()
     conn.close()
-
-
-def get_all_matches():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM matches ORDER BY match_date DESC, match_time DESC')
-    matches = cursor.fetchall()
-    conn.close()
-    return matches
 
 
 # Функции для пользователей
@@ -684,7 +652,7 @@ def add_admin(user_id, username, added_by):
         ''', (user_id, username, added_by))
         conn.commit()
         return True
-    except:
+    except Exception:
         return False
     finally:
         conn.close()

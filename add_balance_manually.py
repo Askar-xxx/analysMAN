@@ -9,13 +9,13 @@ def add_balance_manually():
     user_id = input("Введите ID пользователя: ")
     try:
         user_id = int(user_id)
-    except:
+    except ValueError:
         print("❌ ID должен быть числом")
         return
     amount = input("Введите сумму для пополнения: ")
     try:
         amount = int(amount)
-    except:
+    except ValueError:
         print("❌ Сумма должна быть числом")
         return
     if amount <= 0:
@@ -26,6 +26,7 @@ def add_balance_manually():
     new_balance = database.get_user_balance(user_id)
     print(f"✅ Баланс пользователя {user_id} пополнен на {amount} руб.")
     print(f"💰 Новый баланс: {new_balance} руб.")
+
 
 if __name__ == '__main__':
     add_balance_manually()

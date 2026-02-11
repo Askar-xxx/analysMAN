@@ -6,13 +6,11 @@ import keyboards
 from utils import safe_edit_message, send_main_menu, format_match_info
 from ai_generator import generate_match_analysis
 from datetime import datetime, timedelta
-import urllib.parse
 
 # Импорты из payment_handlers
 from payment_handlers import (
     handle_deposit_menu,
     handle_deposit_amount,
-    check_deposit_status
 )
 
 MENU_MAIN = 'main'
@@ -262,7 +260,7 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             # По умолчанию возвращаемся в главное меню
             await send_main_menu(update, context)
-    except Exception as e:
+    except Exception:
         # В случае ошибки возвращаемся в главное меню
         await send_main_menu(update, context)
 
@@ -279,7 +277,7 @@ async def handle_match_detail(query, user_id, match_id):
     text = format_match_info(match)
     if has_purchased:
         text += f"\n📊 *Анализ:*\n{match['analysis_text']}\n\n"
-        text += f"✅ Вы уже приобрели этот анализ"
+        text += "✅ Вы уже приобрели этот анализ"
     else:
         text += f"\n💰 *Цена анализа:* {match['price']} руб.\n\n"
         text += "Для просмотра анализа необходимо приобрести его."
@@ -291,7 +289,9 @@ async def handle_match_detail(query, user_id, match_id):
                                               callback_data='back_to_menu')])
     else:
         if user_balance >= match['price']:
-            keyboard.append([InlineKeyboardButton(f"✅ Купить анализ за {match['price']} руб.", callback_data=f'buy_{match_id}')])
+            btn_text = f"✅ Купить анализ за {match['price']} руб."
+            keyboard.append([InlineKeyboardButton(
+                btn_text, callback_data=f'buy_{match_id}')])
         else:
             keyboard.append([InlineKeyboardButton("💳 Пополнить баланс",
                                                   callback_data='deposit')])
@@ -330,7 +330,9 @@ async def handle_purchase(query, user_id):
     if not analysis_text:
         await safe_edit_message(
             query,
-            f"⏳ Генерируем анализ для матча {match['team1']} vs {match['team2']}...\n\nПожалуйста, подождите 10-15 секунд.",
+            f"⏳ Генерируем анализ для матча "
+            f"{match['team1']} vs {match['team2']}...\n\n"
+            f"Пожалуйста, подождите 10-15 секунд.",
             None
         )
         try:
@@ -349,7 +351,7 @@ async def handle_purchase(query, user_id):
     # Выполняем покупку (списание средств)
     success, message = database.purchase_analysis(user_id, match_id)
     if success:
-        text = f"✅ Покупка успешна!\n\n"
+        text = "✅ Покупка успешна!\n\n"
         text += f"🏆 Матч: {match['team1']} vs {match['team2']}\n"
         text += f"💰 Списано: {match['price']} руб.\n"
         text += f"💳 Новый баланс: {database.get_user_balance(user_id)} руб.\n\n"
