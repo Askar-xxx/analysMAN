@@ -4,11 +4,16 @@ import os
 import sqlite3
 import json
 import tempfile
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sync_matches import SportsDBSyncer  # noqa: E402
+
+# Генерируем актуальные даты для моков (today и tomorrow)
+_today = datetime.now().date()
+_tomorrow = _today + timedelta(days=1)
 
 # Мок-ответ API (3 матча)
 MOCK_EVENTS_RESPONSE = {
@@ -18,7 +23,7 @@ MOCK_EVENTS_RESPONSE = {
             "strEvent": "Arsenal vs Chelsea",
             "strHomeTeam": "Arsenal",
             "strAwayTeam": "Chelsea",
-            "dateEvent": "2025-06-01",
+            "dateEvent": _today.strftime('%Y-%m-%d'),
             "strTime": "15:00:00",
             "strLeague": "Premier League",
             "intRound": "30",
@@ -34,7 +39,7 @@ MOCK_EVENTS_RESPONSE = {
             "strEvent": "Liverpool vs Man Utd",
             "strHomeTeam": "Liverpool",
             "strAwayTeam": "Manchester United",
-            "dateEvent": "2025-06-01",
+            "dateEvent": _today.strftime('%Y-%m-%d'),
             "strTime": "17:30:00",
             "strLeague": "Premier League",
             "intRound": "30",
@@ -50,7 +55,7 @@ MOCK_EVENTS_RESPONSE = {
             "strEvent": "Tottenham vs Man City",
             "strHomeTeam": "Tottenham",
             "strAwayTeam": "Manchester City",
-            "dateEvent": "2025-06-02",
+            "dateEvent": _tomorrow.strftime('%Y-%m-%d'),
             "strTime": "20:00:00",
             "strLeague": "Premier League",
             "intRound": "30",
