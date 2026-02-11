@@ -122,9 +122,13 @@ class SportsDBSyncer:
             return self.get_week_matches()
 
     def get_top3_matches(self) -> List[Dict]:
-        """Получить top-N матчей (default mode) из первых лиг"""
+        """Получить top-N матчей ТОЛЬКО НА СЕГОДНЯ + ЗАВТРА (default mode) из первых лиг"""
         all_matches = []
-        logger.info(f"Режим top3: получение {self.limit} матчей...")
+        today = datetime.now().date()
+        tomorrow = today + timedelta(days=1)
+
+        logger.info(f"Режим top3: получение {self.limit} матчей только на {today} и {tomorrow}...")
+
         for league in self.top_leagues:
             if len(all_matches) >= self.limit:
                 break
@@ -139,8 +143,15 @@ class SportsDBSyncer:
                     if len(all_matches) >= self.limit:
                         break
                     match = self._parse_event(event)
-                    if match and self._is_within_week(match['match_date']):
-                        all_matches.append(match)
+                    if not match:
+                        continue
+
+                    # ФИЛЬТР: только сегодня + завтра
+                    match_date = match['match_date']
+                    if match_date not in [today, tomorrow]:
+                        continue
+
+                    all_matches.append(match)
                 time.sleep(0.5)
             except Exception as e:
                 logger.error(f"Ошибка для {league['name']}: {e}")
@@ -151,13 +162,16 @@ class SportsDBSyncer:
 
     def get_week_matches(self) -> List[Dict]:
         """
-        Получить ВСЕ матчи из всех лиг и кубков на неделю вперед
+        Получить ВСЕ матчи из всех лиг и кубков ТОЛЬКО НА СЕГОДНЯ + ЗАВТРА
         Используем два метода для получения полного расписания
         """
         all_matches = []
         all_leagues = self.top_leagues + self.cups
+        today = datetime.now().date()
+        tomorrow = today + timedelta(days=1)
+
         logger.info(
-            f"Поиск матчей из {len(all_leagues)} лиг/кубков на неделю..."
+            f"Поиск матчей из {len(all_leagues)} лиг/кубков только на {today} и {tomorrow}..."
         )
         # МЕТОД 1: Получение матчей по лигам (eventsnextleague.php)
         for league in all_leagues:
@@ -178,16 +192,22 @@ class SportsDBSyncer:
                 )
                 for event in events:
                     match = self._parse_event(event)
-                    if match and self._is_within_week(match['match_date']):
-                        all_matches.append(match)
+                    if not match:
+                        continue
+
+                    # ФИЛЬТР: только сегодня + завтра
+                    match_date = match['match_date']
+                    if match_date not in [today, tomorrow]:
+                        continue
+
+                    all_matches.append(match)
                 time.sleep(0.5)
             except Exception as e:
                 logger.error(f"Ошибка для {league['name']}: {e}")
                 continue
-        # МЕТОД 2: Получение матчей по дням (eventsday.php)
-        logger.info("Метод 2: Поиск матчей по дням недели...")
-        today = datetime.now().date()
-        for day_offset in range(8):  # Сегодня + 7 дней
+        # МЕТОД 2: Получение матчей по дням (eventsday.php) - ТОЛЬКО сегодня + завтра
+        logger.info("Метод 2: Поиск матчей по дням (сегодня + завтра)...")
+        for day_offset in range(2):  # Сегодня + завтра (0, 1)
             current_date = today + timedelta(days=day_offset)
             try:
                 logger.info(f"Поиск матчей на {current_date}")
@@ -211,7 +231,7 @@ class SportsDBSyncer:
             except Exception as e:
                 logger.error(f"Ошибка для даты {current_date}: {e}")
                 continue
-        # МЕТОД 3: Для АПЛ получаем матчи турнирного круга
+        # МЕТОД 3: Для АПЛ получаем матчи турнирного круга (с фильтром today+tomorrow)
         logger.info("Метод 3: Дополнительный поиск матчей АПЛ...")
         try:
             for round_num in range(25, 31):
@@ -222,8 +242,15 @@ class SportsDBSyncer:
                 if data and 'events' in data:
                     for event in data['events']:
                         match = self._parse_event(event)
-                        if match and self._is_within_week(match['match_date']):
-                            all_matches.append(match)
+                        if not match:
+                            continue
+
+                        # ФИЛЬТР: только сегодня + завтра
+                        match_date = match['match_date']
+                        if match_date not in [today, tomorrow]:
+                            continue
+
+                        all_matches.append(match)
                 time.sleep(0.3)
         except Exception as e:
             logger.error(f"Ошибка поиска по турам АПЛ: {e}")
@@ -231,7 +258,7 @@ class SportsDBSyncer:
         unique_matches = self._remove_duplicates(all_matches)
         unique_matches.sort(key=lambda x: (x['match_date'], x['match_time']))
         logger.info(
-            f"Итого найдено уникальных матчей на неделю: "
+            f"Итого найдено уникальных матчей на сегодня+завтра: "
             f"{len(unique_matches)}"
         )
         return unique_matches
