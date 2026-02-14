@@ -27,7 +27,7 @@ jobs:
         run: |
           echo 'TOKEN = "test"' > config.py
           echo 'DEEPSEEK_API_KEY = "test"' >> config.py
-          echo 'API_FOOTBALL_KEY = "test"' >> config.py
+          echo 'THESPORTSDB_KEY = "test"' >> config.py
 
       - name: Lint with flake8
         run: |

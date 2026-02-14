@@ -1,0 +1,202 @@
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Plan to implement                                                            │
+│                                                                              │
+│ План: Миграция на Premium TheSportsDB + упрощение архитектуры                │
+│                                                                              │
+│ Контекст                                                                     │
+│                                                                              │
+│ Проект — Telegram-бот продажи спортивных анализов. Пользователь купил        │
+│ premium TheSportsDB ($9/мес), что снимает ограничения бесплатного API        │
+│ (полная таблица standings, 100 req/min, V2 API). API-Football больше не      │
+│ нужен. Решено упростить архитектуру: вместо хранения H2H/standings в БД —    │
+│ запрашивать on-demand при покупке. Текущий purchase flow уже частично        │
+│ работает (генерация через AI есть), но без обогащённых данных из API.        │
+│                                                                              │
+│ ---                                                                          │
+│ Фаза 0: Очистка от API-Football                                              │
+│                                                                              │
+│ Удалить файлы:                                                               │
+│ - sync_api_football.py (1244 строки)                                         │
+│ - tests/test_api_football.py                                                 │
+│ - API_FOOTBALL_SPEC.md                                                       │
+│ - API_FOOTBALL_DECISIONS.md                                                  │
+│ - IMPLEMENTATION_REPORT_API_FOOTBALL.md                                      │
+│ - test_team_search.py (если связан с API-Football)                           │
+│                                                                              │
+│ Изменить:                                                                    │
+│ - config.py — удалить API_FOOTBALL_KEY                                       │
+│ - .github/workflows/ci.yml — убрать упоминания API-Football если есть        │
+│                                                                              │
+│ Проверка: python -m pytest tests/ -v — все тесты проходят без ошибок         │
+│ импорта.                                                                     │
+│                                                                              │
+│ ---                                                                          │
+│ Фаза 1: Упрощение БД                                                         │
+│                                                                              │
+│ Файл: database.py                                                            │
+│                                                                              │
+│ Удалить поля из таблицы matches:                                             │
+│ - h2h_json, h2h_fetched_at, standings_json, standings_fetched_at             │
+│ - apif_stats_json, apif_stats_fetched_at, apif_injuries_json,                │
+│ apif_injuries_fetched_at                                                     │
+│ - apif_full_standings_json, apif_standings_fetched_at,                       │
+│ apif_top_scorers_json, apif_scorers_fetched_at                               │
+│ - raw_json (не нужен при on-demand)                                          │
+│                                                                              │
+│ Оставить в matches: id, sport, team1, team2, match_date, match_time, league, │
+│  venue, api_event_id, source, home_team_id, away_team_id, match_datetime,    │
+│ round, status, analysis_text, price, is_active, created_at                   │
+│                                                                              │
+│ Таблица teams: убрать поле apif_team_id                                      │
+│                                                                              │
+│ Удалить функции: update_match_apif_enrichment(),                             │
+│ update_match_apif_top_scorers(), get_apif_team_id(), set_apif_team_id()      │
+│                                                                              │
+│ Удалить миграционный код для apif_* полей (строки 106-153)                   │
+│                                                                              │
+│ Создать: migrate_db_v2.py — скрипт миграции с бэкапом (пересоздание таблицы  │
+│ без удалённых полей через CREATE TABLE + INSERT + DROP + RENAME)             │
+│                                                                              │
+│ Проверка: python migrate_db_v2.py && python -c "import database;             │
+│ database.init_db(); print('OK')"                                             │
+│                                                                              │
+│ ---                                                                          │
+│ Фаза 2: Обновление sync_matches.py                                           │
+│                                                                              │
+│ Файл: sync_matches.py                                                        │
+│                                                                              │
+│ 1. API ключ: заменить "3" на config.THESPORTSDB_KEY (premium)                │
+│ 2. Лиги (3 вместо 5): Premier League (4328), La Liga (4335), Bundesliga      │
+│ (4331)                                                                       │
+│ 3. Кубки (2 вместо 5): Champions League (4480), Europa League (4481)         │
+│ 4. Rate limiter: capacity 100, refill_rate 100 (вместо 25)                   │
+│ 5. Окно синхронизации: 3 дня (сегодня + завтра + послезавтра) вместо 2       │
+│ 6. Удалить методы (перешли в on-demand): fetch_h2h(), fetch_standings(),     │
+│ enrich_matches(), cache_teams_from_matches(), cache_team() и связанные       │
+│ хелперы (~300 строк)                                                         │
+│ 7. Убрать CLI-флаги: --enrich, --cache-teams, --only-cache-teams             │
+│                                                                              │
+│ Проверка: python sync_matches.py --dry-run                                   │
+│                                                                              │
+│ ---                                                                          │
+│ Фаза 3: On-demand data fetcher                                               │
+│                                                                              │
+│ Новый файл: match_data_fetcher.py                                            │
+│                                                                              │
+│ Класс MatchDataFetcher с методами:                                           │
+│ - fetch_match_data(match: dict) -> dict — точка входа, возвращает {h2h,      │
+│ standings, team1_form, team2_form, errors}                                   │
+│ - _fetch_h2h(team1, team2) — через searchevents.php (premium: 10             │
+│ результатов)                                                                 │
+│ - _fetch_standings(league_id, season) — через lookuptable.php (premium:      │
+│ полная таблица)                                                              │
+│ - _fetch_team_last_matches(team_id) — через eventslast.php (последние 5-10   │
+│ матчей)                                                                      │
+│ - _fetch_event_details(event_id) — через lookupevent.php (для получения      │
+│ league_id/season)                                                            │
+│                                                                              │
+│ Функция build_enriched_context(match, data) -> str — форматирует данные в    │
+│ текст для AI промпта.                                                        │
+│                                                                              │
+│ Переиспользуем логику из существующих _format_h2h() и _format_standings() в  │
+│ ai_generator.py, адаптируя под новый формат данных (dict вместо JSON-строки  │
+│ из БД).                                                                      │
+│                                                                              │
+│ Проверка: ручной тест с реальным матчем                                      │
+│                                                                              │
+│ ---                                                                          │
+│ Фаза 4: Обновление purchase flow                                             │
+│                                                                              │
+│ Файл: user_handlers.py — функция handle_purchase() (строки 309-367)          │
+│                                                                              │
+│ Текущий flow (строки 328-349) уже делает генерацию, нужно добавить on-demand │
+│  fetch перед ней:                                                            │
+│                                                                              │
+│ 1. Проверка: матч существует?                                                │
+│ 2. Проверка: уже куплен? → отдать готовый analysis_text                      │
+│ 3. Проверка: analysis_text уже есть? → пропустить генерацию                  │
+│ 4. [НОВОЕ] Показать "Этап 1/2: Сбор данных..."                               │
+│ 5. [НОВОЕ] fetch_match_data() — on-demand запрос H2H/standings/form          │
+│ 6. Показать "Этап 2/2: Генерация анализа..."                                 │
+│ 7. [ИЗМЕНИТЬ] generate_match_analysis() → передать enriched_context          │
+│ 8. Сохранить analysis_text в БД                                              │
+│ 9. Списание средств + выдача                                                 │
+│                                                                              │
+│ Файл: ai_generator.py                                                        │
+│                                                                              │
+│ - Добавить функцию generate_match_analysis_with_context(match,               │
+│ enriched_context) — аналог generate_match_analysis(), но принимает готовый   │
+│ текстовый контекст вместо чтения h2h_json/standings_json из match dict       │
+│ - Оставить старую generate_match_analysis() рабочей (для совместимости), но  │
+│ handle_purchase будет использовать новую                                     │
+│ - Удалить из CONTEXT_FIELDS строки для h2h_json и standings_json (они больше │
+│  не в БД)                                                                    │
+│                                                                              │
+│ Проверка: запуск бота, тестовая покупка матча                                │
+│                                                                              │
+│ ---                                                                          │
+│ Фаза 5: APScheduler                                                          │
+│                                                                              │
+│ Файл: main.py                                                                │
+│                                                                              │
+│ APScheduler уже в requirements.txt (v3.11.2). Добавить:                      │
+│                                                                              │
+│ - async def scheduled_sync_matches() — импортирует SportsDBSyncer, запускает │
+│  sync mode=all                                                               │
+│ - В main(): создать AsyncIOScheduler, добавить job с                         │
+│ IntervalTrigger(hours=6)                                                     │
+│ - Первый sync при старте бота (одноразовый job)                              │
+│ - Graceful shutdown scheduler в finally                                      │
+│                                                                              │
+│ Проверка: запуск бота, проверить логи "APScheduler запущен", "scheduled sync │
+│  завершён"                                                                   │
+│                                                                              │
+│ ---                                                                          │
+│ Фаза 6: Обновление тестов                                                    │
+│                                                                              │
+│ - Удалить: тесты для _format_h2h(), _format_standings(),                     │
+│ _extract_team_standings() из test_ai_generator.py (эти функции будут         │
+│ удалены/перенесены)                                                          │
+│ - Обновить: test_sync_matches.py — убрать тесты enrich/cache, обновить лиги  │
+│ 3+2, окно 3 дня                                                              │
+│ - Добавить: tests/test_match_data_fetcher.py — unit-тесты с мок-данными      │
+│ - CI: .github/workflows/ci.yml — обновить config.py заглушку (убрать         │
+│ API_FOOTBALL_KEY, добавить THESPORTSDB_KEY)                                  │
+│                                                                              │
+│ Проверка: python -m pytest tests/ -v — все тесты зелёные                     │
+│                                                                              │
+│ ---                                                                          │
+│ Фаза 7: Документация + GitHub                                                │
+│                                                                              │
+│ - ROADMAP.md — переписать: убрать API-Football, обновить архитектуру v2.0,   │
+│ новые спринты                                                                │
+│ - CLAUDE.md — обновить: архитектура v2.0, новые модули, обновлённые команды  │
+│ - GitHub: закрыть issues #9, #11, #12, #13 как "not planned", закрыть        │
+│ milestone "API-Football 2 этап"                                              │
+│ - config.py — добавить THESPORTSDB_KEY (пользователь предоставит ключ)       │
+│                                                                              │
+│ Проверка: gh issue list --state open — 0 открытых API-Football issues        │
+│                                                                              │
+│ ---                                                                          │
+│ Порядок выполнения                                                           │
+│                                                                              │
+│ Фазы 0→1→2 выполняются строго последовательно (каждая зависит от             │
+│ предыдущей).                                                                 │
+│ Фазы 3 и 5 можно делать параллельно (независимы).                            │
+│ Фаза 4 зависит от фазы 3.                                                    │
+│ Фазы 6 и 7 — в конце.                                                        │
+│                                                                              │
+│ Верификация (end-to-end)                                                     │
+│                                                                              │
+│ 1. python migrate_db_v2.py — миграция БД                                     │
+│ 2. python sync_matches.py --mode all — синхронизация матчей (3 лиги + 2      │
+│ кубка, 3 дня)                                                                │
+│ 3. python main.py — запуск бота с APScheduler                                │
+│ 4. В Telegram: просмотр матчей → покупка → получение анализа с обогащёнными  │
+│ данными                                                                      │
+│ 5. python -m pytest tests/ -v — все тесты проходят                           │
+│ 6. python -m flake8 . --max-line-length=120                                  │
+│ --exclude=.git,__pycache__,.venv,venv — lint чистый                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+

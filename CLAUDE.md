@@ -27,37 +27,39 @@ Telegram bot for selling sports match analyses (football, basketball, hockey). U
 - Новые пользователи получают стартовый баланс для первой покупки
 - Купленные анализы доступны в разделе "Мои анализы" и хранятся 1 день после завершения матча
 
+**Архитектура v2.0 (Premium TheSportsDB):**
+- ✅ **On-demand data fetching** — H2H/standings/form запрашиваются при покупке, не хранятся в БД
+- ✅ **Premium TheSportsDB API** ($9/мес) — полная таблица standings, 100 req/min, V2 API
+- ✅ **Упрощённая БД** — убраны поля кэширования (h2h_json, standings_json, raw_json)
+- ✅ **APScheduler** — автоматическая синхронизация матчей каждые 6 часов
+- ✅ **Двухэтапный purchase flow** — (1) сбор данных → (2) генерация анализа
+
 **Текущее состояние разработки:**
 - ✅ Базовый UI (главное меню, навигация по видам спорта, датам, матчам)
 - ✅ База данных SQLite (таблицы: users, matches, purchases, admins, teams, sync_meta)
 - ✅ Система балансов и пополнения (ручной приём платежей)
-- ✅ Возможность добавлять матчи вручную через скрипт `add_test_match.py`
-- ✅ AI API интеграция: модуль `ai_generator.py` (DeepSeek API), промпт загружается из `ANALYSIS_PROMPT.md`
-- ✅ Постобработка анализов: `clean_and_truncate()` — фильтрация запрещённых слов, лимит эмодзи, контроль длины
+- ✅ AI API интеграция: `ai_generator.py` (DeepSeek API), промпт из `ANALYSIS_PROMPT.md`
+- ✅ Постобработка: `clean_and_truncate()` — фильтрация запрещённых слов, лимит эмодзи, контроль длины
 - ✅ Разбиение длинных текстов: `split_for_telegram()` — безопасное разбиение по границам абзацев/предложений
-- ✅ Unit-тесты (pytest) и CI (GitHub Actions) — 46 тестов
-- ✅ Синхронизация матчей через TheSportsDB API: `sync_matches.py` (top3 default / bulk via --mode all)
-- ✅ Tracing: raw_json, source, home_team_id, away_team_id, match_datetime для каждого матча
-- ✅ Token bucket rate limiter (25 req/min) + exponential backoff на HTTP 429
-- ✅ Таблица teams с кэшем lookupteam (TTL 24h)
-- ✅ Интеграционные тесты sync (top3, idempotence, tracing, enrichment)
-- ✅ H2H обогащение: история личных встреч (2-7 матчей с датами и счетами)
-- ✅ Standings обогащение: турнирная таблица (позиция, очки, форма WWDWL, разница мячей)
-- ✅ TTL-кэширование H2H/standings (24h), флаг `--enrich`
-- ✅ Standings интегрированы в обзоры команд (секции 2-3 анализа)
-- ❌ НЕ реализовано: реальная выдача анализа пользователю после покупки (purchase flow)
+- ✅ Unit-тесты (pytest) и CI (GitHub Actions) — 45 тестов
+- ✅ Синхронизация: `sync_matches.py` — 3 лиги + 2 кубка, окно 3 дня, rate limiter 100 req/min
+- ✅ Tracing: source, home_team_id, away_team_id, match_datetime для каждого матча
+- ✅ On-demand fetcher: `match_data_fetcher.py` — получение H2H/standings/form при покупке
+- ✅ Purchase flow: двухэтапный процесс с индикацией прогресса
+- ✅ APScheduler: автосинхронизация матчей каждые 6 часов + при старте бота
 
-**Выполненные спринты (см. ROADMAP.md):**
+**Выполненные спринты:**
 - ✅ Sprint 0 — Setup & Baseline
 - ✅ Sprint 1 — Stable Generation & Postprocessing
-- ✅ Sprint 2 — Payment Flow (базовая часть)
+- ✅ Sprint 2 — Payment Flow
 - ✅ Sprint 2.5 — API Integration & Manual Sync
 - ✅ Sprint 2.7 — H2H & Standings Enrichment
+- ✅ **Premium TheSportsDB Migration** — v2.0 архитектура с on-demand fetching
 
-**Следующие этапы (см. ROADMAP.md):**
-1. Sprint 3: Source Automation — APScheduler job, автоматический периодический sync + enrich
-2. Sprint 4: Purchase Flow & Analysis Delivery — полный flow покупки с генерацией и выдачей
-3. Stabilise & Launch Prep — end-to-end QA, документация, cost-per-analysis
+**Следующие этапы:**
+1. End-to-end QA — полное тестирование purchase flow в продакшене
+2. Cost monitoring — мониторинг стоимости генерации анализов
+3. Launch prep — финальная документация, настройка продакшен окружения
 
 ## Commands
 
@@ -65,7 +67,10 @@ Telegram bot for selling sports match analyses (football, basketball, hockey). U
 # Install dependencies
 pip install -r requirements.txt
 
-# Run the bot
+# Database migration (one-time, if upgrading from v1)
+python migrate_db_v2.py
+
+# Run the bot (includes APScheduler auto-sync every 6h)
 python main.py
 
 # Run tests
@@ -80,35 +85,37 @@ python add_balance_manually.py    # Manually add balance to a user
 python add_test_match.py          # Insert a test match for today
 python check_matches.py           # Inspect all matches in the database
 
-# Sync matches from TheSportsDB API
-python sync_matches.py                       # Default: top-3 matches
-python sync_matches.py --mode all            # Bulk: all matches from 5 leagues + cups
-python sync_matches.py --mode all --enrich   # Bulk + H2H + standings (recommended)
+# Sync matches from TheSportsDB Premium API
+python sync_matches.py                       # Default: top-3 matches, 3 days ahead
+python sync_matches.py --mode all            # Bulk: all matches from 3 leagues + 2 cups
 python sync_matches.py --mode top3 --limit 5 # Top-5 matches
-python sync_matches.py --enrich              # Top-3 + enrich with H2H/standings
 python sync_matches.py --dry-run             # Preview without saving to DB
 ```
 
 ## Architecture
 
-**Entry point:** `main.py` — creates the `Application`, initializes the DB, registers handlers via `setup_user_handlers()` and `setup_payment_handlers()`, then starts polling.
+**Entry point:** `main.py` — creates the `Application`, initializes the DB, sets up APScheduler for periodic sync (every 6h + startup), registers handlers via `setup_user_handlers()` and `setup_payment_handlers()`, then starts polling.
 
 **Core modules:**
 
-- `ai_generator.py` — Генерация анализов через DeepSeek API (OpenAI-совместимый клиент). Промпт загружается из `ANALYSIS_PROMPT.md` при импорте. Форматтеры: `_format_h2h()`, `_format_standings()`, `_extract_team_standings()` — интегрируют реальные данные в контекст для AI. Standings данные подставляются прямо к названиям команд в контексте (например: "Chelsea (#5 место, 43 очка, форма WWWWL)"). Результат проходит через `clean_and_truncate()` для постобработки.
-- `sync_matches.py` — Синхронизация матчей из TheSportsDB API (ключ "3" — test/dev key). Два режима: `--mode top3` (default) и `--mode all` (bulk import). Token bucket rate limiter (25 req/min), exponential backoff на 429. Флаг `--enrich` добавляет H2H и standings к матчам с TTL-кэшированием (24h). Функция `clean_team_name_for_h2h()` убирает суффиксы (United, City, FC и др.) для корректного поиска H2H.
-- `database.py` — SQLite data layer. All DB functions open/close their own connections (`sports_bot.db`). Tables: `matches`, `users`, `purchases`, `admins`, `teams`, `sync_meta`. Поля обогащения в `matches`: `h2h_json`, `h2h_fetched_at`, `standings_json`, `standings_fetched_at`. Note: `init_db()` is called both at module import time and explicitly in `main.py`.
-- `user_handlers.py` — Main callback query handler (`button_handler`) that routes all inline button presses via `callback_data` string patterns. Manages menu navigation history via `context.user_data['menu_history']` with constants like `MENU_MAIN`, `MENU_SPORT_SELECTION`, etc.
-- `payment_handlers.py` — Deposit flow handlers. Uses a `ConversationHandler` for custom deposit amounts. Deposit tiers have bonus amounts (e.g., 300 RUB deposit gives +150 bonus). Payment is manual (bank transfer) — no payment gateway integration.
-- `keyboards.py` — All `InlineKeyboardMarkup` builders. Returns keyboard layouts for menus, sport selection, date selection, match lists, deposit options, and purchased analyses navigation.
-- `utils.py` — Утилиты: `safe_edit_message()` (безопасное редактирование с защитой от превышения лимита), `send_main_menu()`, `format_match_info()`, `clean_and_truncate()` (постобработка анализов: banned words, emoji limit, truncation), `split_for_telegram()` (разбиение длинных текстов на части ≤3800).
-- `config.py` — Stores the bot `TOKEN` and `DEEPSEEK_API_KEY`. Listed in `.gitignore` but was committed — treat as a secret file.
-- `ANALYSIS_PROMPT.md` — Источник истины для промпта генерации анализов. Изменяется без правки кода.
+- `ai_generator.py` — Генерация анализов через DeepSeek API. Промпт из `ANALYSIS_PROMPT.md`. Две функции генерации: (1) `generate_match_analysis()` — старая версия с чтением из БД, (2) `generate_match_analysis_with_context()` — новая версия с готовым enriched_context. Результат проходит через `clean_and_truncate()`.
+- `match_data_fetcher.py` — **[NEW v2.0]** On-demand fetching H2H/standings/form из TheSportsDB Premium API. Класс `MatchDataFetcher`: методы `_fetch_h2h()`, `_fetch_standings()`, `_fetch_team_last_matches()`, `_fetch_event_details()`. Функция `build_enriched_context()` форматирует данные в текст для AI промпта.
+- `sync_matches.py` — Синхронизация матчей из TheSportsDB Premium API. Два режима: `--mode top3` (default) и `--mode all` (bulk). 3 лиги (Premier League, La Liga, Bundesliga) + 2 кубка (CL, EL). Окно синхронизации 3 дня. Rate limiter 100 req/min (premium). НЕТ флага `--enrich` (on-demand вместо кэширования).
+- `database.py` — SQLite data layer. Tables: `matches`, `users`, `purchases`, `admins`, `teams`, `sync_meta`. Упрощённая схема `matches` (убраны h2h_json, standings_json, raw_json). `init_db()` called in `main.py`.
+- `main.py` — **[UPDATED v2.0]** Entry point с APScheduler. Функция `scheduled_sync_matches()` запускается каждые 6 часов + при старте бота. Scheduler управляется в `main()` с graceful shutdown.
+- `user_handlers.py` — **[UPDATED v2.0]** Callback handler с обновлённым `handle_purchase()`: двухэтапный процесс (1) on-demand fetching через `MatchDataFetcher`, (2) генерация через `generate_match_analysis_with_context()`. Индикация прогресса "Этап 1/2" и "Этап 2/2".
+- `payment_handlers.py` — Deposit flow с бонусами. Manual payment (bank transfer).
+- `keyboards.py` — InlineKeyboardMarkup builders для всех меню.
+- `utils.py` — `safe_edit_message()`, `clean_and_truncate()`, `split_for_telegram()`.
+- `config.py` — `TOKEN`, `DEEPSEEK_API_KEY`, `THESPORTSDB_KEY` (premium). Treat as secret.
+- `ANALYSIS_PROMPT.md` — Промпт для AI генерации.
+- `migrate_db_v2.py` — **[NEW v2.0]** Скрипт миграции БД: удаляет h2h/standings/raw_json поля, создаёт бэкап.
 
-**Tests (46 тестов):**
+**Tests (45 тестов):**
 - `tests/test_utils.py` — тесты `clean_and_truncate` и `split_for_telegram`
-- `tests/test_ai_generator.py` — тесты постобработки, промпта, `_format_h2h()`, `_format_standings()`
-- `tests/test_sync_matches.py` — интеграционные тесты: top3, idempotence, tracing, bulk mode, enrichment (H2H + standings)
+- `tests/test_ai_generator.py` — тесты постобработки, промпта, `_build_match_context()`
+- `tests/test_match_data_fetcher.py` — **[NEW v2.0]** unit-тесты MatchDataFetcher и build_enriched_context
+- `tests/test_sync_matches.py` — интеграционные тесты: top3, idempotence, tracing, bulk mode
 
 **CI:** `.github/workflows/ci.yml` — GitHub Actions: flake8 + pytest на ubuntu-latest, Python 3.11.
 
@@ -128,14 +135,15 @@ python sync_matches.py --dry-run             # Preview without saving to DB
 - Анализы состоят из 5 секций: введение, обзор команды A (с формой/позицией если есть), обзор команды B, H2H, ключевые игроки
 - Запрещённые слова в анализах: коэффициент, ставка, прогноз (и их формы)
 - Эмодзи в анализах: макс 1 на раздел, макс 4 всего
-- API ключ TheSportsDB: `"3"` (test/dev key, полные данные); НЕ использовать `"123"` (ограничен 2 результата)
+- API ключ TheSportsDB: `"913569"` (premium $9/мес, полные данные, 100 req/min)
 
 ## Important Notes for Development
 
-- **Промпт анализа:** Хранится в `ANALYSIS_PROMPT.md`. Для изменения промпта — редактировать файл, перезапуск бота подхватит изменения.
+- **Промпт анализа:** Хранится в `ANALYSIS_PROMPT.md`. Для изменения — редактировать файл, перезапуск бота подхватит изменения.
 - **Постобработка:** `clean_and_truncate()` в `utils.py` — обязательна после каждой генерации. Фильтрует запрещённые слова, контролирует эмодзи и длину.
-- **Спортивный API:** `sync_matches.py --mode all --enrich` — основной способ наполнения БД матчами. Для продакшена нужна автоматизация (Sprint 3).
-- **H2H обогащение:** `--enrich` добавляет H2H и standings. Standings доступны только для топ-5 команд лиги (ограничение бесплатного API). H2H работает для всех команд (2-7 матчей).
-- **Purchase flow:** При покупке матча генерация и выдача анализа ещё не реализованы (Sprint 4).
+- **On-demand fetching:** `match_data_fetcher.py` запрашивает H2H/standings/form при покупке. Не сохраняется в БД. Premium API даёт полную таблицу standings + до 10 H2H матчей.
+- **APScheduler:** `main.py` автоматически синхронизирует матчи каждые 6 часов. Первая синхронизация при старте бота. Для разработки можно временно изменить интервал на 2 минуты.
+- **Purchase flow:** Двухэтапный процесс с индикацией. Если on-demand fetching падает с ошибкой — генерация продолжается с пустым контекстом.
+- **Premium API:** TheSportsDB key `913569` ($9/мес). 100 req/min, полная таблица standings, V2 API. 3 лиги + 2 кубка, окно 3 дня.
+- **Миграция БД:** Для существующих БД — запустить `migrate_db_v2.py` один раз. Создаёт бэкап перед изменениями.
 - **Известные проблемы:** `database.py` — дублирование `add_match`/`create_match`, `init_db()` при импорте, bare except в `add_admin`, нет транзакций в `purchase_analysis`.
-- **Ограничения API:** TheSportsDB бесплатный tier: `lookuptable` = топ-5, нет статистики игроков. Рассматривается гибридный подход с API-Football (см. ROADMAP.md backlog).

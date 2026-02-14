@@ -16,10 +16,10 @@ class TestCleanAndTruncate:
         assert len(result) <= 2000
 
     def test_long_text_within_soft_cap(self):
-        """Длинный текст (>2000) сокращается до ≤2000."""
+        """Длинный текст (>3000) сокращается до ≤3000."""
         text = "Тестовое предложение. " * 200  # ~4200 символов
         result = clean_and_truncate(text)
-        assert len(result) <= 2000
+        assert len(result) <= 3000
 
     def test_very_long_text_within_hard_cap(self):
         """Очень длинный текст без точек не превышает hard cap 3800."""

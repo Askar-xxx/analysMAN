@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m flake8:*)",
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(git -C c:UsersuseranalysMAN status)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfix: исправить все ошибки flake8 для прохождения CI\n\n- E722: bare except → except ValueError/Exception\n- F401: удалены неиспользуемые импорты \\(urllib.parse, datetime, check_deposit_status\\)\n- F811: удалены дублированные функции в database.py \\(get_matches_by_date, get_match_by_id, get_all_matches\\)\n- F841: удалена неиспользуемая переменная e\n- F541: исправлены f-string без плейсхолдеров\n- E501: разбиты длинные строки\n- E302/E305/W292/W293: исправлено форматирование \\(пустые строки, whitespace\\)\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
+      "Bash(curl:*)",
+      "WebSearch",
+      "WebFetch(domain:www.thesportsdb.com)",
+      "WebFetch(domain:docs.github.com)",
+      "Bash(for:*)",
+      "Bash(do curl -s \"https://www.thesportsdb.com/api/v1/json/3/eventsnextleague.php?id=4328\" -w \"Request $i - HTTP: %{http_code}\\\\n\" -o /dev/null)",
+      "Bash(done)",
+      "Bash(gh issue list:*)",
+      "Bash(gh milestone list:*)",
+      "Bash(gh pr list:*)",
+      "Bash(ls:*)",
+      "Bash(dir:*)",
+      "Bash(gh api:*)",
+      "Bash(git -C C:UsersuseranalysMAN log --oneline -10)",
+      "Bash(sqlite3:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(python test_generation_flow.py:*)",
+      "Bash(python:*)",
+      "Bash(git checkout:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:www.api-football.com)"
+    ]
+  }
+}

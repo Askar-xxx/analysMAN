@@ -72,12 +72,12 @@ def clean_and_truncate(text: str) -> str:
     Постобработка текста анализа:
     - Удаляет запрещённые слова (коэффициент, ставка, прогноз)
     - Ограничивает эмодзи (макс 1 на раздел, макс 4 всего)
-    - Soft cap 2200: сокращает предложения до целевой длины 1400-1900
+    - Soft cap 3000: сокращает предложения до целевой длины 2200-2800
     - Hard cap 3800: обрезает по последнему \\n
     - Логирует длину до/после и флаг truncated
     """
-    TARGET_MAX = 1900
-    SOFT_CAP = 2200
+    TARGET_MAX = 2800
+    SOFT_CAP = 3000
     HARD_CAP = 3800
 
     original_length = len(text)
@@ -93,7 +93,7 @@ def clean_and_truncate(text: str) -> str:
     # 2. Ограничиваем эмодзи
     text = _limit_emoji(text)
 
-    # 3. Soft cap: если > 2200, сокращаем предложения до целевой длины
+    # 3. Soft cap: если > 3000, сокращаем предложения до целевой длины
     if len(text) > SOFT_CAP:
         text = _truncate_sentences(text, TARGET_MAX)
         truncated = True

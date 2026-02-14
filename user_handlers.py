@@ -4,7 +4,6 @@ from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
 import database
 import keyboards
 from utils import safe_edit_message, send_main_menu, format_match_info
-from ai_generator import generate_match_analysis
 from datetime import datetime, timedelta
 
 # Импорты из payment_handlers
@@ -325,22 +324,45 @@ async def handle_purchase(query, user_id):
         )
         return
 
-    # Если анализ ещё не сгенерирован — генерируем через AI
+    # Если анализ ещё не сгенерирован — генерируем через AI с on-demand fetching
     analysis_text = match['analysis_text']
     if not analysis_text:
+        # Этап 1/2: Сбор обогащённых данных
         await safe_edit_message(
             query,
-            f"⏳ Генерируем анализ для матча "
+            f"⏳ Этап 1/2: Сбор данных для матча "
+            f"{match['team1']} vs {match['team2']}...\n\n"
+            f"Получаем H2H, турнирную таблицу, форму команд...",
+            None
+        )
+        try:
+            from match_data_fetcher import MatchDataFetcher, build_enriched_context
+            fetcher = MatchDataFetcher()
+            # Конвертируем sqlite3.Row в dict для совместимости
+            match_dict = dict(match) if not isinstance(match, dict) else match
+            enriched_data = fetcher.fetch_match_data(match_dict)
+            enriched_context = build_enriched_context(match_dict, enriched_data)
+            logger.info(f"On-demand data fetched. Errors: {enriched_data.get('errors', [])}")
+        except Exception as e:
+            logger.error(f"Ошибка получения обогащённых данных: {e}", exc_info=True)
+            # Продолжаем с пустым контекстом
+            enriched_context = "Обогащённые данные недоступны."
+
+        # Этап 2/2: Генерация анализа
+        await safe_edit_message(
+            query,
+            f"⏳ Этап 2/2: Генерация анализа для матча "
             f"{match['team1']} vs {match['team2']}...\n\n"
             f"Пожалуйста, подождите 10-15 секунд.",
             None
         )
         try:
-            analysis_text = await generate_match_analysis(match)
+            from ai_generator import generate_match_analysis_with_context
+            analysis_text = await generate_match_analysis_with_context(match_dict, enriched_context)
             # Сохраняем анализ в БД, чтобы не генерировать повторно
             database.update_match_analysis(match_id, analysis_text)
         except Exception as e:
-            logger.error(f"Ошибка генерации анализа: {e}")
+            logger.error(f"Ошибка генерации анализа: {e}", exc_info=True)
             await safe_edit_message(
                 query,
                 "❌ Не удалось сгенерировать анализ. Попробуйте позже.",

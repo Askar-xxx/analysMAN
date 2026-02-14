@@ -203,9 +203,6 @@ CONTEXT_FIELDS = [
     ('round', 'Тур', None),
     ('home_score', 'Счёт хозяев', None),
     ('away_score', 'Счёт гостей', None),
-    # H2H и standings обрабатываются специально в _build_match_context()
-    ('h2h_json', 'История личных встреч', None),
-    ('standings_json', 'Турнирная таблица', None),
 ]
 
 
@@ -325,6 +322,95 @@ async def generate_match_analysis(match_data: dict) -> str:
 
 {ANALYSIS_PROMPT_TEMPLATE}
 
+Замени "команда A" на {team1}, "команда B" на {team2}."""
+
+    system_message = (
+        f"Ты — профессиональный спортивный аналитик. "
+        f"Пишешь КОМПАКТНЫЕ объективные обзоры матчей на русском языке "
+        f"строго в пределах {TARGET_LENGTH} символов. "
+        f"АБСОЛЮТНЫЙ МАКСИМУМ: {MAX_ANALYSIS_LENGTH} символов. "
+        f"Никогда не даёшь прогнозы на результат, не упоминаешь букмекерские "
+        f"коэффициенты и не советуешь ставки. Используешь максимум 4 эмодзи. "
+        f"Если текст превышает 2200 символов — обязательно сокращаешь до целевого диапазона."
+    )
+
+    response = await client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=1400,
+        temperature=0.7
+    )
+
+    analysis_text = response.choices[0].message.content.strip()
+
+    # ПОСТ-ОБРАБОТКА: очистка, фильтрация, сокращение
+    analysis_text = clean_and_truncate(analysis_text)
+
+    return analysis_text
+
+
+async def generate_match_analysis_with_context(match_data: dict, enriched_context: str) -> str:
+    """
+    Генерирует анализ матча через DeepSeek API с готовым обогащённым контекстом.
+
+    Используется для on-demand fetching: enriched_context формируется через
+    MatchDataFetcher и build_enriched_context() вместо чтения из БД.
+
+    Args:
+        match_data: dict с базовыми данными матча (team1, team2, sport, league и т.д.)
+        enriched_context: Готовый текстовый контекст с H2H/standings/form
+
+    Returns:
+        Текст анализа на русском (1400-1900 символов, макс 3800)
+    """
+    MAX_ANALYSIS_LENGTH = 3800
+    TARGET_LENGTH = "1400-1900"
+
+    # sqlite3.Row не поддерживает .get() — конвертируем в dict
+    if not isinstance(match_data, dict):
+        match_data = dict(match_data)
+
+    team1 = match_data.get('team1', '')
+    team2 = match_data.get('team2', '')
+    sport = match_data.get('sport', 'football')
+    sport_name = SPORT_NAMES.get(sport, sport)
+
+    # Базовая информация о матче (без H2H/standings - они в enriched_context)
+    basic_info = []
+    basic_info.append(f"- Вид спорта: {sport_name}")
+    basic_info.append(f"- Команда хозяев: {team1}")
+    basic_info.append(f"- Команда гостей: {team2}")
+
+    if match_data.get('match_date'):
+        basic_info.append(f"- Дата: {match_data['match_date']}")
+    if match_data.get('match_time'):
+        basic_info.append(f"- Время: {match_data['match_time']}")
+    if match_data.get('league'):
+        basic_info.append(f"- Лига: {match_data['league']}")
+    if match_data.get('venue'):
+        basic_info.append(f"- Стадион: {match_data['venue']}")
+    if match_data.get('round'):
+        basic_info.append(f"- Тур: {match_data['round']}")
+
+    basic_info_str = '\n'.join(basic_info)
+
+    # Формирование промпта с обогащённым контекстом
+    prompt = f"""Напиши компактный аналитический обзор предстоящего матча.
+
+Данные матча:
+{basic_info_str}
+
+ОБОГАЩЁННЫЕ ДАННЫЕ (ИСПОЛЬЗУЙ ИХ ДЛЯ ЗАПОЛНЕНИЯ ТАБЛИЦЫ):
+{enriched_context}
+
+ИНСТРУКЦИИ ПО ФОРМАТУ:
+{ANALYSIS_PROMPT_TEMPLATE}
+
+ВАЖНО: Используй данные из секций === выше === для заполнения таблицы!
+НЕ копируй плейсхолдеры типа "[позиция (зона), очки]" — замени их на РЕАЛЬНЫЕ данные из секций!
 Замени "команда A" на {team1}, "команда B" на {team2}."""
 
     system_message = (
