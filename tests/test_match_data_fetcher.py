@@ -10,7 +10,8 @@ from match_data_fetcher import (  # noqa: E402
     build_enriched_context,
     _calculate_stats_from_form,
     _determine_tournament_zone,
-    _assess_home_away_quality
+    _assess_home_away_quality,
+    _get_season_date_range
 )
 
 
@@ -46,9 +47,10 @@ class TestMatchDataFetcher:
             mock_get.return_value.status_code = 200
             mock_get.return_value.json.return_value = mock_response
 
-            result = fetcher._fetch_h2h("Arsenal", "Chelsea")
+            result, is_current_season = fetcher._fetch_h2h("Arsenal", "Chelsea")
 
             assert len(result) == 2
+            assert is_current_season is True  # Без фильтрации = текущий сезон
             assert result[0]['home_team'] == "Arsenal"
             assert result[0]['away_team'] == "Chelsea"
             assert result[0]['score'] == "2:1"
@@ -66,9 +68,10 @@ class TestMatchDataFetcher:
             mock_get.return_value.status_code = 200
             mock_get.return_value.json.return_value = mock_response
 
-            result = fetcher._fetch_h2h("Team1", "Team2")
+            result, is_current_season = fetcher._fetch_h2h("Team1", "Team2")
 
             assert result == []
+            assert is_current_season is True
 
     def test_fetch_standings_success(self):
         """Standings данные корректно получаются и парсятся."""
@@ -208,7 +211,7 @@ class TestMatchDataFetcher:
         }
 
         # Моки для всех API вызовов
-        with patch.object(fetcher, '_fetch_h2h', return_value=[{'date': '2025-08-25', 'score': '2:1'}]), \
+        with patch.object(fetcher, '_fetch_h2h', return_value=([{'date': '2025-08-25', 'score': '2:1'}], True)), \
              patch.object(fetcher, '_fetch_event_details', return_value={'league_id': '4328', 'season': '2025-2026'}), \
              patch.object(fetcher, '_fetch_standings', return_value={'table': [{'name': 'Arsenal', 'rank': 1}]}), \
              patch.object(fetcher, '_fetch_team_last_matches', return_value=[{'date': '2026-02-10', 'score': '2:1'}]):
@@ -216,6 +219,7 @@ class TestMatchDataFetcher:
             result = fetcher.fetch_match_data(match)
 
             assert len(result['h2h']) == 1
+            assert result['h2h_is_current_season'] is True
             assert 'table' in result['standings']
             assert len(result['team1_form']) == 1
             assert len(result['team2_form']) == 1
@@ -310,6 +314,29 @@ class TestBuildEnrichedContext:
         assert "СОСТАВЫ" in context
         assert "Нет данных" in context
 
+    def test_build_context_h2h_fallback_text(self):
+        """H2H с fallback показывает текст о прошлых сезонах."""
+        match = {'team1': 'Rayo Vallecano', 'team2': 'Atletico Madrid', 'league': 'La Liga'}
+        data = {
+            'h2h': [
+                {
+                    'date': '2024-09-22', 'home_team': 'Rayo Vallecano',
+                    'away_team': 'Atletico Madrid', 'score': '1:1'
+                }
+            ],
+            'h2h_is_current_season': False,  # Флаг fallback
+            'standings': {},
+            'team1_form': [],
+            'team2_form': []
+        }
+
+        context = build_enriched_context(match, data)
+
+        assert "ИСТОРИЯ ЛИЧНЫХ ВСТРЕЧ" in context
+        assert "В текущем сезоне команды не встречались" in context
+        assert "Последние встречи из прошлых сезонов" in context
+        assert "2024-09-22: Rayo Vallecano 1:1 Atletico Madrid" in context
+
 
 class TestHelperFunctions:
     """Тесты для вспомогательных функций вычисления статистики."""
@@ -392,3 +419,132 @@ class TestHelperFunctions:
     def test_assess_home_away_quality_no_matches(self):
         """Нет матчей = недостаточно данных."""
         assert _assess_home_away_quality(0, 0) == 'Недостаточно данных'
+
+    def test_get_season_date_range_premier_league(self):
+        """Границы сезона для Premier League (август-май)."""
+        from datetime import date
+        start, end = _get_season_date_range("2025-2026", "4328")
+        assert start == date(2025, 8, 1)
+        assert end == date(2026, 5, 31)
+
+    def test_get_season_date_range_champions_league(self):
+        """Границы сезона для CL (сентябрь-май)."""
+        from datetime import date
+        start, end = _get_season_date_range("2025-2026", "4480")
+        assert start == date(2025, 9, 1)
+        assert end == date(2026, 5, 31)
+
+    def test_get_season_date_range_invalid_format(self):
+        """Некорректный формат сезона вызывает ValueError."""
+        import pytest
+        with pytest.raises(ValueError):
+            _get_season_date_range("2025", "4328")
+
+    def test_fetch_h2h_with_season_filter(self):
+        """H2H фильтруется по текущему сезону."""
+        fetcher = MatchDataFetcher(api_key="test_key")
+
+        # Мок: 5 матчей (3 в сезоне 2025-26, 2 в 2024-25)
+        mock_response = {
+            "event": [
+                {
+                    "dateEvent": "2025-10-20", "strStatus": "FT", "strHomeTeam": "Arsenal",
+                    "strAwayTeam": "Chelsea", "intHomeScore": 2, "intAwayScore": 1
+                },
+                {
+                    "dateEvent": "2026-03-15", "strStatus": "FT", "strHomeTeam": "Chelsea",
+                    "strAwayTeam": "Arsenal", "intHomeScore": 1, "intAwayScore": 1
+                },
+                {
+                    # Прошлый сезон
+                    "dateEvent": "2024-08-10", "strStatus": "FT", "strHomeTeam": "Arsenal",
+                    "strAwayTeam": "Chelsea", "intHomeScore": 3, "intAwayScore": 0
+                },
+                {
+                    "dateEvent": "2026-01-05", "strStatus": "FT", "strHomeTeam": "Chelsea",
+                    "strAwayTeam": "Arsenal", "intHomeScore": 2, "intAwayScore": 2
+                },
+                {
+                    # Прошлый сезон
+                    "dateEvent": "2024-05-30", "strStatus": "FT", "strHomeTeam": "Arsenal",
+                    "strAwayTeam": "Chelsea", "intHomeScore": 1, "intAwayScore": 0
+                },
+            ]
+        }
+
+        with patch.object(fetcher.session, 'get') as mock_get:
+            mock_get.return_value.status_code = 200
+            mock_get.return_value.json.return_value = mock_response
+
+            # Вызов с фильтрацией по сезону 2025-2026
+            result, is_current_season = fetcher._fetch_h2h(
+                "Arsenal", "Chelsea", season="2025-2026", league_id="4328"
+            )
+
+            # Ожидаем только 3 матча из текущего сезона
+            assert len(result) == 3
+            assert is_current_season is True  # Матчи найдены в текущем сезоне
+            assert result[0]['date'] == "2025-10-20"
+            assert result[1]['date'] == "2026-03-15"
+            assert result[2]['date'] == "2026-01-05"
+
+    def test_fetch_h2h_without_season_filter(self):
+        """H2H без фильтрации возвращает все матчи."""
+        fetcher = MatchDataFetcher(api_key="test_key")
+
+        mock_response = {
+            "event": [
+                {
+                    "dateEvent": "2025-10-20", "strStatus": "FT", "strHomeTeam": "Arsenal",
+                    "strAwayTeam": "Chelsea", "intHomeScore": 2, "intAwayScore": 1
+                },
+                {
+                    "dateEvent": "2024-08-10", "strStatus": "FT", "strHomeTeam": "Arsenal",
+                    "strAwayTeam": "Chelsea", "intHomeScore": 3, "intAwayScore": 0
+                },
+            ]
+        }
+
+        with patch.object(fetcher.session, 'get') as mock_get:
+            mock_get.return_value.status_code = 200
+            mock_get.return_value.json.return_value = mock_response
+
+            # Вызов БЕЗ season/league_id
+            result, is_current_season = fetcher._fetch_h2h("Arsenal", "Chelsea")
+
+            # Ожидаем ВСЕ матчи
+            assert len(result) == 2
+            assert is_current_season is True  # Без фильтрации = True
+
+    def test_fetch_h2h_fallback_to_previous_seasons(self):
+        """H2H fallback на прошлые сезоны когда в текущем нет матчей."""
+        fetcher = MatchDataFetcher(api_key="test_key")
+
+        # Моки: все матчи из сезона 2024-2025 (до августа 2025)
+        mock_response = {
+            "event": [
+                {
+                    "dateEvent": "2024-09-22", "strStatus": "FT", "strHomeTeam": "Rayo Vallecano",
+                    "strAwayTeam": "Atletico Madrid", "intHomeScore": 1, "intAwayScore": 1
+                },
+                {
+                    "dateEvent": "2024-03-10", "strStatus": "FT", "strHomeTeam": "Atletico Madrid",
+                    "strAwayTeam": "Rayo Vallecano", "intHomeScore": 2, "intAwayScore": 0
+                },
+            ]
+        }
+
+        with patch.object(fetcher.session, 'get') as mock_get:
+            mock_get.return_value.status_code = 200
+            mock_get.return_value.json.return_value = mock_response
+
+            # Вызов с фильтрацией по сезону 2025-2026
+            result, is_current_season = fetcher._fetch_h2h(
+                "Rayo Vallecano", "Atletico Madrid", season="2025-2026", league_id="4335"
+            )
+
+            # Ожидаем fallback: топ-2 самых свежих матча из прошлых сезонов
+            assert len(result) == 2
+            assert is_current_season is False  # Флаг fallback
+            assert result[0]['date'] == "2024-09-22"  # Самый свежий
+            assert result[1]['date'] == "2024-03-10"

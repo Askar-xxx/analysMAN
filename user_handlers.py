@@ -79,6 +79,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data.startswith('buy_'):
         match_id = int(query.data.split('_')[1])
         await handle_purchase(query, user_id)
+    elif query.data.startswith('show_analysis_'):
+        match_id = int(query.data.split('_')[2])
+        await handle_show_analysis(query, user_id, match_id)
     elif query.data.startswith('purchased_sport_'):
         sport = query.data.split('_')[2]
         # Сохраняем предыдущее меню
@@ -274,19 +277,19 @@ async def handle_match_detail(query, user_id, match_id):
     has_purchased = database.has_purchased_analysis(user_id, match_id)
     user_balance = database.get_user_balance(user_id)
     text = format_match_info(match)
+
     if has_purchased:
-        text += f"\n📊 *Анализ:*\n{match['analysis_text']}\n\n"
-        text += "✅ Вы уже приобрели этот анализ"
+        # Если анализ уже куплен - показываем кнопку для просмотра PNG
+        text += "\n\n✅ Вы уже приобрели этот анализ"
+        keyboard = [
+            [InlineKeyboardButton("📊 Показать анализ", callback_data=f'show_analysis_{match_id}')],
+            [InlineKeyboardButton("◀️ Назад", callback_data='back')],
+            [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
+        ]
     else:
         text += f"\n💰 *Цена анализа:* {match['price']} руб.\n\n"
         text += "Для просмотра анализа необходимо приобрести его."
-    keyboard = []
-    if has_purchased:
-        keyboard.append([InlineKeyboardButton("◀️ Назад",
-                                              callback_data='back')])
-        keyboard.append([InlineKeyboardButton("🏠 В главное меню",
-                                              callback_data='back_to_menu')])
-    else:
+        keyboard = []
         if user_balance >= match['price']:
             btn_text = f"✅ Купить анализ за {match['price']} руб."
             keyboard.append([InlineKeyboardButton(
@@ -298,6 +301,7 @@ async def handle_match_detail(query, user_id, match_id):
                                               callback_data='back')])
         keyboard.append([InlineKeyboardButton("🏠 В главное меню",
                                               callback_data='back_to_menu')])
+
     await safe_edit_message(
         query,
         text,
@@ -324,35 +328,36 @@ async def handle_purchase(query, user_id):
         )
         return
 
-    # Если анализ ещё не сгенерирован — генерируем через AI с on-demand fetching
-    analysis_text = match['analysis_text']
-    if not analysis_text:
-        # Этап 1/2: Сбор обогащённых данных
-        await safe_edit_message(
-            query,
-            f"⏳ Этап 1/2: Сбор данных для матча "
-            f"{match['team1']} vs {match['team2']}...\n\n"
-            f"Получаем H2H, турнирную таблицу, форму команд...",
-            None
-        )
-        try:
-            from match_data_fetcher import MatchDataFetcher, build_enriched_context
-            fetcher = MatchDataFetcher()
-            # Конвертируем sqlite3.Row в dict для совместимости
-            match_dict = dict(match) if not isinstance(match, dict) else match
-            enriched_data = fetcher.fetch_match_data(match_dict)
-            enriched_context = build_enriched_context(match_dict, enriched_data)
-            logger.info(f"On-demand data fetched. Errors: {enriched_data.get('errors', [])}")
-        except Exception as e:
-            logger.error(f"Ошибка получения обогащённых данных: {e}", exc_info=True)
-            # Продолжаем с пустым контекстом
-            enriched_context = "Обогащённые данные недоступны."
+    # Конвертируем sqlite3.Row в dict для совместимости
+    match_dict = dict(match) if not isinstance(match, dict) else match
 
-        # Этап 2/2: Генерация анализа
+    # Этап 1/2: Сбор обогащённых данных (ВСЕГДА, для PNG рендеринга)
+    await safe_edit_message(
+        query,
+        f"⏳ Этап 1/2: Сбор данных для матча "
+        f"{match_dict['team1']} vs {match_dict['team2']}...\n\n"
+        f"Получаем H2H, турнирную таблицу, форму команд...",
+        None
+    )
+
+    enriched_data = {}
+    try:
+        from match_data_fetcher import MatchDataFetcher, build_enriched_context
+        fetcher = MatchDataFetcher()
+        enriched_data = fetcher.fetch_match_data(match_dict)
+        enriched_context = build_enriched_context(match_dict, enriched_data)
+        logger.info(f"On-demand data fetched. Errors: {enriched_data.get('errors', [])}")
+    except Exception as e:
+        logger.error(f"Ошибка получения обогащённых данных: {e}", exc_info=True)
+        enriched_context = "Обогащённые данные недоступны."
+
+    # Этап 2/2: Подготовка анализа (если ещё не сгенерирован)
+    analysis_text = match_dict.get('analysis_text')
+    if not analysis_text:
         await safe_edit_message(
             query,
-            f"⏳ Этап 2/2: Генерация анализа для матча "
-            f"{match['team1']} vs {match['team2']}...\n\n"
+            f"⏳ Этап 2/2: Подготовка анализа для матча "
+            f"{match_dict['team1']} vs {match_dict['team2']}...\n\n"
             f"Пожалуйста, подождите 10-15 секунд.",
             None
         )
@@ -372,21 +377,216 @@ async def handle_purchase(query, user_id):
 
     # Выполняем покупку (списание средств)
     success, message = database.purchase_analysis(user_id, match_id)
-    if success:
-        text = "✅ Покупка успешна!\n\n"
-        text += f"🏆 Матч: {match['team1']} vs {match['team2']}\n"
-        text += f"💰 Списано: {match['price']} руб.\n"
-        text += f"💳 Новый баланс: {database.get_user_balance(user_id)} руб.\n\n"
-        text += f"📊 Анализ:\n{analysis_text}"
-    else:
+    if not success:
         text = f"❌ Не удалось купить анализ:\n{message}\n\n"
         text += f"💰 Ваш баланс: {database.get_user_balance(user_id)} руб.\n"
-        text += f"💵 Нужно: {match['price']} руб."
+        text += f"💵 Нужно: {match_dict['price']} руб."
+        await safe_edit_message(
+            query,
+            text,
+            keyboards.main_menu_keyboard()
+        )
+        return
+
+    # Этап 3: Рендеринг PNG таблицы
     await safe_edit_message(
         query,
-        text,
-        keyboards.main_menu_keyboard()
+        f"⏳ Подготовка визуализации...",
+        None
     )
+
+    png_path = None
+    try:
+        from analysis_formatter import build_table_data
+        from image_renderer import render_analysis_table
+
+        # Формируем структурированные данные для таблицы
+        table_data = build_table_data(match_dict, enriched_data)
+
+        # Рендерим PNG
+        png_path = render_analysis_table(match_dict, table_data)
+        logger.info(f"PNG таблица создана: {png_path}")
+
+    except Exception as e:
+        logger.error(f"Ошибка рендеринга PNG: {e}", exc_info=True)
+        # Fallback на текстовый анализ
+        text = "✅ Покупка успешна!\n\n"
+        text += f"🏆 Матч: {match_dict['team1']} vs {match_dict['team2']}\n"
+        text += f"💰 Списано: {match_dict['price']} руб.\n"
+        text += f"💳 Новый баланс: {database.get_user_balance(user_id)} руб.\n\n"
+        text += f"📊 Анализ:\n{analysis_text}"
+        await safe_edit_message(
+            query,
+            text,
+            keyboards.main_menu_keyboard()
+        )
+        return
+
+    # Отправляем PNG как фото
+    try:
+        chat_id = query.message.chat_id
+        caption = (
+            f"✅ Анализ матча\n\n"
+            f"🏆 {match_dict['team1']} vs {match_dict['team2']}\n"
+            f"📅 {match_dict['match_date']} в {match_dict['match_time']}\n"
+            f"🏟 {match_dict.get('league', 'N/A')}\n\n"
+            f"💰 Списано: {match_dict['price']} руб.\n"
+            f"💳 Новый баланс: {database.get_user_balance(user_id)} руб."
+        )
+
+        # Отправляем фото
+        with open(png_path, 'rb') as photo:
+            await query.message.reply_photo(
+                photo=photo,
+                caption=caption
+            )
+
+        # Отправляем главное меню отдельным сообщением (только кнопки)
+        await query.message.reply_text(
+            ".",  # Минимальный текст (Telegram требует непустое сообщение)
+            reply_markup=keyboards.main_menu_keyboard()
+        )
+
+        # Удаляем сообщение с прогрессом
+        try:
+            await query.message.delete()
+        except Exception:
+            pass  # Игнорируем ошибки удаления
+
+        # Удаляем временный PNG файл
+        try:
+            import os
+            os.remove(png_path)
+        except Exception:
+            pass
+
+    except Exception as e:
+        logger.error(f"Ошибка отправки PNG: {e}", exc_info=True)
+        # Fallback на текстовый анализ
+        text = "✅ Покупка успешна!\n\n"
+        text += f"🏆 Матч: {match_dict['team1']} vs {match_dict['team2']}\n"
+        text += f"💰 Списано: {match_dict['price']} руб.\n"
+        text += f"💳 Новый баланс: {database.get_user_balance(user_id)} руб.\n\n"
+        text += f"📊 Анализ:\n{analysis_text}"
+        await safe_edit_message(
+            query,
+            text,
+            keyboards.main_menu_keyboard()
+        )
+
+
+async def handle_show_analysis(query, user_id, match_id):
+    """Отображение PNG анализа для уже купленного матча"""
+    # Проверяем что анализ действительно куплен
+    if not database.has_purchased_analysis(user_id, match_id):
+        await safe_edit_message(
+            query,
+            "❌ Вы не приобретали анализ для этого матча.",
+            keyboards.main_menu_keyboard()
+        )
+        return
+
+    match = database.get_match_by_id(match_id)
+    if not match:
+        await safe_edit_message(
+            query,
+            "❌ Матч не найден.",
+            keyboards.main_menu_keyboard()
+        )
+        return
+
+    # Конвертируем в dict
+    match_dict = dict(match) if not isinstance(match, dict) else match
+
+    # Показываем прогресс
+    await safe_edit_message(
+        query,
+        f"⏳ Подготовка анализа для матча\n{match_dict['team1']} vs {match_dict['team2']}...",
+        None
+    )
+
+    # Получаем обогащённые данные
+    enriched_data = {}
+    try:
+        from match_data_fetcher import MatchDataFetcher
+        fetcher = MatchDataFetcher()
+        enriched_data = fetcher.fetch_match_data(match_dict)
+        logger.info(f"Data fetched for show_analysis. Errors: {enriched_data.get('errors', [])}")
+    except Exception as e:
+        logger.error(f"Ошибка получения данных для отображения: {e}", exc_info=True)
+
+    # Рендерим PNG
+    png_path = None
+    try:
+        from analysis_formatter import build_table_data
+        from image_renderer import render_analysis_table
+
+        table_data = build_table_data(match_dict, enriched_data)
+        png_path = render_analysis_table(match_dict, table_data)
+        logger.info(f"PNG создан для отображения: {png_path}")
+
+    except Exception as e:
+        logger.error(f"Ошибка рендеринга PNG для отображения: {e}", exc_info=True)
+        # Fallback на текстовый анализ
+        text = f"📊 Анализ матча\n\n"
+        text += f"{match_dict['team1']} vs {match_dict['team2']}\n"
+        text += f"{match_dict['match_date']} в {match_dict['match_time']}\n\n"
+        text += match_dict.get('analysis_text', 'Анализ недоступен')
+        await safe_edit_message(
+            query,
+            text,
+            keyboards.main_menu_keyboard()
+        )
+        return
+
+    # Отправляем PNG
+    try:
+        chat_id = query.message.chat_id
+        caption = (
+            f"📊 Анализ матча\n\n"
+            f"🏆 {match_dict['team1']} vs {match_dict['team2']}\n"
+            f"📅 {match_dict['match_date']} в {match_dict['match_time']}\n"
+            f"🏟 {match_dict.get('league', 'N/A')}"
+        )
+
+        # Отправляем фото
+        with open(png_path, 'rb') as photo:
+            await query.message.reply_photo(
+                photo=photo,
+                caption=caption
+            )
+
+        # Отправляем главное меню отдельным сообщением (только кнопки)
+        await query.message.reply_text(
+            ".",  # Минимальный текст (Telegram требует непустое сообщение)
+            reply_markup=keyboards.main_menu_keyboard()
+        )
+
+        # Удаляем сообщение с прогрессом
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+
+        # Удаляем временный файл
+        try:
+            import os
+            os.remove(png_path)
+        except Exception:
+            pass
+
+    except Exception as e:
+        logger.error(f"Ошибка отправки PNG: {e}", exc_info=True)
+        # Fallback
+        text = f"📊 Анализ матча\n\n"
+        text += f"{match_dict['team1']} vs {match_dict['team2']}\n"
+        text += f"{match_dict['match_date']} в {match_dict['match_time']}\n\n"
+        text += match_dict.get('analysis_text', 'Анализ недоступен')
+        await safe_edit_message(
+            query,
+            text,
+            keyboards.main_menu_keyboard()
+        )
 
 
 async def handle_my_analysis(update: Update, query, user_id):

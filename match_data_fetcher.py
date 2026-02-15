@@ -4,6 +4,7 @@ On-demand fetcher для обогащения матчей данными H2H/st
 """
 import logging
 import requests
+from datetime import datetime
 from typing import List, Optional
 from config import THESPORTSDB_KEY
 
@@ -61,35 +62,46 @@ class MatchDataFetcher:
         away_team_id = match.get('away_team_id')
         api_event_id = match.get('api_event_id')
 
-        # 1. H2H (история личных встреч)
-        try:
-            h2h = self._fetch_h2h(team1, team2)
-            if h2h:
-                result['h2h'] = h2h
-                logger.info(f"H2H получен: {len(h2h)} матчей")
-        except Exception as e:
-            error_msg = f"Ошибка получения H2H: {e}"
-            logger.error(error_msg)
-            result['errors'].append(error_msg)
-
-        # 2. Standings (турнирная таблица) — требует league_id/season
+        # 1. Event details (получить season + league_id ПЕРВЫМ)
+        season = None
+        league_id = None
         try:
             if api_event_id:
                 event_details = self._fetch_event_details(api_event_id)
                 if event_details:
                     league_id = event_details.get('league_id')
                     season = event_details.get('season')
-                    if league_id and season:
-                        standings = self._fetch_standings(league_id, season)
-                        if standings:
-                            result['standings'] = standings
-                            logger.info(f"Standings получен для league {league_id}, season {season}")
+                    logger.info(f"Event details: league {league_id}, season {season}")
+        except Exception as e:
+            error_msg = f"Ошибка получения event details: {e}"
+            logger.error(error_msg)
+            result['errors'].append(error_msg)
+
+        # 2. H2H (с фильтрацией по season из шага 1)
+        try:
+            h2h, h2h_is_current_season = self._fetch_h2h(team1, team2, season=season, league_id=league_id)
+            if h2h:
+                result['h2h'] = h2h
+                result['h2h_is_current_season'] = h2h_is_current_season
+                logger.info(f"H2H получен: {len(h2h)} матчей (текущий сезон: {h2h_is_current_season})")
+        except Exception as e:
+            error_msg = f"Ошибка получения H2H: {e}"
+            logger.error(error_msg)
+            result['errors'].append(error_msg)
+
+        # 3. Standings (использовать season и league_id из event_details)
+        try:
+            if league_id and season:
+                standings = self._fetch_standings(league_id, season)
+                if standings:
+                    result['standings'] = standings
+                    logger.info(f"Standings получен для league {league_id}, season {season}")
         except Exception as e:
             error_msg = f"Ошибка получения standings: {e}"
             logger.error(error_msg)
             result['errors'].append(error_msg)
 
-        # 3. Form (последние матчи команд)
+        # 4. Form (последние матчи команд)
         try:
             if home_team_id:
                 team1_form = self._fetch_team_last_matches(home_team_id)
@@ -112,23 +124,59 @@ class MatchDataFetcher:
             logger.error(error_msg)
             result['errors'].append(error_msg)
 
+        # 5. Lineups (составы) — для последних 2 матчей каждой команды
+        try:
+            # Получаем составы для team1
+            if result.get('team1_form') and len(result['team1_form']) >= 2:
+                for i in range(2):  # Последние 2 матча
+                    event_id = result['team1_form'][i].get('event_id')
+                    if event_id:
+                        lineup = self._fetch_lineup(event_id)
+                        if lineup:
+                            result[f'lineup_{event_id}'] = lineup
+                            logger.info(f"Lineup получен для event {event_id}: {len(lineup)} игроков")
+
+            # Получаем составы для team2
+            if result.get('team2_form') and len(result['team2_form']) >= 2:
+                for i in range(2):  # Последние 2 матча
+                    event_id = result['team2_form'][i].get('event_id')
+                    if event_id:
+                        lineup = self._fetch_lineup(event_id)
+                        if lineup:
+                            result[f'lineup_{event_id}'] = lineup
+                            logger.info(f"Lineup получен для event {event_id}: {len(lineup)} игроков")
+        except Exception as e:
+            error_msg = f"Ошибка получения lineups: {e}"
+            logger.error(error_msg)
+            result['errors'].append(error_msg)
+
         return result
 
-    def _fetch_h2h(self, team1: str, team2: str) -> List[dict]:
+    def _fetch_h2h(
+        self, team1: str, team2: str,
+        season: Optional[str] = None, league_id: Optional[str] = None
+    ) -> tuple:
         """
         Получить историю личных встреч через searchevents.php.
+        С фильтрацией по текущему сезону (если переданы season и league_id).
 
         Premium API: возвращает до 10 результатов (vs бесплатный 2-5).
 
         Args:
             team1: Название первой команды
             team2: Название второй команды
+            season: (Optional) Сезон в формате "2025-2026" для фильтрации
+            league_id: (Optional) ID лиги для определения границ сезона
 
         Returns:
-            Список матчей с полями: date, score, home_team, away_team
+            Tuple (matches, is_current_season):
+            - matches: список матчей H2H
+            - is_current_season: True если матчи из текущего сезона, False если fallback
         """
         # Формируем поисковый запрос: "team1 vs team2"
         query = f"{team1} vs {team2}"
+        is_current_season = True  # По умолчанию считаем что матчи из текущего сезона
+
         try:
             response = self.session.get(
                 f"{self.base_url}/searchevents.php",
@@ -137,7 +185,7 @@ class MatchDataFetcher:
             )
             if response.status_code != 200:
                 logger.warning(f"H2H: статус {response.status_code} для '{query}'")
-                return []
+                return [], True
 
             data = response.json()
             if not data or 'event' not in data or not data['event']:
@@ -153,7 +201,7 @@ class MatchDataFetcher:
 
             if not data or 'event' not in data or not data['event']:
                 logger.debug(f"H2H: нет данных для '{team1}' vs '{team2}'")
-                return []
+                return [], True
 
             # Парсим события
             events = data['event']
@@ -172,12 +220,45 @@ class MatchDataFetcher:
                     'score': f"{event.get('intHomeScore', '?')}:{event.get('intAwayScore', '?')}"
                 })
 
+            # Фильтрация по текущему сезону (если переданы параметры)
+            if season and league_id:
+                try:
+                    start_date, end_date = _get_season_date_range(season, league_id)
+                    logger.info(f"H2H фильтрация: сезон {season}, диапазон {start_date} — {end_date}")
+
+                    # Сохраняем список ДО фильтрации по датам (но уже после фильтра по статусу)
+                    # Это нужно для fallback если в текущем сезоне нет матчей
+                    matches_before_date_filter = h2h_matches.copy()
+
+                    filtered = []
+                    for m in h2h_matches:
+                        match_date = datetime.strptime(m['date'], '%Y-%m-%d').date()
+                        if start_date <= match_date <= end_date:
+                            filtered.append(m)
+
+                    logger.info(f"H2H: до фильтрации {len(h2h_matches)}, после {len(filtered)}")
+                    h2h_matches = filtered
+
+                    # Fallback: если после фильтрации 0 матчей, вернуть топ-3 самых свежих
+                    if not h2h_matches and matches_before_date_filter:
+                        logger.warning("H2H фильтрация вернула 0 матчей, используем топ-3 из всех")
+                        h2h_matches = sorted(
+                            matches_before_date_filter,
+                            key=lambda x: x['date'],
+                            reverse=True
+                        )[:3]
+                        is_current_season = False  # Флаг что это матчи из прошлых сезонов
+                except ValueError as e:
+                    logger.warning(f"Ошибка расчета границ сезона: {e}, используем нефильтрованный H2H")
+                except Exception as e:
+                    logger.error(f"Ошибка фильтрации H2H: {e}, используем нефильтрованный H2H")
+
             # Ограничиваем до 7 матчей (как в старой версии)
-            return h2h_matches[:7]
+            return h2h_matches[:7], is_current_season
 
         except Exception as e:
             logger.error(f"Ошибка _fetch_h2h: {e}")
-            return []
+            return [], True
 
     def _fetch_standings(self, league_id: int, season: str) -> dict:
         """
@@ -289,7 +370,8 @@ class MatchDataFetcher:
                     'home_score': event.get('intHomeScore', ''),
                     'away_score': event.get('intAwayScore', ''),
                     'score': f"{event.get('intHomeScore', '?')}:{event.get('intAwayScore', '?')}",
-                    'league': event.get('strLeague', '')
+                    'league': event.get('strLeague', ''),
+                    'event_id': event.get('idEvent', '')  # Добавлено для получения составов
                 })
 
             return matches
@@ -334,6 +416,89 @@ class MatchDataFetcher:
         except Exception as e:
             logger.error(f"Ошибка _fetch_event_details: {e}")
             return None
+
+    def _fetch_lineup(self, event_id: int) -> List[dict]:
+        """
+        Получить составы игроков для события через V1 API.
+
+        Args:
+            event_id: ID события из TheSportsDB
+
+        Returns:
+            Список игроков с полями: strPlayer, strPosition, intSquadNumber,
+            strSubstitute, strHome, strTeam
+        """
+        try:
+            response = self.session.get(
+                f"{self.base_url}/lookuplineup.php",
+                params={'id': event_id},
+                timeout=10
+            )
+            if response.status_code != 200:
+                logger.warning(f"Lineup: статус {response.status_code} для event {event_id}")
+                return []
+
+            data = response.json()
+            if not data or 'lineup' not in data or not data['lineup']:
+                logger.debug(f"Lineup: нет данных для event {event_id}")
+                return []
+
+            return data['lineup']
+
+        except Exception as e:
+            logger.error(f"Ошибка _fetch_lineup: {e}")
+            return []
+
+
+def _get_season_date_range(season: str, league_id: str) -> tuple:
+    """
+    Вычислить диапазон дат для сезона.
+
+    Args:
+        season: Сезон в формате "2025-2026"
+        league_id: ID лиги (например, "4328" для Premier League)
+
+    Returns:
+        (start_date, end_date) — tuple из datetime.date
+
+    Raises:
+        ValueError: если формат season некорректный
+    """
+    if '-' not in season:
+        raise ValueError(f"Некорректный формат сезона: '{season}'. Ожидается формат 'YYYY-YYYY'")
+
+    try:
+        parts = season.split('-')
+        start_year = int(parts[0])
+        end_year = int(parts[1])
+    except (IndexError, ValueError) as e:
+        raise ValueError(f"Ошибка парсинга сезона '{season}': {e}")
+
+    # Определяем границы по типу турнира
+    # Топ-лиги: Premier League (4328), La Liga (4335), Bundesliga (4331)
+    top_leagues = ['4328', '4335', '4331']
+    # Кубки Европы: Champions League (4480), Europa League (4481)
+    european_cups = ['4480', '4481']
+
+    if league_id in top_leagues:
+        # Топ-лиги: август - май
+        start_month, start_day = 8, 1
+        end_month, end_day = 5, 31
+    elif league_id in european_cups:
+        # Кубки: сентябрь - май (групповой этап позже)
+        start_month, start_day = 9, 1
+        end_month, end_day = 5, 31
+    else:
+        # Неизвестные лиги: fallback на август-май
+        logger.warning(f"Неизвестный league_id: {league_id}, используем дефолтные границы (август-май)")
+        start_month, start_day = 8, 1
+        end_month, end_day = 5, 31
+
+    from datetime import date
+    start_date = date(start_year, start_month, start_day)
+    end_date = date(end_year, end_month, end_day)
+
+    return start_date, end_date
 
 
 def _calculate_stats_from_form(form_matches: list, is_home: bool) -> dict:
@@ -590,7 +755,16 @@ def build_enriched_context(match: dict, data: dict) -> str:
     # === H2H ===
     if data.get('h2h'):
         h2h_lines = ["=== ИСТОРИЯ ЛИЧНЫХ ВСТРЕЧ ==="]
-        h2h_lines.append(f"Последние {len(data['h2h'])} матчей:")
+
+        # Проверяем флаг: матчи из текущего сезона или fallback на прошлые
+        is_current_season = data.get('h2h_is_current_season', True)
+
+        if is_current_season:
+            h2h_lines.append(f"Последние {len(data['h2h'])} матчей:")
+        else:
+            h2h_lines.append("В текущем сезоне команды не встречались.")
+            h2h_lines.append(f"Последние встречи из прошлых сезонов ({len(data['h2h'])} матчей):")
+
         for h2h_match in data['h2h']:
             date = h2h_match.get('date', '')
             home = h2h_match.get('home_team', '')

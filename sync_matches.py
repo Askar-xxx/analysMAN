@@ -276,20 +276,19 @@ class SportsDBSyncer:
             def clean_name(name):
                 if not name:
                     return "Unknown Team"
-                replacements = [
-                    (' FC', ''),
-                    (' AFC', ''),
-                    (' CF', ''),
-                    (' SS', ''),
-                    (' Club', ''),
-                    (' U19', ''),
-                    (' U21', ''),
-                    (' U23', ''),
-                    (' B', ''),
-                    (' II', ''),
+
+                # Суффиксы которые удаляем только если они в КОНЦЕ названия
+                # (чтобы не сломать "Real Betis" → "Realetis")
+                end_suffixes = [
+                    ' FC', ' AFC', ' CF', ' SS', ' Club',
+                    ' U19', ' U21', ' U23', ' B', ' II'
                 ]
-                for old, new in replacements:
-                    name = name.replace(old, new)
+
+                for suffix in end_suffixes:
+                    if name.endswith(suffix):
+                        name = name[:-len(suffix)]
+                        break  # Удаляем только один суффикс
+
                 return name.strip()
 
             # Конвертируем время в МСК (UTC+3)

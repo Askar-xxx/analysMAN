@@ -1,0 +1,5 @@
+Collecting Pillow
+  Downloading pillow-12.1.1-cp310-cp310-win_amd64.whl (7.0 MB)
+     ---------------------------------------- 7.0/7.0 MB 30.0 MB/s eta 0:00:00
+Installing collected packages: Pillow
+Successfully installed Pillow-12.1.1
