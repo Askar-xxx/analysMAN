@@ -4,8 +4,7 @@
 import logging
 import os
 from PIL import Image, ImageDraw, ImageFont
-from typing import Dict, List, Tuple, Optional
-import textwrap
+from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -271,7 +270,7 @@ def render_analysis_table(match: dict, table_data: dict) -> str:
         title_y = card_y + CARD_PADDING
         for line in title_lines:
             draw.text((CARD_PADDING + 10, title_y), line,
-                     fill=_hex_to_rgb(TITLE_COLOR), font=title_font)
+                      fill=_hex_to_rgb(TITLE_COLOR), font=title_font)
             title_y += 20
 
         # Начало таблицы
@@ -280,11 +279,13 @@ def render_analysis_table(match: dict, table_data: dict) -> str:
         # Рисуем заголовок таблицы
         header_x = CARD_PADDING + 10
         _draw_cell(draw, header_x, table_y, col1_width, HEADER_HEIGHT,
-                  "Аспект анализа", header_font, is_header=True)
-        _draw_cell(draw, header_x + col1_width, table_y, col2_width, HEADER_HEIGHT,
-                  table_data['team_left'], header_font, is_header=True)
-        _draw_cell(draw, header_x + col1_width + col2_width, table_y, col3_width, HEADER_HEIGHT,
-                  table_data['team_right'], header_font, is_header=True)
+                   "Аспект анализа", header_font, is_header=True)
+        _draw_cell(draw, header_x + col1_width, table_y, col2_width,
+                   HEADER_HEIGHT, table_data['team_left'], header_font,
+                   is_header=True)
+        _draw_cell(draw, header_x + col1_width + col2_width, table_y,
+                   col3_width, HEADER_HEIGHT, table_data['team_right'],
+                   header_font, is_header=True)
 
         table_y += HEADER_HEIGHT
 
@@ -295,18 +296,18 @@ def render_analysis_table(match: dict, table_data: dict) -> str:
             # Специальная обработка для "История встреч" (colspan=2)
             if row[0] == "История встреч":
                 _draw_cell(draw, header_x, table_y, col1_width, row_height,
-                          row[0], cell_font)
+                           row[0], cell_font)
                 _draw_cell(draw, header_x + col1_width, table_y,
-                          col2_width + col3_width, row_height,
-                          row[1], cell_font)
+                           col2_width + col3_width, row_height, row[1],
+                           cell_font)
             else:
                 # Обычная строка с 3 колонками
                 _draw_cell(draw, header_x, table_y, col1_width, row_height,
-                          row[0], cell_font)
-                _draw_cell(draw, header_x + col1_width, table_y, col2_width, row_height,
-                          row[1], cell_font)
-                _draw_cell(draw, header_x + col1_width + col2_width, table_y, col3_width, row_height,
-                          row[2], cell_font)
+                           row[0], cell_font)
+                _draw_cell(draw, header_x + col1_width, table_y, col2_width,
+                           row_height, row[1], cell_font)
+                _draw_cell(draw, header_x + col1_width + col2_width, table_y,
+                           col3_width, row_height, row[2], cell_font)
 
             table_y += row_height
 

@@ -43,7 +43,7 @@ def test_full_flow():
 
     # Конвертируем в dict
     match = dict(match_row)
-    logger.info(f"📋 Тестовый матч:")
+    logger.info("📋 Тестовый матч:")
     logger.info(f"   {match['team1']} vs {match['team2']}")
     logger.info(f"   Дата: {match['match_date']} {match['match_time']}")
     logger.info(f"   Лига: {match.get('league', 'N/A')}")
@@ -80,11 +80,11 @@ def test_full_flow():
 
     # Проверяем наличие lineup_changes
     if 'lineup_changes' in table_data:
-        logger.info(f"   ✅ Поле lineup_changes присутствует")
+        logger.info("   ✅ Поле lineup_changes присутствует")
         logger.info(f"      Left: {table_data['lineup_changes']['left']}")
         logger.info(f"      Right: {table_data['lineup_changes']['right']}")
     else:
-        logger.error(f"   ❌ Поле lineup_changes отсутствует!")
+        logger.error("   ❌ Поле lineup_changes отсутствует")
         return False
 
     # Шаг 3: Рендеринг PNG таблицы

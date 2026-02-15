@@ -54,6 +54,14 @@ def back_to_main_keyboard():
     ])
 
 
+def analysis_view_keyboard():
+    """Клавиатура для просмотра анализа"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("◀️ Назад", callback_data='back')],
+        [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
+    ])
+
+
 def sports_keyboard():
     """Клавиатура выбора спорта"""
     return InlineKeyboardMarkup([

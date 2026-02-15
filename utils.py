@@ -178,6 +178,24 @@ async def safe_edit_message(query, text, reply_markup=None, parse_mode='HTML'):
             logger.error(f"Query has no edit_message_text: {type(query)}")
             return None
 
+        # Проверяем, является ли сообщение фото
+        if hasattr(query, 'message') and query.message and query.message.photo:
+            # Удаляем сообщение с фото и отправляем новое текстовое в чат
+            chat_id = query.message.chat_id
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            # Отправляем новое сообщение в чат (не reply)
+            bot = query.message.get_bot()
+            await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode
+            )
+            return True
+
         # ФИНАЛЬНАЯ ПРОВЕРКА: если текст всё равно слишком длинный - обрезаем
         if len(text) > MAX_MESSAGE_LENGTH:
             logger.error(
@@ -203,6 +221,21 @@ async def safe_edit_message(query, text, reply_markup=None, parse_mode='HTML'):
             pass
         elif "Message to edit not found" in str(e):
             logger.warning(f"Message not found for editing: {e}")
+        elif "There is no text in the message to edit" in str(e):
+            # Сообщение с фото или другой контент - удаляем и отправляем новое
+            try:
+                chat_id = query.message.chat_id
+                await query.message.delete()
+                bot = query.message.get_bot()
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode
+                )
+            except Exception as ex:
+                logger.error(f"Failed to delete/resend message: {ex}")
+            return False
         elif "Message_too_long" in str(e) or "message is too long" in str(e).lower():
             # Экстренная защита: если всё же возникла эта ошибка
             logger.error(f"КРИТИЧЕСКАЯ ОШИБКА: Message_too_long несмотря на проверки! Длина: {len(text)}")
@@ -239,6 +272,7 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 👇 *Готовы начать? Выберите действие ниже:*
 """
     if hasattr(update, 'callback_query') and update.callback_query:
+        # safe_edit_message теперь автоматически обрабатывает случай с фото
         await safe_edit_message(
             update.callback_query,
             welcome_text,

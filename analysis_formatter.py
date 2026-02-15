@@ -3,8 +3,7 @@
 для последующего рендеринга в PNG таблицу.
 """
 import logging
-import re
-from typing import Dict, List, Optional, Set
+from typing import List, Set
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +75,6 @@ def extract_current_form(enriched_data: dict, team_name: str, is_home: bool) -> 
 
     # Считаем статистику по форме
     wins = form_str.count('W')
-    draws = form_str.count('D')
     losses = form_str.count('L')
     total = len(form_str)
 
@@ -177,11 +175,12 @@ def extract_h2h_history(enriched_data: dict) -> List[str]:
 
     if not is_current_season:
         # Добавляем заголовок о прошлых сезонах
-        result.append("⚠️ В текущем сезоне команды не встречались")
+        result.append("В текущем сезоне команды не встречались")
         result.append("Последние встречи из прошлых сезонов:")
         result.append("")  # Пустая строка для отступа
 
-    for match in h2h_matches[:5]:  # Последние 5
+    # Выводим все доступные матчи (до 10)
+    for match in h2h_matches:
         date = match.get('date', '')
         home = match.get('home_team', '')
         away = match.get('away_team', '')

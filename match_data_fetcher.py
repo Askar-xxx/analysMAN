@@ -253,8 +253,8 @@ class MatchDataFetcher:
                 except Exception as e:
                     logger.error(f"Ошибка фильтрации H2H: {e}, используем нефильтрованный H2H")
 
-            # Ограничиваем до 7 матчей (как в старой версии)
-            return h2h_matches[:7], is_current_season
+            # Ограничиваем до 10 матчей (последние N лет)
+            return h2h_matches[:10], is_current_season
 
         except Exception as e:
             logger.error(f"Ошибка _fetch_h2h: {e}")

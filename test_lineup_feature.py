@@ -29,8 +29,8 @@ def test_lineup_fetching():
         if len(lineup) > 0:
             sample = lineup[0]
             logger.info(f"Пример игрока: {sample.get('strPlayer')}, "
-                       f"команда: {sample.get('strTeam')}, "
-                       f"основной состав: {sample.get('strSubstitute')}")
+                        f"команда: {sample.get('strTeam')}, "
+                        f"основной состав: {sample.get('strSubstitute')}")
 
         # Считаем основной состав
         starters = [p for p in lineup if p.get('strSubstitute') == 'No']

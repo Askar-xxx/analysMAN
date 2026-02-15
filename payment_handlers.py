@@ -63,7 +63,7 @@ async def handle_deposit_amount(update: Update,
                          'description': '1000 руб. +400 бонус (9+ анализов)'}
     }
     if deposit_data not in deposit_options:
-        await query.answer("❌ Неверная сумма!", show_alert=True)
+        await query.answer("❌ Неверная сумма", show_alert=True)
         return
     option = deposit_options[deposit_data]
     await process_deposit_option(update, context, user_id, username, option)

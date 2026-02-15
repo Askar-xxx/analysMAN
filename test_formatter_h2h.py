@@ -11,9 +11,9 @@ def test_h2h_current_season():
         ],
         'h2h_is_current_season': True
     }
-    
+
     result = extract_h2h_history(enriched_data)
-    
+
     assert len(result) == 2
     assert result[0] == "2025-10-20: Arsenal 2:1 Chelsea"
     assert result[1] == "2026-01-15: Chelsea 1:1 Arsenal"
@@ -28,9 +28,9 @@ def test_h2h_fallback_to_previous():
         ],
         'h2h_is_current_season': False
     }
-    
+
     result = extract_h2h_history(enriched_data)
-    
+
     # Ожидаем: заголовок + пустую строку + матч
     assert len(result) >= 4
     assert "не встречались" in result[0]

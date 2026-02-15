@@ -73,11 +73,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_date_selection(query, context, sport, date_str)
     elif query.data.startswith('match_'):
         match_id = int(query.data.split('_')[1])
-        # Сохраняем предыдущее меню
+        # Сохраняем предыдущее меню и текущий матч
         context.user_data['menu_history'].append(MENU_DATE_SELECTION)
+        context.user_data['current_match_id'] = match_id
         await handle_match_detail(query, user_id, match_id)
     elif query.data.startswith('buy_'):
         match_id = int(query.data.split('_')[1])
+        # Сохраняем текущее меню (детали матча) в историю
+        context.user_data['menu_history'].append(MENU_MATCH_DETAIL)
         await handle_purchase(query, user_id)
     elif query.data.startswith('show_analysis_'):
         match_id = int(query.data.split('_')[2])
@@ -259,6 +262,13 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif previous_menu == MENU_DATE_SELECTION:
             sport = context.user_data.get('current_sport', 'football')
             await handle_date_selection_back(query, context, sport)
+        elif previous_menu == MENU_MATCH_DETAIL:
+            # Возврат к деталям матча
+            match_id = context.user_data.get('current_match_id')
+            if match_id:
+                await handle_match_detail(query, user_id, match_id)
+            else:
+                await send_main_menu(update, context)
         else:
             # По умолчанию возвращаемся в главное меню
             await send_main_menu(update, context)
@@ -391,7 +401,7 @@ async def handle_purchase(query, user_id):
     # Этап 3: Рендеринг PNG таблицы
     await safe_edit_message(
         query,
-        f"⏳ Подготовка визуализации...",
+        "⏳ Подготовка визуализации...",
         None
     )
 
@@ -410,7 +420,7 @@ async def handle_purchase(query, user_id):
     except Exception as e:
         logger.error(f"Ошибка рендеринга PNG: {e}", exc_info=True)
         # Fallback на текстовый анализ
-        text = "✅ Покупка успешна!\n\n"
+        text = "✅ Покупка успешна\n\n"
         text += f"🏆 Матч: {match_dict['team1']} vs {match_dict['team2']}\n"
         text += f"💰 Списано: {match_dict['price']} руб.\n"
         text += f"💳 Новый баланс: {database.get_user_balance(user_id)} руб.\n\n"
@@ -422,30 +432,38 @@ async def handle_purchase(query, user_id):
         )
         return
 
-    # Отправляем PNG как фото
+    # Отправляем PNG как фото с краткой сводкой и кнопками
     try:
-        chat_id = query.message.chat_id
-        caption = (
-            f"✅ Анализ матча\n\n"
-            f"🏆 {match_dict['team1']} vs {match_dict['team2']}\n"
-            f"📅 {match_dict['match_date']} в {match_dict['match_time']}\n"
-            f"🏟 {match_dict.get('league', 'N/A')}\n\n"
-            f"💰 Списано: {match_dict['price']} руб.\n"
-            f"💳 Новый баланс: {database.get_user_balance(user_id)} руб."
+        # Формируем краткое введение на основе данных матча
+        from datetime import datetime
+
+        # Форматируем дату
+        date_obj = datetime.strptime(match_dict['match_date'], '%Y-%m-%d')
+        date_formatted = date_obj.strftime('%d %B %Y года').replace(
+            'January', 'января').replace('February', 'февраля').replace(
+            'March', 'марта').replace('April', 'апреля').replace(
+            'May', 'мая').replace('June', 'июня').replace(
+            'July', 'июля').replace('August', 'августа').replace(
+            'September', 'сентября').replace('October', 'октября').replace(
+            'November', 'ноября').replace('December', 'декабря')
+
+        # Формируем краткое введение
+        intro_text = (
+            f"{match_dict['team1']} примет {match_dict['team2']}. "
+            f"Матч пройдёт {date_formatted} в {match_dict['match_time']} "
+            f"в рамках турнира {match_dict.get('league', 'N/A')}."
         )
 
-        # Отправляем фото
+        # Caption с заголовком и краткой сводкой (через двоеточие)
+        caption = f"✅ Анализ матча: {intro_text}"
+
+        # Отправляем фото с caption и кнопками в одном сообщении
         with open(png_path, 'rb') as photo:
             await query.message.reply_photo(
                 photo=photo,
-                caption=caption
+                caption=caption,
+                reply_markup=keyboards.analysis_view_keyboard()
             )
-
-        # Отправляем главное меню отдельным сообщением (только кнопки)
-        await query.message.reply_text(
-            ".",  # Минимальный текст (Telegram требует непустое сообщение)
-            reply_markup=keyboards.main_menu_keyboard()
-        )
 
         # Удаляем сообщение с прогрессом
         try:
@@ -463,7 +481,7 @@ async def handle_purchase(query, user_id):
     except Exception as e:
         logger.error(f"Ошибка отправки PNG: {e}", exc_info=True)
         # Fallback на текстовый анализ
-        text = "✅ Покупка успешна!\n\n"
+        text = "✅ Покупка успешна\n\n"
         text += f"🏆 Матч: {match_dict['team1']} vs {match_dict['team2']}\n"
         text += f"💰 Списано: {match_dict['price']} руб.\n"
         text += f"💳 Новый баланс: {database.get_user_balance(user_id)} руб.\n\n"
@@ -501,7 +519,8 @@ async def handle_show_analysis(query, user_id, match_id):
     # Показываем прогресс
     await safe_edit_message(
         query,
-        f"⏳ Подготовка анализа для матча\n{match_dict['team1']} vs {match_dict['team2']}...",
+        "⏳ Подготовка анализа для матча\n"
+        f"{match_dict['team1']} vs {match_dict['team2']}...",
         None
     )
 
@@ -528,39 +547,53 @@ async def handle_show_analysis(query, user_id, match_id):
     except Exception as e:
         logger.error(f"Ошибка рендеринга PNG для отображения: {e}", exc_info=True)
         # Fallback на текстовый анализ
-        text = f"📊 Анализ матча\n\n"
+        text = "📊 Анализ матча\n\n"
         text += f"{match_dict['team1']} vs {match_dict['team2']}\n"
         text += f"{match_dict['match_date']} в {match_dict['match_time']}\n\n"
-        text += match_dict.get('analysis_text', 'Анализ недоступен')
+        analysis_text = match_dict.get('analysis_text', '')
+        if analysis_text:
+            text += f"📊 Анализ:\n\n{analysis_text}"
+        else:
+            text += "Анализ недоступен"
         await safe_edit_message(
             query,
             text,
-            keyboards.main_menu_keyboard()
+            keyboards.analysis_view_keyboard()
         )
         return
 
-    # Отправляем PNG
+    # Отправляем PNG с краткой сводкой и кнопками
     try:
-        chat_id = query.message.chat_id
-        caption = (
-            f"📊 Анализ матча\n\n"
-            f"🏆 {match_dict['team1']} vs {match_dict['team2']}\n"
-            f"📅 {match_dict['match_date']} в {match_dict['match_time']}\n"
-            f"🏟 {match_dict.get('league', 'N/A')}"
+        # Формируем краткое введение на основе данных матча
+        from datetime import datetime
+
+        # Форматируем дату
+        date_obj = datetime.strptime(match_dict['match_date'], '%Y-%m-%d')
+        date_formatted = date_obj.strftime('%d %B %Y года').replace(
+            'January', 'января').replace('February', 'февраля').replace(
+            'March', 'марта').replace('April', 'апреля').replace(
+            'May', 'мая').replace('June', 'июня').replace(
+            'July', 'июля').replace('August', 'августа').replace(
+            'September', 'сентября').replace('October', 'октября').replace(
+            'November', 'ноября').replace('December', 'декабря')
+
+        # Формируем краткое введение
+        intro_text = (
+            f"{match_dict['team1']} примет {match_dict['team2']}. "
+            f"Матч пройдёт {date_formatted} в {match_dict['match_time']} "
+            f"в рамках турнира {match_dict.get('league', 'N/A')}."
         )
 
-        # Отправляем фото
+        # Caption с заголовком и краткой сводкой (через двоеточие)
+        caption = f"✅ Данные матча: {intro_text}"
+
+        # Отправляем фото с caption и кнопками в одном сообщении
         with open(png_path, 'rb') as photo:
             await query.message.reply_photo(
                 photo=photo,
-                caption=caption
+                caption=caption,
+                reply_markup=keyboards.analysis_view_keyboard()
             )
-
-        # Отправляем главное меню отдельным сообщением (только кнопки)
-        await query.message.reply_text(
-            ".",  # Минимальный текст (Telegram требует непустое сообщение)
-            reply_markup=keyboards.main_menu_keyboard()
-        )
 
         # Удаляем сообщение с прогрессом
         try:
@@ -578,14 +611,18 @@ async def handle_show_analysis(query, user_id, match_id):
     except Exception as e:
         logger.error(f"Ошибка отправки PNG: {e}", exc_info=True)
         # Fallback
-        text = f"📊 Анализ матча\n\n"
+        text = "📊 Анализ матча\n\n"
         text += f"{match_dict['team1']} vs {match_dict['team2']}\n"
         text += f"{match_dict['match_date']} в {match_dict['match_time']}\n\n"
-        text += match_dict.get('analysis_text', 'Анализ недоступен')
+        analysis_text = match_dict.get('analysis_text', '')
+        if analysis_text:
+            text += f"📊 Анализ:\n\n{analysis_text}"
+        else:
+            text += "Анализ недоступен"
         await safe_edit_message(
             query,
             text,
-            keyboards.main_menu_keyboard()
+            keyboards.analysis_view_keyboard()
         )
 
 
