@@ -1,3 +1,9 @@
+# START TEMPORARY DISABLE BALANCE LOGIC — MVP PURCHASE FLOW (2026-02-16)
+# Весь модуль payment_handlers временно отключён для MVP интеграции с DonationAlerts.
+# Функционал пополнения баланса будет восстановлен после тестирования MVP.
+# TODO: Restore after MVP — see mvp_scan_report.md
+
+"""
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -19,12 +25,12 @@ WAITING_CUSTOM_DEPOSIT = 1
 
 async def handle_deposit_menu(update: Update,
                               context: ContextTypes.DEFAULT_TYPE):
-    """Меню пополнения баланса"""
+    # Меню пополнения баланса
     query = update.callback_query
     await query.answer()
     user_id = update.effective_user.id
     balance = database.get_user_balance(user_id)
-    text = f"""
+    text = f'''
 💳 *ПОПОЛНЕНИЕ БАЛАНСА*
 
 💰 Текущий баланс: *{balance} руб.*
@@ -32,7 +38,7 @@ async def handle_deposit_menu(update: Update,
 🎁 *Выберите сумму для пополнения:*
 
 👇 *Доступные тарифы (все цены в рублях):*
-"""
+'''
     await safe_edit_message(
         query,
         text,
@@ -42,7 +48,7 @@ async def handle_deposit_menu(update: Update,
 
 async def handle_deposit_amount(update: Update,
                                 context: ContextTypes.DEFAULT_TYPE):
-    """Обработка выбора суммы пополнения"""
+    # Обработка выбора суммы пополнения
     query = update.callback_query
     await query.answer()
     user_id = update.effective_user.id
@@ -70,7 +76,7 @@ async def handle_deposit_amount(update: Update,
 
 
 async def handle_custom_deposit_start(query, context):
-    """Начало обработки своей суммы"""
+    # Начало обработки своей суммы
     await safe_edit_message(
         query,
         "⚙️ *ДРУГАЯ СУММА*\n\n"
@@ -84,7 +90,7 @@ async def handle_custom_deposit_start(query, context):
 
 async def handle_custom_deposit_amount(update: Update,
                                        context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ввода своей суммы"""
+    # Обработка ввода своей суммы
     user_id = update.effective_user.id
     username = update.effective_user.username or "нет username"
     if not context.user_data.get('awaiting_custom_deposit'):
@@ -133,13 +139,13 @@ async def handle_custom_deposit_amount(update: Update,
 async def process_deposit_option(update: Update,
                                  context: ContextTypes.DEFAULT_TYPE,
                                  user_id, username, option):
-    """Обработка опции пополнения"""
+    # Обработка опции пополнения
     # Сохраняем данные о пополнении
     context.user_data['deposit_amount'] = option['amount']
     context.user_data['deposit_bonus'] = option['bonus']
     context.user_data['deposit_total'] = option['total']
     # Текст с реквизитами
-    payment_details = f"""
+    payment_details = f'''
 💳 *Реквизиты для оплаты:*
 
 📱 *СБП (Система быстрых платежей):*
@@ -157,8 +163,8 @@ async def process_deposit_option(update: Update,
 1. При переводе укажите ваш Telegram ID: `{user_id}`
 2. После оплаты нажмите кнопку "Проверить пополнение"
 3. Баланс обновится в течение 15 минут
-"""
-    text = f"""
+'''
+    text = f'''
 ✅ *ВЫБРАНА СУММА ПОПОЛНЕНИЯ*
 
 💰 *Сумма:* {option['amount']} руб.
@@ -174,7 +180,7 @@ async def process_deposit_option(update: Update,
 4️⃣ *Баланс обновится* автоматически в течение 15 минут
 
 {payment_details}
-"""
+'''
     keyboard = [
         [InlineKeyboardButton("🔄 Проверить пополнение",
                               callback_data='check_deposit')],
@@ -201,12 +207,12 @@ async def process_deposit_option(update: Update,
 
 async def check_deposit_status(update: Update,
                                context: ContextTypes.DEFAULT_TYPE):
-    """Проверка статуса пополнения"""
+    # Проверка статуса пополнения
     query = update.callback_query
     await query.answer()
     user_id = update.effective_user.id
     balance = database.get_user_balance(user_id)
-    text = f"""
+    text = f'''
 🔄 *ПРОВЕРКА ПОПОЛНЕНИЯ*
 
 💰 Текущий баланс: *{balance} руб.*
@@ -222,7 +228,7 @@ async def check_deposit_status(update: Update,
 ⏱️ *Обработка платежей:* до 15 минут
 
 👇 *Другие действия:*
-"""
+'''
 
     await safe_edit_message(
         query,
@@ -232,7 +238,7 @@ async def check_deposit_status(update: Update,
 
 
 def setup_payment_handlers(application):
-    """Настройка обработчиков платежей"""
+    # Настройка обработчиков платежей
     # Conversation handler для своей суммы
     custom_deposit_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(
@@ -247,3 +253,6 @@ def setup_payment_handlers(application):
         per_message=True
     )
     application.add_handler(custom_deposit_handler)
+"""
+
+# END TEMPORARY DISABLE BALANCE LOGIC

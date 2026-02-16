@@ -1,5 +1,8 @@
 import sqlite3
+import logging
 from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
 
 
 def get_db_connection():
@@ -287,14 +290,14 @@ def check_database_structure():
 
 
 def get_purchased_matches_by_user(user_id):
-    """Получить все купленные матчи пользователя"""
+    """Получить все купленные матчи пользователя (только оплаченные)"""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         SELECT m.*, p.purchase_date
         FROM matches m
         JOIN purchases p ON m.id = p.match_id
-        WHERE p.user_id = ?
+        WHERE p.user_id = ? AND p.status = 'paid'
         ORDER BY m.match_date DESC, m.match_time DESC
     ''', (user_id,))
     matches = cursor.fetchall()
@@ -303,14 +306,14 @@ def get_purchased_matches_by_user(user_id):
 
 
 def get_purchased_matches_by_sport(user_id, sport):
-    """Получить купленные матчи пользователя по виду спорта"""
+    """Получить купленные матчи пользователя по виду спорта (только оплаченные)"""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         SELECT m.*, p.purchase_date
         FROM matches m
         JOIN purchases p ON m.id = p.match_id
-        WHERE p.user_id = ? AND m.sport = ?
+        WHERE p.user_id = ? AND m.sport = ? AND p.status = 'paid'
         ORDER BY m.match_date DESC, m.match_time DESC
     ''', (user_id, sport))
     matches = cursor.fetchall()
@@ -319,14 +322,14 @@ def get_purchased_matches_by_sport(user_id, sport):
 
 
 def get_purchased_dates_by_sport(user_id, sport):
-    """Получить даты купленных матчей по виду спорта"""
+    """Получить даты купленных матчей по виду спорта (только оплаченные)"""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         SELECT DISTINCT m.match_date
         FROM matches m
         JOIN purchases p ON m.id = p.match_id
-        WHERE p.user_id = ? AND m.sport = ?
+        WHERE p.user_id = ? AND m.sport = ? AND p.status = 'paid'
         ORDER BY m.match_date DESC
     ''', (user_id, sport))
     dates = cursor.fetchall()
@@ -388,14 +391,22 @@ def get_available_dates_with_matches(sport):
     return [date['match_date'] for date in dates]
 
 
-def update_match_analysis(match_id, analysis_text):
+def update_match_analysis(match_id, analysis_text, png_path=None):
+    """Обновляет текст анализа и опционально путь к PNG."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('''
-        UPDATE matches
-        SET analysis_text = ?
-        WHERE id = ?
-    ''', (analysis_text, match_id))
+    if png_path:
+        cursor.execute('''
+            UPDATE matches
+            SET analysis_text = ?, analysis_png_path = ?
+            WHERE id = ?
+        ''', (analysis_text, png_path, match_id))
+    else:
+        cursor.execute('''
+            UPDATE matches
+            SET analysis_text = ?
+            WHERE id = ?
+        ''', (analysis_text, match_id))
     conn.commit()
     conn.close()
 
@@ -426,19 +437,41 @@ def get_or_create_user(user_id, username=None):
     return user
 
 
+# START TEMPORARY DISABLE BALANCE LOGIC — MVP PURCHASE FLOW (2026-02-16)
+# def add_balance(user_id, amount):
+#     conn = get_db_connection()
+#     cursor = conn.cursor()
+#     cursor.execute('''
+#         UPDATE users
+#         SET balance = balance + ?
+#         WHERE user_id = ?
+#     ''', (amount, user_id))
+#     conn.commit()
+#     conn.close()
+# END TEMPORARY DISABLE BALANCE LOGIC
+# TODO: Restore after MVP — see mvp_scan_report.md
+
 def add_balance(user_id, amount):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        UPDATE users
-        SET balance = balance + ?
-        WHERE user_id = ?
-    ''', (amount, user_id))
-    conn.commit()
-    conn.close()
+    """Заглушка для MVP - баланс обновляется через DonationAlerts webhook"""
+    pass
 
 
 def purchase_analysis(user_id, match_id):
+    """
+    Создаёт pending purchase для DonationAlerts оплаты (MVP версия).
+
+    TEMPORARY (2026-02-16): Убрана проверка баланса и списание средств.
+    Теперь создаёт запись со status='pending' и уникальным token.
+
+    Returns:
+        tuple: (success: bool, message_or_token: str)
+            - Если success=True: message_or_token содержит token для оплаты
+            - Если success=False: message_or_token содержит сообщение об ошибке
+    """
+    import uuid
+    from datetime import timedelta
+    from config import ANALYSIS_PRICE_RUB
+
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT price FROM matches WHERE id = ?', (match_id,))
@@ -446,50 +479,113 @@ def purchase_analysis(user_id, match_id):
     if not match:
         conn.close()
         return False, "Матч не найден"
-    price = match['price']
-    cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
-    user = cursor.fetchone()
-    if not user:
-        conn.close()
-        return False, "Пользователь не найден"
-    if user['balance'] < price:
-        conn.close()
-        return False, f"Недостаточно средств. Нужно: {price} руб., у вас: {user['balance']} руб."
-    cursor.execute('''
-        UPDATE users
-        SET balance = balance - ?,
-            total_analysis_bought = total_analysis_bought + 1
-        WHERE user_id = ?
-    ''', (price, user_id))
+
+    # START TEMPORARY DISABLE BALANCE LOGIC — MVP PURCHASE FLOW (2026-02-16)
+    # Старая логика (закомментирована):
+    # - Проверка баланса пользователя
+    # - Списание средств
+    # - Обновление total_analysis_bought
+    #
+    # price = match['price']
+    # cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
+    # user = cursor.fetchone()
+    # if not user:
+    #     conn.close()
+    #     return False, "Пользователь не найден"
+    # if user['balance'] < price:
+    #     conn.close()
+    #     return False, f"Недостаточно средств. Нужно: {price} руб., у вас: {user['balance']} руб."
+    # cursor.execute('''
+    #     UPDATE users
+    #     SET balance = balance - ?,
+    #         total_analysis_bought = total_analysis_bought + 1
+    #     WHERE user_id = ?
+    # ''', (price, user_id))
+    # END TEMPORARY DISABLE BALANCE LOGIC
+
+    # Новая логика: создание pending purchase с token
+    token = uuid.uuid4().hex[:12].upper()  # Уникальный 12-символьный код
+    amount = ANALYSIS_PRICE_RUB * 100  # Цена в копейках (например, 2 руб = 200 коп)
     purchase_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    expires_at = (datetime.now() + timedelta(minutes=30)).strftime('%Y-%m-%d %H:%M:%S')
+
     cursor.execute('''
-        INSERT INTO purchases (user_id, match_id, purchase_date)
-        VALUES (?, ?, ?)
-    ''', (user_id, match_id, purchase_date))
+        INSERT INTO purchases (user_id, match_id, purchase_date, token, status, amount, expires_at)
+        VALUES (?, ?, ?, ?, 'pending', ?, ?)
+    ''', (user_id, match_id, purchase_date, token, amount, expires_at))
     conn.commit()
     conn.close()
-    return True, "Покупка успешна"
+
+    return True, token  # Возвращаем token вместо сообщения "Покупка успешна"
 
 
 def has_purchased_analysis(user_id, match_id):
+    """Проверяет, есть ли оплаченная покупка (status='paid') для данного матча."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         SELECT id FROM purchases
-        WHERE user_id = ? AND match_id = ?
+        WHERE user_id = ? AND match_id = ? AND status = 'paid'
     ''', (user_id, match_id))
     purchase = cursor.fetchone()
     conn.close()
     return purchase is not None
 
 
-def get_user_balance(user_id):
+def has_pending_purchase(user_id, match_id):
+    """Проверяет, есть ли pending покупка для данного матча."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
-    result = cursor.fetchone()
+    cursor.execute('''
+        SELECT id, token, expires_at FROM purchases
+        WHERE user_id = ? AND match_id = ? AND status = 'pending'
+    ''', (user_id, match_id))
+    purchase = cursor.fetchone()
     conn.close()
-    return result['balance'] if result else 0
+    return purchase
+
+
+def update_instruction_message_id(purchase_id, message_id):
+    """Сохраняет message_id инструкции для последующего удаления."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE purchases
+        SET instruction_message_id = ?
+        WHERE id = ?
+    ''', (message_id, purchase_id))
+    conn.commit()
+    conn.close()
+
+
+def get_purchase_by_token(token):
+    """Получает purchase по token (для listener)."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT id, user_id, match_id, amount, status, donation_event_id, instruction_message_id
+        FROM purchases
+        WHERE token = ? AND status = 'pending'
+    ''', (token,))
+    purchase = cursor.fetchone()
+    conn.close()
+    return purchase
+
+
+# START TEMPORARY DISABLE BALANCE LOGIC — MVP PURCHASE FLOW (2026-02-16)
+# def get_user_balance(user_id):
+#     conn = get_db_connection()
+#     cursor = conn.cursor()
+#     cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
+#     result = cursor.fetchone()
+#     conn.close()
+#     return result['balance'] if result else 0
+# END TEMPORARY DISABLE BALANCE LOGIC
+# TODO: Restore after MVP — see mvp_scan_report.md
+
+def get_user_balance(user_id):
+    """Заглушка для MVP - баланс не используется"""
+    return 0
 
 
 def get_user_stats(user_id):
@@ -572,3 +668,146 @@ def get_all_admins():
     admins = cursor.fetchall()
     conn.close()
     return admins
+
+
+def cleanup_old_purchases():
+    """Удалить старые покупки (анализы хранятся 1 день после матча)"""
+    import os
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Дата отсечки: вчера
+    cutoff_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+
+    # Получаем пути к PNG файлам для старых матчей перед удалением
+    cursor.execute('''
+        SELECT analysis_png_path FROM matches
+        WHERE match_date < ? AND analysis_png_path IS NOT NULL
+    ''', (cutoff_date,))
+    png_paths = [row['analysis_png_path'] for row in cursor.fetchall()]
+
+    # Находим и удаляем покупки для матчей старше cutoff_date
+    cursor.execute('''
+        DELETE FROM purchases
+        WHERE match_id IN (
+            SELECT id FROM matches
+            WHERE match_date < ?
+        )
+    ''', (cutoff_date,))
+
+    deleted_count = cursor.rowcount
+    conn.commit()
+    conn.close()
+
+    # Удаляем PNG файлы
+    deleted_png = 0
+    for png_path in png_paths:
+        if png_path and os.path.exists(png_path):
+            try:
+                os.remove(png_path)
+                deleted_png += 1
+            except Exception as e:
+                logger.warning(f"Не удалось удалить PNG {png_path}: {e}")
+
+    if deleted_png > 0:
+        logger.info(f"Удалено PNG файлов: {deleted_png}")
+
+    return deleted_count
+
+
+def delete_finished_matches_without_purchases():
+    """
+    Удалить завершенные матчи (is_active=0) если на них нет покупок.
+    Также удалить старые активные матчи (старше 1 дня).
+    Удаляет также соответствующие PNG файлы анализов.
+    """
+    import os
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Получаем пути к PNG файлов перед удалением матчей
+    cursor.execute('''
+        SELECT analysis_png_path FROM matches
+        WHERE (is_active = 0 OR match_date < date('now', '-1 day'))
+        AND id NOT IN (SELECT DISTINCT match_id FROM purchases)
+        AND analysis_png_path IS NOT NULL
+    ''')
+    png_paths = [row['analysis_png_path'] for row in cursor.fetchall()]
+
+    # 1. Удаляем деактивированные матчи без покупок
+    cursor.execute('''
+        DELETE FROM matches
+        WHERE is_active = 0
+        AND id NOT IN (SELECT DISTINCT match_id FROM purchases)
+    ''')
+    deleted_inactive = cursor.rowcount
+
+    # 2. Удаляем старые матчи (старше 1 дня) без покупок
+    cutoff_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+    cursor.execute('''
+        DELETE FROM matches
+        WHERE match_date < ?
+        AND id NOT IN (SELECT DISTINCT match_id FROM purchases)
+    ''', (cutoff_date,))
+    deleted_old = cursor.rowcount
+
+    conn.commit()
+    conn.close()
+
+    # Удаляем PNG файлы
+    deleted_png = 0
+    for png_path in png_paths:
+        if png_path and os.path.exists(png_path):
+            try:
+                os.remove(png_path)
+                deleted_png += 1
+            except Exception as e:
+                logger.warning(f"Не удалось удалить PNG {png_path}: {e}")
+
+    if deleted_png > 0:
+        logger.info(f"Удалено PNG файлов (без покупок): {deleted_png}")
+
+    return deleted_inactive + deleted_old
+
+
+def get_matches_by_date_filtered(sport, match_date):
+    """
+    Получить матчи по дате с фильтрацией прошедших.
+    Не показывать матчи которые прошли более 3 часов назад.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Получаем все активные матчи на дату
+    cursor.execute('''
+        SELECT * FROM matches
+        WHERE sport = ? AND match_date = ? AND is_active = 1
+        ORDER BY match_time
+    ''', (sport, match_date))
+    matches = cursor.fetchall()
+    conn.close()
+
+    # Фильтруем по времени - не показываем матчи старше 3 часов
+    now = datetime.now()
+    filtered_matches = []
+
+    for match in matches:
+        try:
+            # Парсим дату и время матча
+            match_datetime_str = f"{match['match_date']} {match['match_time']}"
+            match_datetime = datetime.strptime(match_datetime_str, '%Y-%m-%d %H:%M')
+
+            # Вычисляем разницу (матч в МСК, мы тоже в МСК)
+            time_diff = now - match_datetime
+
+            # Показываем только если:
+            # 1. Матч в будущем (time_diff < 0)
+            # 2. Матч начался менее 3 часов назад (LIVE или недавно завершен)
+            if time_diff.total_seconds() < 3 * 3600:  # 3 часа
+                filtered_matches.append(match)
+
+        except Exception:
+            # Если не можем распарсить время - показываем матч
+            filtered_matches.append(match)
+
+    return filtered_matches

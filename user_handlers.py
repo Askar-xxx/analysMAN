@@ -6,11 +6,14 @@ import keyboards
 from utils import safe_edit_message, send_main_menu, format_match_info
 from datetime import datetime, timedelta
 
-# Импорты из payment_handlers
-from payment_handlers import (
-    handle_deposit_menu,
-    handle_deposit_amount,
-)
+# START TEMPORARY DISABLE BALANCE LOGIC — MVP PURCHASE FLOW (2026-02-16)
+# # Импорты из payment_handlers
+# from payment_handlers import (
+#     handle_deposit_menu,
+#     handle_deposit_amount,
+# )
+# END TEMPORARY DISABLE BALANCE LOGIC
+# TODO: Restore after MVP — see mvp_scan_report.md
 
 MENU_MAIN = 'main'
 MENU_MY_ANALYSIS = 'my_analysis'
@@ -62,6 +65,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sport = query.data.split('_')[1]
         # Сохраняем предыдущее меню
         context.user_data['menu_history'].append(MENU_CATEGORY_SPORTS)
+        logger.info(f"Добавлено MENU_CATEGORY_SPORTS в history. Текущий history: {context.user_data['menu_history']}")
         await handle_sport_selection(query, context, sport)
     elif query.data.startswith('choose_date_'):
         parts = query.data.split('_')
@@ -98,14 +102,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['menu_history'].append(MENU_PURCHASED_SPORT)
         context.user_data['current_sport'] = sport
         await handle_purchased_date(query, user_id, sport, date_str)
-    elif query.data in ['deposit', 'deposit_150', 'deposit_300',
-                        'deposit_600', 'deposit_800']:
-        if query.data == 'deposit':
-            # Сохраняем предыдущее меню
-            context.user_data['menu_history'].append(MENU_MAIN)
-            await handle_deposit_menu(update, context)
-        else:
-            await handle_deposit_amount(update, context)
+    # START TEMPORARY DISABLE BALANCE LOGIC — MVP PURCHASE FLOW (2026-02-16)
+    # elif query.data in ['deposit', 'deposit_150', 'deposit_300',
+    #                     'deposit_600', 'deposit_800']:
+    #     if query.data == 'deposit':
+    #         # Сохраняем предыдущее меню
+    #         context.user_data['menu_history'].append(MENU_MAIN)
+    #         await handle_deposit_menu(update, context)
+    #     else:
+    #         await handle_deposit_amount(update, context)
+    # END TEMPORARY DISABLE BALANCE LOGIC
     else:
         await safe_edit_message(
             query,
@@ -196,7 +202,7 @@ async def handle_date_selection_back(query, context, sport):
 async def handle_date_selection(query, context, sport, date_str):
     """Обработка выбора даты"""
     print(f"   → Выбрана дата: {date_str} для спорта: {sport}")
-    matches = database.get_matches_by_date(sport, date_str)
+    matches = database.get_matches_by_date_filtered(sport, date_str)
     if not matches:
         await safe_edit_message(
             query,
@@ -244,6 +250,7 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     # Получаем предыдущее меню
     previous_menu = context.user_data['menu_history'].pop()
+    logger.info(f"go_back: previous_menu={previous_menu}, remaining_history={context.user_data['menu_history']}")
     user_id = update.effective_user.id
     query = update.callback_query
     try:
@@ -278,14 +285,18 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_match_detail(query, user_id, match_id):
-    """Обработка детальной страницы матча"""
+    """
+    Обработка детальной страницы матча (упрощённая для MVP).
+
+    TEMPORARY (2026-02-16): Убраны проверки баланса.
+    Всегда показывает кнопку "Купить анализ" (без проверки средств).
+    """
     match = database.get_match_by_id(match_id)
     if not match:
         await safe_edit_message(query, "Матч не найден.",
                                 keyboards.main_menu_keyboard())
         return
     has_purchased = database.has_purchased_analysis(user_id, match_id)
-    user_balance = database.get_user_balance(user_id)
     text = format_match_info(match)
 
     if has_purchased:
@@ -297,200 +308,132 @@ async def handle_match_detail(query, user_id, match_id):
             [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
         ]
     else:
-        text += f"\n💰 *Цена анализа:* {match['price']} руб.\n\n"
-        text += "Для просмотра анализа необходимо приобрести его."
-        keyboard = []
-        if user_balance >= match['price']:
-            btn_text = f"✅ Купить анализ за {match['price']} руб."
-            keyboard.append([InlineKeyboardButton(
-                btn_text, callback_data=f'buy_{match_id}')])
-        else:
-            keyboard.append([InlineKeyboardButton("💳 Пополнить баланс",
-                                                  callback_data='deposit')])
-        keyboard.append([InlineKeyboardButton("◀️ Назад",
-                                              callback_data='back')])
-        keyboard.append([InlineKeyboardButton("🏠 В главное меню",
-                                              callback_data='back_to_menu')])
+        # START TEMPORARY DISABLE BALANCE LOGIC — MVP PURCHASE FLOW (2026-02-16)
+        # Убрали: проверку баланса, отображение цены, кнопку "Пополнить баланс"
+        # Теперь: только кнопка "Купить анализ" и "Назад"
+        # END TEMPORARY DISABLE BALANCE LOGIC
+        text += "\n\nДля просмотра анализа необходимо приобрести его."
+        keyboard = keyboards.match_detail_keyboard(match_id, has_purchased)
 
     await safe_edit_message(
         query,
         text,
-        InlineKeyboardMarkup(keyboard)
+        InlineKeyboardMarkup(keyboard) if has_purchased else keyboard
     )
 
 
 async def handle_purchase(query, user_id):
-    """Обработка покупки анализа"""
+    """
+    Обработка покупки анализа через DonationAlerts (MVP версия).
+
+    TEMPORARY (2026-02-16): Упрощённый flow без списания баланса.
+    Создаёт pending purchase с token и отправляет инструкцию для оплаты.
+    Генерация анализа и отправка происходит в webhook после оплаты.
+    """
+    from config import ANALYSIS_PRICE_RUB, DA_PROFILE_URL
+
+    await query.answer()  # Убираем "часики" на кнопке
+
     match_id = int(query.data.split('_')[1])
     match = database.get_match_by_id(match_id)
     if not match:
-        await safe_edit_message(
-            query,
+        await query.message.reply_text(
             "❌ Матч не найден.",
-            keyboards.main_menu_keyboard()
-        )
-        return
-    if database.has_purchased_analysis(user_id, match_id):
-        await safe_edit_message(
-            query,
-            f"✅ Вы уже приобрели анализ для этого матча!\n\n{match['team1']} vs {match['team2']}",
-            keyboards.main_menu_keyboard()
+            reply_markup=keyboards.main_menu_keyboard()
         )
         return
 
-    # Конвертируем sqlite3.Row в dict для совместимости
+    # Проверяем, не куплен ли уже анализ (status='paid')
+    if database.has_purchased_analysis(user_id, match_id):
+        await query.message.reply_text(
+            "✅ Вы уже оплатили анализ для этого матча!\n\n"
+            f"{match['team1']} vs {match['team2']}\n\n"
+            "Откройте раздел «Мои анализы» чтобы получить его.",
+            reply_markup=keyboards.main_menu_keyboard()
+        )
+        return
+
+    # Проверяем, есть ли pending покупка (уже создана, ждёт оплаты)
+    pending = database.has_pending_purchase(user_id, match_id)
+    if pending:
+        existing_token = pending['token']
+        text = "💰 <b>Ожидается оплата...</b>\n\n"
+        text += "⏳ <b>У вас уже есть активный заказ!</b>\n\n"
+        text += f"🏆 Матч: <b>{match['team1']} vs {match['team2']}</b>\n"
+        text += f"💵 Стоимость: <b>{ANALYSIS_PRICE_RUB} руб.</b>\n\n"
+        text += "━━━━━━━━━━━━━━━━━━━\n\n"
+        text += "👇 <b>Скопируйте этот код:</b> 👇\n"
+        text += f"<code>{existing_token}</code>\n\n"
+        text += "<b>📋 Инструкция по оплате:</b>\n"
+        text += "1️⃣ Нажмите кнопку «Приобрести анализ» ниже\n"
+        text += f"2️⃣ Отправьте донат на сумму <b>{ANALYSIS_PRICE_RUB} руб.</b>\n"
+        text += "3️⃣ В сообщении к донату вставьте код выше 👆\n\n"
+        text += "⏱ Код действителен <b>30 минут</b>\n\n"
+        text += "✨ После оплаты анализ будет автоматически создан и отправлен вам в течение <b>30-60 секунд</b>."
+        keyboard = [
+            [InlineKeyboardButton("✅ Приобрести анализ", url=DA_PROFILE_URL)],
+            [InlineKeyboardButton("◀️ Назад", callback_data='back')],
+            [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
+        ]
+        await safe_edit_message(
+            query,
+            text,
+            InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
+        return
+
+    # Конвертируем в dict
     match_dict = dict(match) if not isinstance(match, dict) else match
 
-    # Этап 1/2: Сбор обогащённых данных (ВСЕГДА, для PNG рендеринга)
-    await safe_edit_message(
-        query,
-        f"⏳ Этап 1/2: Сбор данных для матча "
-        f"{match_dict['team1']} vs {match_dict['team2']}...\n\n"
-        f"Получаем H2H, турнирную таблицу, форму команд...",
-        None
-    )
-
-    enriched_data = {}
-    try:
-        from match_data_fetcher import MatchDataFetcher, build_enriched_context
-        fetcher = MatchDataFetcher()
-        enriched_data = fetcher.fetch_match_data(match_dict)
-        enriched_context = build_enriched_context(match_dict, enriched_data)
-        logger.info(f"On-demand data fetched. Errors: {enriched_data.get('errors', [])}")
-    except Exception as e:
-        logger.error(f"Ошибка получения обогащённых данных: {e}", exc_info=True)
-        enriched_context = "Обогащённые данные недоступны."
-
-    # Этап 2/2: Подготовка анализа (если ещё не сгенерирован)
-    analysis_text = match_dict.get('analysis_text')
-    if not analysis_text:
-        await safe_edit_message(
-            query,
-            f"⏳ Этап 2/2: Подготовка анализа для матча "
-            f"{match_dict['team1']} vs {match_dict['team2']}...\n\n"
-            f"Пожалуйста, подождите 10-15 секунд.",
-            None
-        )
-        try:
-            from ai_generator import generate_match_analysis_with_context
-            analysis_text = await generate_match_analysis_with_context(match_dict, enriched_context)
-            # Сохраняем анализ в БД, чтобы не генерировать повторно
-            database.update_match_analysis(match_id, analysis_text)
-        except Exception as e:
-            logger.error(f"Ошибка генерации анализа: {e}", exc_info=True)
-            await safe_edit_message(
-                query,
-                "❌ Не удалось сгенерировать анализ. Попробуйте позже.",
-                keyboards.main_menu_keyboard()
-            )
-            return
-
-    # Выполняем покупку (списание средств)
-    success, message = database.purchase_analysis(user_id, match_id)
+    # Создаём pending purchase с уникальным token
+    success, token = database.purchase_analysis(user_id, match_id)
     if not success:
-        text = f"❌ Не удалось купить анализ:\n{message}\n\n"
-        text += f"💰 Ваш баланс: {database.get_user_balance(user_id)} руб.\n"
-        text += f"💵 Нужно: {match_dict['price']} руб."
-        await safe_edit_message(
-            query,
-            text,
-            keyboards.main_menu_keyboard()
+        await query.message.reply_text(
+            f"❌ Ошибка создания заказа:\n{token}",
+            reply_markup=keyboards.main_menu_keyboard()
         )
         return
 
-    # Этап 3: Рендеринг PNG таблицы
+    # Формируем инструкцию для оплаты (РЕДАКТИРУЕМ текущее сообщение)
+    text = "💰 <b>Ожидается оплата...</b>\n\n"
+    text += f"🏆 Матч: <b>{match_dict['team1']} vs {match_dict['team2']}</b>\n"
+    text += f"📅 Дата: {match_dict['match_date']} в {match_dict['match_time']} МСК\n"
+    text += f"💵 Стоимость: <b>{ANALYSIS_PRICE_RUB} руб.</b>\n\n"
+    text += "━━━━━━━━━━━━━━━━━━━\n\n"
+    text += "👇 <b>Скопируйте этот код:</b> 👇\n"
+    text += f"<code>{token}</code>\n\n"
+    text += "<b>📋 Инструкция по оплате:</b>\n"
+    text += "1️⃣ Нажмите кнопку «Перейти к оплате» ниже\n"
+    text += f"2️⃣ Отправьте донат на сумму <b>{ANALYSIS_PRICE_RUB} руб.</b>\n"
+    text += "3️⃣ В сообщении к донату вставьте код выше 👆\n\n"
+    text += "⏱ Код действителен <b>30 минут</b>\n\n"
+    text += "✨ После оплаты анализ будет автоматически создан и отправлен вам в течение <b>30-60 секунд</b>."
+
+    # Кнопка со ссылкой на DonationAlerts + кнопки навигации
+    keyboard = [
+        [InlineKeyboardButton("✅ Приобрести анализ", url=DA_PROFILE_URL)],
+        [InlineKeyboardButton("◀️ Назад к матчам", callback_data='back')],
+        [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
+    ]
+
+    # РЕДАКТИРУЕМ текущее сообщение вместо создания нового
     await safe_edit_message(
         query,
-        "⏳ Подготовка визуализации...",
-        None
+        text,
+        InlineKeyboardMarkup(keyboard),
+        parse_mode='HTML'
     )
 
-    png_path = None
-    try:
-        from analysis_formatter import build_table_data
-        from image_renderer import render_analysis_table
-
-        # Формируем структурированные данные для таблицы
-        table_data = build_table_data(match_dict, enriched_data)
-
-        # Рендерим PNG
-        png_path = render_analysis_table(match_dict, table_data)
-        logger.info(f"PNG таблица создана: {png_path}")
-
-    except Exception as e:
-        logger.error(f"Ошибка рендеринга PNG: {e}", exc_info=True)
-        # Fallback на текстовый анализ
-        text = "✅ Покупка успешна\n\n"
-        text += f"🏆 Матч: {match_dict['team1']} vs {match_dict['team2']}\n"
-        text += f"💰 Списано: {match_dict['price']} руб.\n"
-        text += f"💳 Новый баланс: {database.get_user_balance(user_id)} руб.\n\n"
-        text += f"📊 Анализ:\n{analysis_text}"
-        await safe_edit_message(
-            query,
-            text,
-            keyboards.main_menu_keyboard()
-        )
-        return
-
-    # Отправляем PNG как фото с краткой сводкой и кнопками
-    try:
-        # Формируем краткое введение на основе данных матча
-        from datetime import datetime
-
-        # Форматируем дату
-        date_obj = datetime.strptime(match_dict['match_date'], '%Y-%m-%d')
-        date_formatted = date_obj.strftime('%d %B %Y года').replace(
-            'January', 'января').replace('February', 'февраля').replace(
-            'March', 'марта').replace('April', 'апреля').replace(
-            'May', 'мая').replace('June', 'июня').replace(
-            'July', 'июля').replace('August', 'августа').replace(
-            'September', 'сентября').replace('October', 'октября').replace(
-            'November', 'ноября').replace('December', 'декабря')
-
-        # Формируем краткое введение
-        intro_text = (
-            f"{match_dict['team1']} примет {match_dict['team2']}. "
-            f"Матч пройдёт {date_formatted} в {match_dict['match_time']} "
-            f"в рамках турнира {match_dict.get('league', 'N/A')}."
-        )
-
-        # Caption с заголовком и краткой сводкой (через двоеточие)
-        caption = f"✅ Анализ матча: {intro_text}"
-
-        # Отправляем фото с caption и кнопками в одном сообщении
-        with open(png_path, 'rb') as photo:
-            await query.message.reply_photo(
-                photo=photo,
-                caption=caption,
-                reply_markup=keyboards.analysis_view_keyboard()
-            )
-
-        # Удаляем сообщение с прогрессом
-        try:
-            await query.message.delete()
-        except Exception:
-            pass  # Игнорируем ошибки удаления
-
-        # Удаляем временный PNG файл
-        try:
-            import os
-            os.remove(png_path)
-        except Exception:
-            pass
-
-    except Exception as e:
-        logger.error(f"Ошибка отправки PNG: {e}", exc_info=True)
-        # Fallback на текстовый анализ
-        text = "✅ Покупка успешна\n\n"
-        text += f"🏆 Матч: {match_dict['team1']} vs {match_dict['team2']}\n"
-        text += f"💰 Списано: {match_dict['price']} руб.\n"
-        text += f"💳 Новый баланс: {database.get_user_balance(user_id)} руб.\n\n"
-        text += f"📊 Анализ:\n{analysis_text}"
-        await safe_edit_message(
-            query,
-            text,
-            keyboards.main_menu_keyboard()
-        )
+    # Сохраняем message_id для последующего удаления listener'ом
+    # Находим purchase_id по token
+    conn = database.get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT id FROM purchases WHERE token = ?', (token,))
+    purchase = cursor.fetchone()
+    conn.close()
+    if purchase:
+        database.update_instruction_message_id(purchase['id'], query.message.message_id)
 
 
 async def handle_show_analysis(query, user_id, match_id):
@@ -516,51 +459,117 @@ async def handle_show_analysis(query, user_id, match_id):
     # Конвертируем в dict
     match_dict = dict(match) if not isinstance(match, dict) else match
 
-    # Показываем прогресс
-    await safe_edit_message(
-        query,
-        "⏳ Подготовка анализа для матча\n"
-        f"{match_dict['team1']} vs {match_dict['team2']}...",
-        None
-    )
-
-    # Получаем обогащённые данные
-    enriched_data = {}
-    try:
-        from match_data_fetcher import MatchDataFetcher
-        fetcher = MatchDataFetcher()
-        enriched_data = fetcher.fetch_match_data(match_dict)
-        logger.info(f"Data fetched for show_analysis. Errors: {enriched_data.get('errors', [])}")
-    except Exception as e:
-        logger.error(f"Ошибка получения данных для отображения: {e}", exc_info=True)
-
-    # Рендерим PNG
-    png_path = None
-    try:
-        from analysis_formatter import build_table_data
-        from image_renderer import render_analysis_table
-
-        table_data = build_table_data(match_dict, enriched_data)
-        png_path = render_analysis_table(match_dict, table_data)
-        logger.info(f"PNG создан для отображения: {png_path}")
-
-    except Exception as e:
-        logger.error(f"Ошибка рендеринга PNG для отображения: {e}", exc_info=True)
-        # Fallback на текстовый анализ
-        text = "📊 Анализ матча\n\n"
-        text += f"{match_dict['team1']} vs {match_dict['team2']}\n"
-        text += f"{match_dict['match_date']} в {match_dict['match_time']}\n\n"
-        analysis_text = match_dict.get('analysis_text', '')
-        if analysis_text:
-            text += f"📊 Анализ:\n\n{analysis_text}"
-        else:
-            text += "Анализ недоступен"
+    # Проверяем есть ли сохранённый PNG
+    import os
+    cached_png_path = match_dict.get('analysis_png_path')
+    if cached_png_path and os.path.exists(cached_png_path):
+        # PNG уже есть — используем готовый, без API запросов
+        logger.info(f"Используем сохранённый PNG: {cached_png_path}")
+        png_path = cached_png_path
+    else:
+        # PNG нет — генерируем (первый раз или файл удалён)
+        logger.info("PNG не найден, генерируем...")
         await safe_edit_message(
             query,
-            text,
-            keyboards.analysis_view_keyboard()
+            "⏳ Подготовка анализа для матча\n"
+            f"{match_dict['team1']} vs {match_dict['team2']}...",
+            None
         )
-        return
+
+        # Получаем обогащённые данные для PNG таблицы
+        enriched_data = {}
+        try:
+            from match_data_fetcher import MatchDataFetcher
+            fetcher = MatchDataFetcher()
+            enriched_data = fetcher.fetch_match_data(match_dict)
+            logger.info(f"Data fetched for PNG generation. Errors: {enriched_data.get('errors', [])}")
+        except Exception as e:
+            logger.error(f"Ошибка получения данных для PNG: {e}", exc_info=True)
+
+        # Если анализ ещё не сгенерирован (listener отметил paid, но не сгенерировал)
+        if not match_dict.get('analysis_text'):
+            logger.info(f"analysis_text пуст для матча {match_id}, генерируем on-demand...")
+            await safe_edit_message(
+                query,
+                "⏳ Генерация анализа для матча\n"
+                f"{match_dict['team1']} vs {match_dict['team2']}...\n\n"
+                "Это может занять 30-60 секунд.",
+                None
+            )
+
+            # Формируем enriched_context для генерации
+            enriched_context = "Обогащённые данные недоступны."
+            try:
+                from match_data_fetcher import build_enriched_context
+                enriched_context = build_enriched_context(match_dict, enriched_data)
+            except Exception as e:
+                logger.error(f"Ошибка построения контекста: {e}", exc_info=True)
+
+            try:
+                from ai_generator import generate_match_analysis_with_context
+                analysis_text = await generate_match_analysis_with_context(
+                    match_dict, enriched_context
+                )
+                match_dict['analysis_text'] = analysis_text
+                logger.info(f"Анализ сгенерирован on-demand для матча {match_id}")
+            except Exception as e:
+                logger.error(f"Ошибка on-demand генерации: {e}", exc_info=True)
+
+        # Рендерим PNG и сохраняем в постоянную папку
+        png_path = None
+        cached_png_path = None
+        try:
+            from analysis_formatter import build_table_data
+            from image_renderer import render_analysis_table
+
+            table_data = build_table_data(match_dict, enriched_data)
+            temp_png = render_analysis_table(match_dict, table_data)
+
+            # Копируем в постоянную папку
+            target_path = f"analysis_cache/analysis_{match_id}.png"
+            os.makedirs("analysis_cache", exist_ok=True)
+            import shutil
+            shutil.copy(temp_png, target_path)
+
+            # Проверяем, что файл действительно скопирован
+            if os.path.exists(target_path):
+                cached_png_path = target_path
+                png_path = cached_png_path
+                logger.info(f"PNG сохранён: {cached_png_path}")
+
+                # Сохраняем путь в БД только если файл существует
+                database.update_match_analysis(
+                    match_id,
+                    match_dict.get('analysis_text'),
+                    cached_png_path
+                )
+
+                # Удаляем временный файл после успешного копирования
+                try:
+                    os.remove(temp_png)
+                    logger.info(f"Временный файл удалён: {temp_png}")
+                except Exception as e:
+                    logger.warning(f"Не удалось удалить временный файл: {e}")
+            else:
+                logger.error(f"Файл не был скопирован: {target_path}")
+
+        except Exception as e:
+            logger.error(f"Ошибка рендеринга PNG для отображения: {e}", exc_info=True)
+            # Fallback на текстовый анализ
+            text = "📊 Анализ матча\n\n"
+            text += f"{match_dict['team1']} vs {match_dict['team2']}\n"
+            text += f"{match_dict['match_date']} в {match_dict['match_time']}\n\n"
+            analysis_text = match_dict.get('analysis_text', '')
+            if analysis_text:
+                text += f"📊 Анализ:\n\n{analysis_text}"
+            else:
+                text += "Анализ недоступен"
+            await safe_edit_message(
+                query,
+                text,
+                keyboards.analysis_view_keyboard()
+            )
+            return
 
     # Отправляем PNG с краткой сводкой и кнопками
     try:
@@ -580,12 +589,12 @@ async def handle_show_analysis(query, user_id, match_id):
         # Формируем краткое введение
         intro_text = (
             f"{match_dict['team1']} примет {match_dict['team2']}. "
-            f"Матч пройдёт {date_formatted} в {match_dict['match_time']} "
+            f"Матч пройдёт {date_formatted} в {match_dict['match_time']} МСК "
             f"в рамках турнира {match_dict.get('league', 'N/A')}."
         )
 
         # Caption с заголовком и краткой сводкой (через двоеточие)
-        caption = f"✅ Данные матча: {intro_text}"
+        caption = f"✅ Анализ матча: {intro_text}"
 
         # Отправляем фото с caption и кнопками в одном сообщении
         with open(png_path, 'rb') as photo:
@@ -601,12 +610,7 @@ async def handle_show_analysis(query, user_id, match_id):
         except Exception:
             pass
 
-        # Удаляем временный файл
-        try:
-            import os
-            os.remove(png_path)
-        except Exception:
-            pass
+        # НЕ удаляем кэшированный PNG — он должен сохраняться для последующих просмотров
 
     except Exception as e:
         logger.error(f"Ошибка отправки PNG: {e}", exc_info=True)
@@ -749,9 +753,95 @@ async def handle_purchased_date(query, user_id, sport, date_str):
     )
 
 
+async def admin_clean_purchases(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Админ команда для очистки таблицы purchases.
+
+    Usage:
+        /clean_purchases pending - удалить только pending покупки
+        /clean_purchases expired - удалить истекшие pending покупки (>30 мин)
+        /clean_purchases all - удалить все покупки (осторожно!)
+    """
+    user_id = update.effective_user.id
+
+    # Проверка прав админа
+    if not database.is_admin(user_id):
+        await update.message.reply_text("❌ У вас нет прав администратора")
+        return
+
+    # Парсинг аргументов
+    args = context.args
+    if not args:
+        text = (
+            "📋 Использование:\n\n"
+            "/clean_purchases pending - удалить pending покупки\n"
+            "/clean_purchases expired - удалить истекшие (>30 мин)\n"
+            "/clean_purchases all - удалить ВСЕ покупки ⚠️"
+        )
+        await update.message.reply_text(text)
+        return
+
+    mode = args[0].lower()
+
+    conn = database.get_db_connection()
+    cursor = conn.cursor()
+
+    if mode == 'pending':
+        # Удалить все pending покупки
+        cursor.execute('SELECT COUNT(*) FROM purchases WHERE status = "pending"')
+        count_before = cursor.fetchone()[0]
+
+        cursor.execute('DELETE FROM purchases WHERE status = "pending"')
+        conn.commit()
+
+        text = f"✅ Удалено pending покупок: {count_before}"
+        logger.info(f"Admin {user_id} удалил {count_before} pending покупок")
+
+    elif mode == 'expired':
+        # Удалить истекшие pending покупки (expires_at < now)
+        from datetime import datetime
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        cursor.execute('''
+            SELECT COUNT(*) FROM purchases
+            WHERE status = "pending" AND expires_at < ?
+        ''', (now,))
+        count_before = cursor.fetchone()[0]
+
+        cursor.execute('''
+            DELETE FROM purchases
+            WHERE status = "pending" AND expires_at < ?
+        ''', (now,))
+        conn.commit()
+
+        text = f"✅ Удалено истекших покупок: {count_before}"
+        logger.info(f"Admin {user_id} удалил {count_before} истекших покупок")
+
+    elif mode == 'all':
+        # Удалить ВСЕ покупки (опасно!)
+        cursor.execute('SELECT COUNT(*) FROM purchases')
+        count_before = cursor.fetchone()[0]
+
+        cursor.execute('DELETE FROM purchases')
+        conn.commit()
+
+        text = f"⚠️ УДАЛЕНО ВСЕХ ПОКУПОК: {count_before}\n\nЭто необратимо!"
+        logger.warning(f"Admin {user_id} удалил ВСЕ покупки ({count_before} шт)")
+
+    else:
+        text = f"❌ Неизвестный режим: {mode}\n\nИспользуйте: pending, expired или all"
+        conn.close()
+        await update.message.reply_text(text)
+        return
+
+    conn.close()
+    await update.message.reply_text(text)
+
+
 def setup_user_handlers(application):
     """Настройка обработчиков пользователей"""
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("clean_purchases", admin_clean_purchases))
     application.add_handler(CallbackQueryHandler(button_handler))
 
 

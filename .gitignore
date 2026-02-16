@@ -14,6 +14,7 @@ venv.bak/
 # Database
 *.db
 *.sqlite3
+*.db.backup*
 
 # IDE
 .vscode/
@@ -24,9 +25,12 @@ venv.bak/
 # OS
 .DS_Store
 Thumbs.db
+nul
 
 # Logs
 *.log
+*.txt
+!requirements.txt
 
 # Config secrets
 config.py
@@ -36,6 +40,14 @@ config.py
 # Telegram session
 *.session
 
-# Temporary PNG files
+# Temporary files
 temp/
 *.png
+analysis_cache/
+
+# Session notes (не для репо)
+SESSION_CONTEXT.txt
+DA_secret_token.md
+
+# Old artifacts
+=10.0.0

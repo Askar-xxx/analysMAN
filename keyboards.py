@@ -8,42 +8,47 @@ def main_menu_keyboard():
         [InlineKeyboardButton("🎯 ВЫБРАТЬ СПОРТ",
                               callback_data='category_sports')],
         [
-            InlineKeyboardButton("📊 Мои анализы", callback_data='my_analysis'),
-            InlineKeyboardButton("💳 Пополнить баланс", callback_data='deposit')
+            InlineKeyboardButton("📊 Мои анализы", callback_data='my_analysis')
+            # START TEMPORARY DISABLE BALANCE LOGIC — MVP PURCHASE FLOW (2026-02-16)
+            # InlineKeyboardButton("💳 Пополнить баланс", callback_data='deposit')
+            # END TEMPORARY DISABLE BALANCE LOGIC
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 
-def deposit_menu_keyboard():
-    """Меню пополнения баланса в 2 столбика с бонусами"""
-    keyboard = [
-        # Строка 1: 150 руб.
-        [
-            InlineKeyboardButton("💰 150 руб.", callback_data='deposit_150'),
-            InlineKeyboardButton("📊 1 анализ", callback_data='deposit_150')
-        ],
-        # Строка 2: 300 руб. с бонусом
-        [
-            InlineKeyboardButton("💰 300 руб.", callback_data='deposit_300'),
-            InlineKeyboardButton("📊 3 анализа\n🎁 +150 бонус",
-                                 callback_data='deposit_300')
-        ],
-        # Строка 3: 600 руб.
-        [
-            InlineKeyboardButton("💰 600 руб.", callback_data='deposit_600'),
-            InlineKeyboardButton("📊 4 анализа", callback_data='deposit_600')
-        ],
-        # Строка 4: 800 руб. с бонусом
-        [
-            InlineKeyboardButton("💰 800 руб.", callback_data='deposit_800'),
-            InlineKeyboardButton("📊 7+ анализов\n🎁 +300 бонус",
-                                 callback_data='deposit_800')
-        ],
-        # Кнопка назад
-        [InlineKeyboardButton("◀️ Назад", callback_data='back_to_menu')]
-    ]
-    return InlineKeyboardMarkup(keyboard)
+# START TEMPORARY DISABLE BALANCE LOGIC — MVP PURCHASE FLOW (2026-02-16)
+# def deposit_menu_keyboard():
+#     """Меню пополнения баланса в 2 столбика с бонусами"""
+#     keyboard = [
+#         # Строка 1: 150 руб.
+#         [
+#             InlineKeyboardButton("💰 150 руб.", callback_data='deposit_150'),
+#             InlineKeyboardButton("📊 1 анализ", callback_data='deposit_150')
+#         ],
+#         # Строка 2: 300 руб. с бонусом
+#         [
+#             InlineKeyboardButton("💰 300 руб.", callback_data='deposit_300'),
+#             InlineKeyboardButton("📊 3 анализа\n🎁 +150 бонус",
+#                                  callback_data='deposit_300')
+#         ],
+#         # Строка 3: 600 руб.
+#         [
+#             InlineKeyboardButton("💰 600 руб.", callback_data='deposit_600'),
+#             InlineKeyboardButton("📊 4 анализа", callback_data='deposit_600')
+#         ],
+#         # Строка 4: 800 руб. с бонусом
+#         [
+#             InlineKeyboardButton("💰 800 руб.", callback_data='deposit_800'),
+#             InlineKeyboardButton("📊 7+ анализов\n🎁 +300 бонус",
+#                                  callback_data='deposit_800')
+#         ],
+#         # Кнопка назад
+#         [InlineKeyboardButton("◀️ Назад", callback_data='back_to_menu')]
+#     ]
+#     return InlineKeyboardMarkup(keyboard)
+# END TEMPORARY DISABLE BALANCE LOGIC
+# TODO: Restore after MVP — see mvp_scan_report.md
 
 
 def back_to_main_keyboard():
@@ -112,45 +117,32 @@ def matches_keyboard(matches, date_str, sport):
     return InlineKeyboardMarkup(keyboard)
 
 
-def match_detail_keyboard(match_id, has_purchased, price, user_balance):
-    """Клавиатура для детальной страницы матча"""
-    if has_purchased:
-        keyboard = [
-            [InlineKeyboardButton("◀️ Назад к матчам",
-                                  callback_data='sport_football')],
-            [InlineKeyboardButton("🏠 В главное меню",
-                                  callback_data='back_to_menu')]
-        ]
-    else:
-        if user_balance >= price:
-            keyboard = [
-                [InlineKeyboardButton(f"✅ Купить анализ за {price} руб.",
-                                      callback_data=f'buy_{match_id}')],
-                [InlineKeyboardButton("◀️ Назад к матчам",
-                                      callback_data='sport_football')],
-                [InlineKeyboardButton("🏠 В главное меню",
-                                      callback_data='back_to_menu')]
-            ]
-        else:
-            keyboard = [
-                [InlineKeyboardButton("💳 Пополнить баланс",
-                                      callback_data='deposit')],
-                [InlineKeyboardButton("◀️ Назад к матчу",
-                                      callback_data=f'match_{match_id}')],
-                [InlineKeyboardButton("🏠 В главное меню",
-                                      callback_data='back_to_menu')]
-            ]
+def match_detail_keyboard(match_id, has_purchased):
+    """
+    Клавиатура для детальной страницы матча (упрощённая для MVP).
+
+    TEMPORARY (2026-02-16): Убраны параметры price и user_balance.
+    Теперь только 2 кнопки: "Купить анализ" и "Назад".
+    """
+    keyboard = [
+        [InlineKeyboardButton("✅ Купить анализ",
+                              callback_data=f'buy_{match_id}')],
+        [InlineKeyboardButton("◀️ Назад", callback_data='back')]
+    ]
     return InlineKeyboardMarkup(keyboard)
 
 
-def deposit_options_keyboard():
-    """Клавиатура опций пополнения после выбора суммы"""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💳 Пополнить баланс", callback_data='deposit')],
-        [InlineKeyboardButton("📊 Моя статистика", callback_data='my_stats')],
-        [InlineKeyboardButton("🏠 В главное меню",
-                              callback_data='back_to_menu')]
-    ])
+# START TEMPORARY DISABLE BALANCE LOGIC — MVP PURCHASE FLOW (2026-02-16)
+# def deposit_options_keyboard():
+#     """Клавиатура опций пополнения после выбора суммы"""
+#     return InlineKeyboardMarkup([
+#         [InlineKeyboardButton("💳 Пополнить баланс", callback_data='deposit')],
+#         [InlineKeyboardButton("📊 Моя статистика", callback_data='my_stats')],
+#         [InlineKeyboardButton("🏠 В главное меню",
+#                               callback_data='back_to_menu')]
+#     ])
+# END TEMPORARY DISABLE BALANCE LOGIC
+# TODO: Restore after MVP — see mvp_scan_report.md
 
 
 def back_to_purchased_sports_keyboard():
