@@ -1013,9 +1013,8 @@ async def handle_find_topup_by_amount(query, user_id, token):
 
     # Временной порог: только донаты с момента создания токена для этого пользователя.
     # Это привязывает поиск к конкретной сессии оплаты, а не к случайному промежутку.
-    created_at_str = topup.get('created_at', '')
     try:
-        cutoff_dt = datetime.strptime(created_at_str[:19], '%Y-%m-%d %H:%M:%S')
+        cutoff_dt = datetime.strptime(topup['created_at'][:19], '%Y-%m-%d %H:%M:%S')
     except Exception:
         cutoff_dt = datetime.now() - timedelta(hours=2)
 
