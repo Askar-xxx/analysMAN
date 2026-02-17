@@ -234,9 +234,234 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка при получении статистики: {e}")
 
 
+async def add_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /addbalance <user_id> <amount> — пополнить баланс пользователя вручную.
+
+    Пример: /addbalance 123456789 50
+    """
+    admin_id = update.effective_user.id
+    if not database.is_admin(admin_id):
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+        return
+
+    args = context.args
+    if len(args) != 2:
+        await update.message.reply_text(
+            "❌ Неверный формат.\n\nИспользование:\n/addbalance <user_id> <сумма>\n\nПример:\n/addbalance 123456789 50"
+        )
+        return
+
+    try:
+        target_user_id = int(args[0])
+        amount = int(args[1])
+    except ValueError:
+        await update.message.reply_text("❌ user_id и сумма должны быть целыми числами.")
+        return
+
+    if amount <= 0:
+        await update.message.reply_text("❌ Сумма должна быть положительной.")
+        return
+
+    conn = database.get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id, username, balance FROM users WHERE user_id = ?', (target_user_id,))
+    user = cursor.fetchone()
+    conn.close()
+
+    if not user:
+        await update.message.reply_text(f"❌ Пользователь {target_user_id} не найден в БД.")
+        return
+
+    old_balance = user['balance'] or 0
+    database.add_balance(target_user_id, amount)
+    new_balance = database.get_user_balance(target_user_id)
+
+    username_str = f"@{user['username']}" if user['username'] else "без username"
+    await update.message.reply_text(
+        f"✅ Баланс пополнен!\n\n"
+        f"👤 Пользователь: {target_user_id} ({username_str})\n"
+        f"💰 Добавлено: +{amount} руб.\n"
+        f"💳 Было: {old_balance} руб. → Стало: {new_balance} руб."
+    )
+    logger.info(f"Admin {admin_id} пополнил баланс user={target_user_id} на {amount} руб. (было {old_balance})")
+
+
+async def clear_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /clearbalance <user_id> — обнулить баланс пользователя.
+
+    Пример: /clearbalance 123456789
+    """
+    admin_id = update.effective_user.id
+    if not database.is_admin(admin_id):
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+        return
+
+    args = context.args
+    if len(args) != 1:
+        await update.message.reply_text(
+            "❌ Неверный формат.\n\nИспользование:\n/clearbalance <user_id>\n\nПример:\n/clearbalance 123456789"
+        )
+        return
+
+    try:
+        target_user_id = int(args[0])
+    except ValueError:
+        await update.message.reply_text("❌ user_id должен быть целым числом.")
+        return
+
+    conn = database.get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id, username, balance FROM users WHERE user_id = ?', (target_user_id,))
+    user = cursor.fetchone()
+    conn.close()
+
+    if not user:
+        await update.message.reply_text(f"❌ Пользователь {target_user_id} не найден в БД.")
+        return
+
+    old_balance = user['balance'] or 0
+    ok = database.reset_user_balance(target_user_id)
+
+    username_str = f"@{user['username']}" if user['username'] else "без username"
+    if ok:
+        await update.message.reply_text(
+            f"✅ Баланс обнулён!\n\n"
+            f"👤 Пользователь: {target_user_id} ({username_str})\n"
+            f"💳 Было: {old_balance} руб. → Стало: 0 руб."
+        )
+        logger.warning(f"Admin {admin_id} обнулил баланс user={target_user_id} (было {old_balance} руб.)")
+    else:
+        await update.message.reply_text("❌ Не удалось обнулить баланс.")
+
+
+async def clear_purchases_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /clearpurchases [user_id|all] — очистить таблицу purchases.
+
+    /clearpurchases all       — удалить все записи
+    /clearpurchases 123456789 — удалить покупки конкретного пользователя
+    """
+    admin_id = update.effective_user.id
+    if not database.is_admin(admin_id):
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "❌ Укажите аргумент.\n\n"
+            "Использование:\n"
+            "/clearpurchases all — удалить все покупки\n"
+            "/clearpurchases <user_id> — покупки пользователя"
+        )
+        return
+
+    conn = database.get_db_connection()
+    cursor = conn.cursor()
+
+    if args[0].lower() == 'all':
+        cursor.execute('SELECT COUNT(*) FROM purchases')
+        count = cursor.fetchone()[0]
+        cursor.execute('DELETE FROM purchases')
+        conn.commit()
+        conn.close()
+        await update.message.reply_text(f"✅ Удалено всех покупок: {count}")
+        logger.warning(f"Admin {admin_id} удалил ВСЕ покупки ({count} шт.)")
+    else:
+        try:
+            target_user_id = int(args[0])
+        except ValueError:
+            conn.close()
+            await update.message.reply_text("❌ Укажите 'all' или корректный user_id.")
+            return
+
+        cursor.execute('SELECT COUNT(*) FROM purchases WHERE user_id = ?', (target_user_id,))
+        count = cursor.fetchone()[0]
+        cursor.execute('DELETE FROM purchases WHERE user_id = ?', (target_user_id,))
+        conn.commit()
+        conn.close()
+        await update.message.reply_text(
+            f"✅ Удалено покупок пользователя {target_user_id}: {count}"
+        )
+        logger.info(f"Admin {admin_id} удалил {count} покупок user={target_user_id}")
+
+
+async def clear_topups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /cleartopups [user_id|all|pending] — очистить таблицу balance_topups.
+
+    /cleartopups all       — удалить все записи
+    /cleartopups pending   — удалить только pending записи
+    /cleartopups 123456789 — удалить топапы конкретного пользователя
+    """
+    admin_id = update.effective_user.id
+    if not database.is_admin(admin_id):
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "❌ Укажите аргумент.\n\n"
+            "Использование:\n"
+            "/cleartopups all — удалить все записи\n"
+            "/cleartopups pending — только pending\n"
+            "/cleartopups <user_id> — топапы пользователя"
+        )
+        return
+
+    conn = database.get_db_connection()
+    cursor = conn.cursor()
+    mode = args[0].lower()
+
+    if mode == 'all':
+        cursor.execute('SELECT COUNT(*) FROM balance_topups')
+        count = cursor.fetchone()[0]
+        cursor.execute('DELETE FROM balance_topups')
+        conn.commit()
+        conn.close()
+        await update.message.reply_text(f"✅ Удалено всех топапов: {count}")
+        logger.warning(f"Admin {admin_id} удалил ВСЕ balance_topups ({count} шт.)")
+    elif mode == 'pending':
+        cursor.execute("SELECT COUNT(*) FROM balance_topups WHERE status = 'pending'")
+        count = cursor.fetchone()[0]
+        cursor.execute("DELETE FROM balance_topups WHERE status = 'pending'")
+        conn.commit()
+        conn.close()
+        await update.message.reply_text(f"✅ Удалено pending топапов: {count}")
+        logger.info(f"Admin {admin_id} удалил {count} pending топапов")
+    else:
+        try:
+            target_user_id = int(args[0])
+        except ValueError:
+            conn.close()
+            await update.message.reply_text("❌ Укажите 'all', 'pending' или корректный user_id.")
+            return
+
+        cursor.execute('SELECT COUNT(*) FROM balance_topups WHERE user_id = ?', (target_user_id,))
+        count = cursor.fetchone()[0]
+        cursor.execute('DELETE FROM balance_topups WHERE user_id = ?', (target_user_id,))
+        conn.commit()
+        conn.close()
+        await update.message.reply_text(
+            f"✅ Удалено топапов пользователя {target_user_id}: {count}"
+        )
+        logger.info(f"Admin {admin_id} удалил {count} топапов user={target_user_id}")
+
+
 def setup_admin_handlers(application):
     """Регистрация админских команд"""
     application.add_handler(CommandHandler('clean_matches', clean_matches_command))
     application.add_handler(CommandHandler('clean_all_matches', clean_all_matches_command))
     application.add_handler(CommandHandler('stats', stats_command))
-    logger.info("Админские команды зарегистрированы: /clean_matches, /clean_all_matches, /stats")
+    application.add_handler(CommandHandler('addbalance', add_balance_command))
+    application.add_handler(CommandHandler('clearbalance', clear_balance_command))
+    application.add_handler(CommandHandler('clearpurchases', clear_purchases_command))
+    application.add_handler(CommandHandler('cleartopups', clear_topups_command))
+    logger.info(
+        "Админские команды зарегистрированы: "
+        "/clean_matches, /clean_all_matches, /stats, "
+        "/addbalance, /clearbalance, /clearpurchases, /cleartopups"
+    )

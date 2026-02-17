@@ -614,6 +614,38 @@ def get_topup_by_token(token):
     return row
 
 
+def get_pending_topup_by_user(user_id):
+    """
+    Возвращает актуальный pending топап пользователя (не истёкший).
+
+    Используется чтобы повторно показать тот же код при повторном
+    входе в меню пополнения — пользователь не теряет свой токен.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    cursor.execute('''
+        SELECT * FROM balance_topups
+        WHERE user_id = ? AND status = 'pending' AND expires_at > ?
+        ORDER BY created_at DESC
+        LIMIT 1
+    ''', (user_id, now))
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+
+def reset_user_balance(user_id):
+    """Обнуляет баланс пользователя (админская операция)."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET balance = 0 WHERE user_id = ?', (user_id,))
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return affected > 0
+
+
 def get_any_topup_by_token(token):
     """Возвращает любую запись пополнения по token (pending или paid)."""
     conn = get_db_connection()

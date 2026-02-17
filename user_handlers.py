@@ -1089,14 +1089,19 @@ async def handle_find_topup_by_amount(query, user_id, token):
 
 async def handle_deposit_menu(query, user_id):
     """
-    Пополнение баланса: создаёт гибкий топап и показывает инструкцию.
+    Пополнение баланса: показывает инструкцию с уникальным кодом.
 
-    Пользователь сам выбирает сумму на DonationAlerts —
-    баланс пополняется ровно на ту сумму, что он отправил.
+    Если у пользователя есть действующий pending топап — показывает тот же
+    код, чтобы он не потерял его при повторном входе в меню.
+    Новый токен создаётся только если старый истёк или отсутствует.
     """
     from config import DA_PROFILE_URL
 
-    token = database.create_balance_topup(user_id, amount_rub=0)
+    existing = database.get_pending_topup_by_user(user_id)
+    if existing:
+        token = existing['token']
+    else:
+        token = database.create_balance_topup(user_id, amount_rub=0)
     balance = database.get_user_balance(user_id)
 
     text = (
