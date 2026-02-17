@@ -587,7 +587,7 @@ def create_balance_topup(user_id, amount_rub=0):
     token = uuid.uuid4().hex[:12].upper()
     amount_kopeks = amount_rub * 100
     created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    expires_at = (datetime.now() + timedelta(minutes=30)).strftime('%Y-%m-%d %H:%M:%S')
+    expires_at = (datetime.now() + timedelta(minutes=10)).strftime('%Y-%m-%d %H:%M:%S')
 
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -826,6 +826,13 @@ def remove_admin(user_id):
 
 
 def is_admin(user_id):
+    # Главный админ из конфига всегда имеет права
+    try:
+        from config import MAIN_ADMIN_ID
+        if user_id == MAIN_ADMIN_ID:
+            return True
+    except ImportError:
+        pass
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT user_id FROM admins WHERE user_id = ?', (user_id,))

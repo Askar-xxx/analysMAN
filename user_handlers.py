@@ -873,25 +873,19 @@ async def handle_check_topup(query, user_id, token):
             break
 
     if not found_donation:
-        amount_rub = topup['amount_rub']
         keyboard = [
             [InlineKeyboardButton("🔄 Проверить ещё раз",
-                                  callback_data=f'check_topup_{token}')],
-            [InlineKeyboardButton("✅ Перейти к оплате", url=DA_PROFILE_URL)],
-            [InlineKeyboardButton("❓ Не вставил код в донат",
                                   callback_data=f'find_topup_by_amount_{token}')],
+            [InlineKeyboardButton("✅ Перейти к оплате", url=DA_PROFILE_URL)],
             [InlineKeyboardButton("🏠 В главное меню",
                                   callback_data='back_to_menu')]
         ]
         await safe_edit_message(
             query,
-            f"⏳ <b>Оплата пока не найдена</b>\n\n"
-            f"Донат на сумму <b>{amount_rub} руб.</b> с вашим кодом "
-            f"ещё не появился в системе.\n\n"
-            "Если вы уже отправили — подождите 1-2 минуты и нажмите «Проверить ещё раз».\n\n"
-            "Отправили донат <b>без кода</b> в комментарии? "
-            "Нажмите «Не вставил код в донат» — бот найдёт платёж по сумме.\n\n"
-            f"Ваш код: <code>{token}</code>",
+            "⏳ <b>Оплата пока не найдена</b>\n\n"
+            "Если вы уже отправили донат — подождите 1-2 минуты "
+            "и нажмите «Проверить ещё раз».\n\n"
+            "Если проблема повторяется — обратитесь в поддержку.",
             InlineKeyboardMarkup(keyboard),
             parse_mode='HTML'
         )
@@ -1017,12 +1011,30 @@ async def handle_find_topup_by_amount(query, user_id, token):
         )
         return
 
+    # Временной порог: только донаты с момента создания токена для этого пользователя.
+    # Это привязывает поиск к конкретной сессии оплаты, а не к случайному промежутку.
+    created_at_str = topup.get('created_at', '')
+    try:
+        cutoff_dt = datetime.strptime(created_at_str[:19], '%Y-%m-%d %H:%M:%S')
+    except Exception:
+        cutoff_dt = datetime.now() - timedelta(hours=2)
+
     # Ищем незасчитанный донат без кода в комментарии с любой суммой > 0
     candidates = []
     for donation in donations:
         received_kopeks = int(float(str(donation.get('amount', 0))) * 100)
         if received_kopeks <= 0:
             continue
+        # Фильтрация по времени — игнорируем старые донаты
+        created_at_str = donation.get('created_at', '')
+        if created_at_str:
+            try:
+                # DA возвращает формат: "2024-01-15 12:34:56"
+                donation_dt = datetime.strptime(created_at_str[:19], '%Y-%m-%d %H:%M:%S')
+                if donation_dt < cutoff_dt:
+                    continue
+            except Exception:
+                pass  # если парсинг не удался — пропускаем проверку времени
         msg = donation.get('message', '') or ''
         # Пропускаем донаты с 12-символьным кодом — они обработаются сами
         if re.search(r'\b([A-Z0-9]{12})\b', msg.upper()):
@@ -1111,16 +1123,13 @@ async def handle_deposit_menu(query, user_id):
         "📋 <b>Инструкция:</b>\n"
         "1️⃣ Нажмите кнопку «Перейти к оплате»\n"
         "2️⃣ Отправьте донат на <b>любую сумму</b>\n"
-        "3️⃣ В комментарии к донату укажите ваш код:\n\n"
-        f"<code>{token}</code>\n\n"
-        "✅ Баланс пополнится автоматически через 15–30 сек.\n"
-        "1 руб. = 1 анализ  •  ⏱ Код действует <b>30 минут</b>"
+        "3️⃣ Нажмите кнопку «Проверить баланс»\n\n"
+        "✅ Баланс пополнится автоматически.\n"
+        "1 руб. = 1 анализ  •  ⏱ Действует <b>10 минут</b>"
     )
     keyboard = [
         [InlineKeyboardButton("✅ Перейти к оплате", url=DA_PROFILE_URL)],
-        [InlineKeyboardButton("🔄 Проверить оплату",
-                              callback_data=f'check_topup_{token}')],
-        [InlineKeyboardButton("❓ Не вставил код",
+        [InlineKeyboardButton("🔄 Проверить баланс",
                               callback_data=f'find_topup_by_amount_{token}')],
         [InlineKeyboardButton("🏠 В главное меню",
                               callback_data='back_to_menu')]

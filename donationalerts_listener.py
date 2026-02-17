@@ -188,9 +188,9 @@ async def process_donation(donation_data):
 
         # Извлекаем token из комментария
         import re
-        match = re.search(r'\b([A-Z0-9]{12})\b', message.upper())
+        match = re.search(r'\b([A-Z0-9]{12})\b', (message or '').upper())
         if not match:
-            logger.warning(f"Token не найден в сообщении: {message}")
+            logger.warning(f"Token не найден в сообщении: {message!r} — донат без кода, пропускаем")
             return
 
         token = match.group(1)

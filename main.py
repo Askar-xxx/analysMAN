@@ -61,6 +61,10 @@ async def scheduled_sync_matches():
 
 async def post_init(application):
     """Callback после инициализации бота (в контексте event loop)"""
+    # Устанавливаем команды в меню Telegram для администраторов
+    from admin_commands import setup_admin_commands_menu
+    await setup_admin_commands_menu(application.bot)
+
     # Настройка APScheduler для периодической синхронизации
     scheduler = AsyncIOScheduler()
 

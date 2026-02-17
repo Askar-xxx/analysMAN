@@ -451,6 +451,70 @@ async def clear_topups_command(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.info(f"Admin {admin_id} удалил {count} топапов user={target_user_id}")
 
 
+async def admin_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /adminhelp — справочник всех административных команд.
+    """
+    admin_id = update.effective_user.id
+    if not database.is_admin(admin_id):
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+        return
+
+    text = (
+        "📋 <b>АДМИНИСТРАТИВНЫЕ КОМАНДЫ</b>\n\n"
+        "📊 <b>Статистика:</b>\n"
+        "/stats — статистика БД (матчи, покупки, пользователи, PNG)\n\n"
+        "💰 <b>Баланс пользователей:</b>\n"
+        "/addbalance &lt;user_id&gt; &lt;сумма&gt; — пополнить баланс\n"
+        "  <i>Пример: /addbalance 123456789 50</i>\n"
+        "/clearbalance &lt;user_id&gt; — обнулить баланс\n"
+        "  <i>Пример: /clearbalance 123456789</i>\n\n"
+        "🛒 <b>Покупки анализов:</b>\n"
+        "/clearpurchases all — удалить все покупки\n"
+        "/clearpurchases &lt;user_id&gt; — покупки пользователя\n\n"
+        "💳 <b>Пополнения баланса:</b>\n"
+        "/cleartopups all — удалить все топапы\n"
+        "/cleartopups pending — только ожидающие\n"
+        "/cleartopups &lt;user_id&gt; — топапы пользователя\n\n"
+        "🧹 <b>Очистка матчей:</b>\n"
+        "/clean_matches — удалить старые матчи (без покупок) + PNG\n"
+        "/clean_all_matches — ⚠️ ПОЛНАЯ очистка всех матчей и анализов\n\n"
+        "❓ <b>Помощь:</b>\n"
+        "/adminhelp — эта справка"
+    )
+    await update.message.reply_text(text, parse_mode='HTML')
+
+
+async def setup_admin_commands_menu(bot):
+    """
+    Устанавливает список команд в меню Telegram для каждого администратора.
+    Вызывается при старте бота (post_init).
+    """
+    from telegram import BotCommand, BotCommandScopeChat
+
+    admin_commands = [
+        BotCommand('adminhelp', 'Справка по всем командам'),
+        BotCommand('stats', 'Статистика БД'),
+        BotCommand('addbalance', 'Пополнить баланс: /addbalance <user_id> <сумма>'),
+        BotCommand('clearbalance', 'Обнулить баланс: /clearbalance <user_id>'),
+        BotCommand('clearpurchases', 'Очистить покупки: /clearpurchases [all|user_id]'),
+        BotCommand('cleartopups', 'Очистить топапы: /cleartopups [all|pending|user_id]'),
+        BotCommand('clean_matches', 'Удалить старые матчи и PNG'),
+        BotCommand('clean_all_matches', '⚠️ Удалить ВСЕ матчи и анализы'),
+    ]
+
+    admins = database.get_all_admins()
+    for admin in admins:
+        try:
+            await bot.set_my_commands(
+                admin_commands,
+                scope=BotCommandScopeChat(chat_id=admin['user_id'])
+            )
+            logger.info(f"Команды меню установлены для admin user_id={admin['user_id']}")
+        except Exception as e:
+            logger.warning(f"Не удалось установить команды для admin {admin['user_id']}: {e}")
+
+
 def setup_admin_handlers(application):
     """Регистрация админских команд"""
     application.add_handler(CommandHandler('clean_matches', clean_matches_command))
@@ -460,8 +524,9 @@ def setup_admin_handlers(application):
     application.add_handler(CommandHandler('clearbalance', clear_balance_command))
     application.add_handler(CommandHandler('clearpurchases', clear_purchases_command))
     application.add_handler(CommandHandler('cleartopups', clear_topups_command))
+    application.add_handler(CommandHandler('adminhelp', admin_help_command))
     logger.info(
         "Админские команды зарегистрированы: "
         "/clean_matches, /clean_all_matches, /stats, "
-        "/addbalance, /clearbalance, /clearpurchases, /cleartopups"
+        "/addbalance, /clearbalance, /clearpurchases, /cleartopups, /adminhelp"
     )
