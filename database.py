@@ -573,9 +573,12 @@ def purchase_analysis(user_id, match_id):
     return True, "Покупка успешна"
 
 
-def create_balance_topup(user_id, amount_rub):
+def create_balance_topup(user_id, amount_rub=0):
     """
     Создаёт pending запись пополнения баланса.
+
+    amount_rub=0 означает «любая сумма» (гибкий топап):
+    баланс пополнится на фактически полученную сумму из DA.
 
     Returns:
         str: уникальный token для DA комментария
@@ -634,30 +637,44 @@ def is_donation_event_used(donation_event_id):
     return row is not None
 
 
-def complete_balance_topup(topup_id, donation_event_id):
-    """Помечает пополнение как выполненное и пополняет баланс пользователя."""
+def complete_balance_topup(topup_id, donation_event_id, received_amount_rub=None):
+    """
+    Помечает пополнение как выполненное и пополняет баланс пользователя.
+
+    received_amount_rub: фактически полученная сумма (для гибких топапов
+    с amount_rub=0). Если None — используется amount_rub из записи топапа.
+    """
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Получаем данные топапа
-    cursor.execute('SELECT user_id, amount_rub FROM balance_topups WHERE id = ?', (topup_id,))
+    cursor.execute(
+        'SELECT user_id, amount_rub FROM balance_topups WHERE id = ?',
+        (topup_id,)
+    )
     topup = cursor.fetchone()
     if not topup:
         conn.close()
         return False
 
-    # Обновляем статус
+    # Определяем сколько реально зачислить
+    amount_to_credit = (
+        received_amount_rub
+        if received_amount_rub is not None
+        else topup['amount_rub']
+    )
+
+    # Обновляем статус и фактическую сумму в записи топапа
     cursor.execute('''
         UPDATE balance_topups
-        SET status = 'paid', donation_event_id = ?
+        SET status = 'paid', donation_event_id = ?, amount_rub = ?
         WHERE id = ?
-    ''', (donation_event_id, topup_id))
+    ''', (donation_event_id, amount_to_credit, topup_id))
 
     # Пополняем баланс (COALESCE защищает от NULL у старых пользователей)
     cursor.execute('''
         UPDATE users SET balance = COALESCE(balance, 0) + ?
         WHERE user_id = ?
-    ''', (topup['amount_rub'], topup['user_id']))
+    ''', (amount_to_credit, topup['user_id']))
 
     conn.commit()
     conn.close()

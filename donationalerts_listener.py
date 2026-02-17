@@ -85,40 +85,53 @@ async def _process_topup(topup, amount_kopeks, donation_id):
     """Обрабатывает пополнение баланса по найденному топапу."""
     topup_id = topup['id']
     user_id = topup['user_id']
-    amount_rub = topup['amount_rub']
-    expected_kopeks = topup['amount_kopeks']
+    is_flexible = (topup['amount_rub'] == 0)  # любая сумма
 
-    from telegram import Bot
+    from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
     from config import TOKEN
     bot = Bot(token=TOKEN)
 
-    # Проверка суммы с допуском на комиссию DA (до 15%)
-    # Баланс начисляется в полном объёме (amount_rub), даже если DA удержала комиссию
-    min_acceptable = int(expected_kopeks * 0.85)
-    if amount_kopeks < min_acceptable:
-        received_rub = amount_kopeks / 100
-        logger.warning(
-            f"⚠️ Сумма слишком мала для топапа {topup_id}: "
-            f"получено {amount_kopeks} коп., минимум {min_acceptable} коп."
-        )
-        try:
-            await bot.send_message(
-                chat_id=user_id,
-                text=(
-                    f"❌ <b>Недостаточная сумма пополнения</b>\n\n"
-                    f"Получено: <b>{received_rub:.2f} руб.</b>\n"
-                    f"Требуется не менее: <b>{min_acceptable / 100:.2f} руб.</b>\n\n"
-                    f"Ваш код остаётся активным. Отправьте донат на "
-                    f"<b>{amount_rub} руб.</b> с тем же кодом."
-                ),
-                parse_mode='HTML'
+    if is_flexible:
+        # Гибкий топап — зачисляем ровно столько, сколько пришло (целые рубли)
+        received_rub = int(amount_kopeks / 100)
+        if received_rub <= 0:
+            logger.warning(
+                f"⚠️ Получена нулевая сумма для гибкого топапа {topup_id}"
             )
-        except Exception as e:
-            logger.error(f"Не удалось отправить уведомление: {e}")
-        return
+            return
+        ok = database.complete_balance_topup(
+            topup_id, str(donation_id), received_rub
+        )
+        amount_rub = received_rub
+    else:
+        # Фиксированный топап — проверяем с допуском на комиссию DA (15%)
+        expected_kopeks = topup['amount_kopeks']
+        min_acceptable = int(expected_kopeks * 0.85)
+        if amount_kopeks < min_acceptable:
+            received_rub = amount_kopeks / 100
+            logger.warning(
+                f"⚠️ Сумма слишком мала для топапа {topup_id}: "
+                f"получено {amount_kopeks} коп., минимум {min_acceptable} коп."
+            )
+            try:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=(
+                        f"❌ <b>Недостаточная сумма пополнения</b>\n\n"
+                        f"Получено: <b>{received_rub:.2f} руб.</b>\n"
+                        f"Требуется не менее: "
+                        f"<b>{min_acceptable / 100:.2f} руб.</b>\n\n"
+                        f"Ваш код остаётся активным. Отправьте донат на "
+                        f"<b>{topup['amount_rub']} руб.</b> с тем же кодом."
+                    ),
+                    parse_mode='HTML'
+                )
+            except Exception as e:
+                logger.error(f"Не удалось отправить уведомление: {e}")
+            return
+        ok = database.complete_balance_topup(topup_id, str(donation_id))
+        amount_rub = topup['amount_rub']
 
-    # Пополняем баланс
-    ok = database.complete_balance_topup(topup_id, str(donation_id))
     if not ok:
         logger.error(f"❌ Ошибка complete_balance_topup для топапа {topup_id}")
         return
@@ -133,7 +146,6 @@ async def _process_topup(topup, amount_kopeks, donation_id):
         f"✅ Баланс пользователя {user_id} пополнен на {amount_rub} руб. "
         f"(топап {topup_id}). Новый баланс: {new_balance} руб."
     )
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     nav_keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🎯 Выбрать матч", callback_data='category_sports')],
         [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]

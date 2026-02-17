@@ -1,10 +1,7 @@
 import logging
 import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ContextTypes, CallbackQueryHandler, CommandHandler,
-    MessageHandler, filters
-)
+from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
 import database
 import keyboards
 from utils import safe_edit_message, send_main_menu, format_match_info
@@ -101,15 +98,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == 'deposit':
         context.user_data['menu_history'].append(MENU_MAIN)
         await handle_deposit_menu(query, user_id)
-    elif query.data in ['deposit_1', 'deposit_3', 'deposit_5']:
-        amount = int(query.data.split('_')[1])
-        await handle_deposit_amount(query, user_id, amount)
     elif query.data.startswith('check_topup_'):
         token = query.data.split('check_topup_')[1]
         await handle_check_topup(query, user_id, token)
     elif query.data.startswith('find_topup_by_amount_'):
         token = query.data.split('find_topup_by_amount_')[1]
-        await handle_find_topup_by_amount(query, user_id, token, context)
+        await handle_find_topup_by_amount(query, user_id, token)
     else:
         await safe_edit_message(
             query,
@@ -961,20 +955,21 @@ async def handle_check_topup(query, user_id, token):
     )
 
 
-async def handle_find_topup_by_amount(query, user_id, token, context):
+async def handle_find_topup_by_amount(query, user_id, token):
     """
-    Запрашивает у пользователя ввод уникального кода для поиска доната.
+    Поиск доната по сумме для случая, когда пользователь нажал кнопку
+    «Не вставил код». Token уже известен из callback_data — ищем
+    подходящий незасчитанный донат в последних 30 записях DA.
+    """
+    import requests as http_requests
+    from config import DA_ACCESS_TOKEN, DA_PROFILE_URL
 
-    Если пользователь отправил донат без кода в комментарии,
-    он должен ввести код вручную. Бот сохраняет состояние и ждёт
-    текстового сообщения с кодом.
-    """
     topup = database.get_any_topup_by_token(token)
     if not topup:
         await safe_edit_message(
             query,
             "❌ Код пополнения не найден. Возможно, срок действия истёк.\n\n"
-            "Вернитесь в меню и создайте новый запрос.",
+            "Создайте новый запрос через «Пополнить баланс».",
             keyboards.main_menu_keyboard()
         )
         return
@@ -990,99 +985,13 @@ async def handle_find_topup_by_amount(query, user_id, token, context):
         )
         return
 
-    # Сохраняем состояние ожидания ввода кода
-    context.user_data['awaiting_manual_code'] = True
-
-    cancel_keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("❌ Отмена", callback_data='back_to_menu')]
-    ])
     await safe_edit_message(
         query,
-        "📝 <b>Введите ваш уникальный код</b>\n\n"
-        "Код из 12 символов был показан вам в инструкции по оплате.\n"
-        "Найдите его в истории переписки с ботом и отправьте сюда:\n\n"
-        "<i>Пример: AB12CD34EF56</i>",
-        cancel_keyboard,
+        "🔍 <b>Ищем ваш донат в DonationAlerts...</b>",
+        None,
         parse_mode='HTML'
     )
 
-
-async def handle_topup_code_input(update: Update,
-                                   context: ContextTypes.DEFAULT_TYPE):
-    """
-    Обработчик текстового сообщения с уникальным кодом пополнения.
-
-    Пользователь вводит код вручную (если забыл вставить его в DA донат).
-    Ищем его донат по сумме из соответствующего pending топапа.
-    """
-    if not context.user_data.get('awaiting_manual_code'):
-        return  # Игнорируем обычные сообщения
-
-    user_id = update.effective_user.id
-    typed_code = update.message.text.strip().upper()
-
-    # Сбрасываем состояние сразу
-    context.user_data['awaiting_manual_code'] = False
-
-    # Валидация формата: ровно 12 символов, буквы/цифры
-    if not re.match(r'^[A-Z0-9]{12}$', typed_code):
-        await update.message.reply_text(
-            "❌ <b>Неверный формат кода</b>\n\n"
-            "Код должен содержать ровно <b>12 символов</b> "
-            "(только буквы A–Z и цифры 0–9).\n\n"
-            "Проверьте код в истории чата с ботом и попробуйте снова.",
-            parse_mode='HTML',
-            reply_markup=keyboards.main_menu_keyboard()
-        )
-        return
-
-    # Ищем топап по введённому коду
-    topup = database.get_any_topup_by_token(typed_code)
-    if not topup:
-        await update.message.reply_text(
-            "❌ <b>Код не найден</b>\n\n"
-            "Не удалось найти запрос пополнения с этим кодом. "
-            "Возможно, срок действия истёк (30 минут).\n\n"
-            "Создайте новый запрос через меню пополнения.",
-            parse_mode='HTML',
-            reply_markup=keyboards.main_menu_keyboard()
-        )
-        return
-
-    # Защита: код должен принадлежать этому пользователю
-    if topup['user_id'] != user_id:
-        logger.warning(
-            f"[manual_code] user={user_id} попытался использовать чужой "
-            f"код {typed_code} (владелец: {topup['user_id']})"
-        )
-        await update.message.reply_text(
-            "❌ Этот код принадлежит другому пользователю.",
-            reply_markup=keyboards.main_menu_keyboard()
-        )
-        return
-
-    if topup['status'] == 'paid':
-        balance = database.get_user_balance(user_id)
-        await update.message.reply_text(
-            f"✅ <b>Этот код уже засчитан!</b>\n\n"
-            f"💳 Ваш баланс: <b>{balance} руб.</b>",
-            parse_mode='HTML',
-            reply_markup=keyboards.main_menu_keyboard()
-        )
-        return
-
-    amount_rub = topup['amount_rub']
-    expected_kopeks = topup['amount_kopeks']
-    min_acceptable = int(expected_kopeks * 0.85)
-
-    searching_msg = await update.message.reply_text(
-        f"🔍 <b>Ищем ваш донат в DonationAlerts...</b>\n\n"
-        f"Ожидаемая сумма: <b>{amount_rub} руб.</b>",
-        parse_mode='HTML'
-    )
-
-    import requests as http_requests
-    from config import DA_ACCESS_TOKEN
     try:
         headers = {'Authorization': f'Bearer {DA_ACCESS_TOKEN}'}
         response = http_requests.get(
@@ -1093,128 +1002,121 @@ async def handle_topup_code_input(update: Update,
         response.raise_for_status()
         donations = response.json().get('data', [])
     except Exception as e:
-        logger.error(f"Ошибка DA API при ручном вводе кода: {e}")
-        await searching_msg.edit_text(
-            "❌ <b>Не удалось связаться с DonationAlerts</b>\n\n"
-            "Попробуйте позже или воспользуйтесь кнопкой «Проверить оплату».",
-            parse_mode='HTML',
-            reply_markup=keyboards.main_menu_keyboard()
+        logger.error(f"Ошибка DA API при find_topup_by_amount: {e}")
+        keyboard = [
+            [InlineKeyboardButton("🔄 Попробовать ещё раз",
+                                  callback_data=f'find_topup_by_amount_{token}')],
+            [InlineKeyboardButton("🏠 В главное меню",
+                                  callback_data='back_to_menu')]
+        ]
+        await safe_edit_message(
+            query,
+            "❌ <b>Не удалось связаться с DonationAlerts</b>\n\nПопробуйте позже.",
+            InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
         )
         return
 
-    # Ищем донат: нужная сумма, без кода в комментарии, ещё не засчитан
+    # Ищем незасчитанный донат без кода в комментарии с любой суммой > 0
     candidates = []
     for donation in donations:
         received_kopeks = int(float(str(donation.get('amount', 0))) * 100)
-        if received_kopeks < min_acceptable:
+        if received_kopeks <= 0:
             continue
-
         msg = donation.get('message', '') or ''
-        # Пропускаем донаты с кодом — они обработаются автоматически
+        # Пропускаем донаты с 12-символьным кодом — они обработаются сами
         if re.search(r'\b([A-Z0-9]{12})\b', msg.upper()):
             continue
-
-        # Пропускаем уже засчитанные донаты
         if database.is_donation_event_used(str(donation['id'])):
             continue
-
         candidates.append(donation)
 
     if not candidates:
-        await searching_msg.edit_text(
-            f"⏳ <b>Подходящий донат не найден</b>\n\n"
-            f"Не нашли незасчитанный донат на сумму около "
-            f"<b>{amount_rub} руб.</b> без кода в комментарии.\n\n"
+        keyboard = [
+            [InlineKeyboardButton("🔄 Проверить ещё раз",
+                                  callback_data=f'find_topup_by_amount_{token}')],
+            [InlineKeyboardButton("✅ Перейти к оплате", url=DA_PROFILE_URL)],
+            [InlineKeyboardButton("🏠 В главное меню",
+                                  callback_data='back_to_menu')]
+        ]
+        await safe_edit_message(
+            query,
+            "⏳ <b>Незасчитанный донат не найден</b>\n\n"
             "Возможные причины:\n"
             "• Донат ещё не появился в системе — подождите 1-2 мин\n"
-            "• Указанная сумма не совпадает с требуемой\n\n"
-            "Попробуйте ещё раз через «Проверить оплату» или обратитесь "
-            "в поддержку.",
-            parse_mode='HTML',
-            reply_markup=keyboards.main_menu_keyboard()
+            "• Донат уже был засчитан ранее\n\n"
+            "Если оплата точно была, обратитесь в поддержку.",
+            InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
         )
         return
 
+    # Берём самый свежий подходящий донат, зачисляем фактическую сумму
     best = candidates[0]
     donation_id = str(best['id'])
+    received_rub = int(float(str(best['amount'])))  # целые рубли
 
-    ok = database.complete_balance_topup(topup['id'], donation_id)
+    ok = database.complete_balance_topup(topup['id'], donation_id, received_rub)
     if not ok:
-        await searching_msg.edit_text(
+        await safe_edit_message(
+            query,
             "❌ Ошибка зачисления баланса. Обратитесь в поддержку.",
-            reply_markup=keyboards.main_menu_keyboard()
+            keyboards.main_menu_keyboard()
         )
         return
 
     new_balance = database.get_user_balance(user_id)
     analyses_word = (
-        "анализ" if amount_rub == 1
-        else "анализа" if 2 <= amount_rub <= 4
+        "анализ" if received_rub == 1
+        else "анализа" if 2 <= received_rub <= 4
         else "анализов"
     )
     logger.info(
-        f"✅ [manual_code] Баланс user={user_id} пополнен на {amount_rub} руб. "
-        f"код={typed_code}, donation_id={donation_id}"
+        f"✅ [find_by_amount] Баланс user={user_id} пополнен на {received_rub} руб. "
+        f"donation_id={donation_id}"
     )
-    await searching_msg.edit_text(
+    await safe_edit_message(
+        query,
         f"✅ <b>Баланс пополнен!</b>\n\n"
-        f"💰 Пополнено: <b>+{amount_rub} руб.</b> ({amount_rub} {analyses_word})\n"
+        f"💰 Пополнено: <b>+{received_rub} руб.</b> ({received_rub} {analyses_word})\n"
         f"💳 Ваш баланс: <b>{new_balance} руб.</b>\n\n"
-        "Донат успешно найден и засчитан!\n"
-        "В следующий раз вставляйте код в комментарий к донату.",
-        parse_mode='HTML',
-        reply_markup=keyboards.main_menu_keyboard()
+        "Донат найден и успешно засчитан!\n"
+        "В следующий раз указывайте код в комментарии к донату.",
+        keyboards.main_menu_keyboard(),
+        parse_mode='HTML'
     )
 
 
 async def handle_deposit_menu(query, user_id):
-    """Показывает меню пополнения баланса с текущим балансом."""
-    balance = database.get_user_balance(user_id)
-    text = (
-        "💰 <b>ПОПОЛНЕНИЕ БАЛАНСА</b>\n\n"
-        f"💳 Ваш текущий баланс: <b>{balance} руб.</b> ({balance} анализов)\n\n"
-        "Выберите сумму пополнения:\n"
-        "1 руб. = 1 анализ\n\n"
-        "После выбора суммы вы получите уникальный код.\n"
-        "Отправьте донат с этим кодом в комментарии на DonationAlerts — "
-        "баланс пополнится автоматически."
-    )
-    await safe_edit_message(
-        query, text, keyboards.deposit_menu_keyboard(), parse_mode='HTML'
-    )
+    """
+    Пополнение баланса: создаёт гибкий топап и показывает инструкцию.
 
-
-async def handle_deposit_amount(query, user_id, amount_rub):
-    """Создаёт pending топап и показывает инструкцию по оплате через DA."""
+    Пользователь сам выбирает сумму на DonationAlerts —
+    баланс пополняется ровно на ту сумму, что он отправил.
+    """
     from config import DA_PROFILE_URL
 
-    token = database.create_balance_topup(user_id, amount_rub)
-    analyses_word = (
-        "анализ" if amount_rub == 1
-        else "анализа" if 2 <= amount_rub <= 4
-        else "анализов"
-    )
+    token = database.create_balance_topup(user_id, amount_rub=0)
+    balance = database.get_user_balance(user_id)
 
     text = (
-        f"💰 <b>Пополнение баланса на {amount_rub} руб.</b>\n"
-        f"📊 Вы получите: <b>{amount_rub} {analyses_word}</b>\n\n"
+        "💰 <b>ПОПОЛНЕНИЕ БАЛАНСА</b>\n\n"
+        f"💳 Текущий баланс: <b>{balance} руб.</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━\n\n"
-        "👇 <b>Скопируйте этот код:</b> 👇\n"
+        "📋 <b>Инструкция:</b>\n"
+        "1️⃣ Нажмите кнопку «Перейти к оплате»\n"
+        "2️⃣ Отправьте донат на <b>любую сумму</b>\n"
+        "3️⃣ В комментарии к донату укажите ваш код:\n\n"
         f"<code>{token}</code>\n\n"
-        "<b>📋 Инструкция:</b>\n"
-        "1️⃣ Нажмите кнопку «Перейти к оплате» ниже\n"
-        f"2️⃣ Отправьте донат на сумму <b>{amount_rub} руб.</b>\n"
-        "3️⃣ В сообщении к донату вставьте код выше 👆\n\n"
-        "⏱ Код действителен <b>30 минут</b>\n\n"
-        "✅ После оплаты баланс пополнится автоматически в течение "
-        "<b>15-30 секунд</b>."
+        "✅ Баланс пополнится автоматически через 15–30 сек.\n"
+        "1 руб. = 1 анализ  •  ⏱ Код действует <b>30 минут</b>"
     )
     keyboard = [
         [InlineKeyboardButton("✅ Перейти к оплате", url=DA_PROFILE_URL)],
         [InlineKeyboardButton("🔄 Проверить оплату",
                               callback_data=f'check_topup_{token}')],
-        [InlineKeyboardButton("◀️ Назад к выбору суммы",
-                              callback_data='deposit')],
+        [InlineKeyboardButton("❓ Не вставил код",
+                              callback_data=f'find_topup_by_amount_{token}')],
         [InlineKeyboardButton("🏠 В главное меню",
                               callback_data='back_to_menu')]
     ]
@@ -1228,10 +1130,6 @@ def setup_user_handlers(application):
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("clean_purchases", admin_clean_purchases))
     application.add_handler(CallbackQueryHandler(button_handler))
-    # Обработчик ввода кода при ручном вводе (забыл вставить в DA донат)
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_topup_code_input)
-    )
 
 
 async def handle_sport_selection_back(query, context, sport):

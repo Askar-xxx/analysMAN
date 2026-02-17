@@ -15,25 +15,6 @@ def main_menu_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 
-def deposit_menu_keyboard():
-    """Меню пополнения баланса: 2 колонки (сумма | кол-во анализов)"""
-    keyboard = [
-        [
-            InlineKeyboardButton("💰 1 руб.", callback_data='deposit_1'),
-            InlineKeyboardButton("📊 1 анализ", callback_data='deposit_1')
-        ],
-        [
-            InlineKeyboardButton("💰 3 руб.", callback_data='deposit_3'),
-            InlineKeyboardButton("📊 3 анализа", callback_data='deposit_3')
-        ],
-        [
-            InlineKeyboardButton("💰 5 руб.", callback_data='deposit_5'),
-            InlineKeyboardButton("📊 5 анализов", callback_data='deposit_5')
-        ],
-        [InlineKeyboardButton("◀️ В главное меню", callback_data='back_to_menu')]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
 
 def back_to_main_keyboard():
     """Клавиатура с кнопкой назад в главное меню"""
