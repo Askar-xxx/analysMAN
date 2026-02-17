@@ -1,11 +1,10 @@
 import logging
-import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
 import database
 import keyboards
 from utils import safe_edit_message, send_main_menu, format_match_info
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 
 MENU_MAIN = 'main'
@@ -98,6 +97,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == 'deposit':
         context.user_data['menu_history'].append(MENU_MAIN)
         await handle_deposit_menu(query, user_id)
+    elif query.data.startswith('check_balance_'):
+        token = query.data.split('check_balance_')[1]
+        await handle_check_balance_status(query, user_id, token)
     elif query.data.startswith('check_topup_'):
         token = query.data.split('check_topup_')[1]
         await handle_check_topup(query, user_id, token)
@@ -1011,33 +1013,26 @@ async def handle_find_topup_by_amount(query, user_id, token):
         )
         return
 
-    # Временной порог: только донаты с момента создания токена для этого пользователя.
-    # Это привязывает поиск к конкретной сессии оплаты, а не к случайному промежутку.
-    try:
-        cutoff_dt = datetime.strptime(topup['created_at'][:19], '%Y-%m-%d %H:%M:%S')
-    except Exception:
-        cutoff_dt = datetime.now() - timedelta(hours=2)
+    # Временной порог: последние 4 часа в UTC (DA API отдаёт время в UTC).
+    # Используем utcnow() чтобы избежать ошибок часового пояса.
+    cutoff_dt = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=4)
 
-    # Ищем незасчитанный донат без кода в комментарии с любой суммой > 0
+    # Ищем незасчитанный донат с любой суммой > 0 за последние 4 часа
     candidates = []
     for donation in donations:
         received_kopeks = int(float(str(donation.get('amount', 0))) * 100)
         if received_kopeks <= 0:
             continue
-        # Фильтрация по времени — игнорируем старые донаты
+        # Фильтрация по времени (DA отдаёт UTC)
         created_at_str = donation.get('created_at', '')
         if created_at_str:
             try:
-                # DA возвращает формат: "2024-01-15 12:34:56"
                 donation_dt = datetime.strptime(created_at_str[:19], '%Y-%m-%d %H:%M:%S')
                 if donation_dt < cutoff_dt:
                     continue
             except Exception:
-                pass  # если парсинг не удался — пропускаем проверку времени
-        msg = donation.get('message', '') or ''
-        # Пропускаем донаты с 12-символьным кодом — они обработаются сами
-        if re.search(r'\b([A-Z0-9]{12})\b', msg.upper()):
-            continue
+                pass  # если формат другой — не фильтруем
+        # Пропускаем донаты, уже связанные с каким-либо токеном
         if database.is_donation_event_used(str(donation['id'])):
             continue
         candidates.append(donation)
@@ -1100,7 +1095,8 @@ async def handle_find_topup_by_amount(query, user_id, token):
 
 async def handle_deposit_menu(query, user_id):
     """
-    Пополнение баланса: показывает инструкцию с уникальным кодом.
+    Пополнение баланса: показывает уникальный код, который нужно вставить
+    в комментарий доната на DonationAlerts.
 
     Если у пользователя есть действующий pending топап — показывает тот же
     код, чтобы он не потерял его при повторном входе в меню.
@@ -1119,22 +1115,97 @@ async def handle_deposit_menu(query, user_id):
         "💰 <b>ПОПОЛНЕНИЕ БАЛАНСА</b>\n\n"
         f"💳 Текущий баланс: <b>{balance} руб.</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━\n\n"
+        "⚠️ <b>ВАЖНО — сохраните ваш уникальный код:</b>\n\n"
+        f"🔑 <code>{token}</code>\n\n"
+        "<b>Этот код нужно вставить в комментарий к донату!</b>\n"
+        "<i>Без кода баланс не пополнится. Код действует 30 минут.</i>\n\n"
+        "━━━━━━━━━━━━━━━━━━━\n\n"
         "📋 <b>Инструкция:</b>\n"
-        "1️⃣ Нажмите кнопку «Перейти к оплате»\n"
-        "2️⃣ Отправьте донат на <b>любую сумму</b>\n"
-        "3️⃣ Нажмите кнопку «Проверить баланс»\n\n"
-        "✅ Баланс пополнится автоматически.\n"
-        "1 руб. = 1 анализ  •  ⏱ Действует <b>10 минут</b>"
+        f"1️⃣ Скопируйте код: <code>{token}</code>\n"
+        "2️⃣ Нажмите «Перейти к оплате»\n"
+        "3️⃣ Отправьте донат на любую сумму\n"
+        "4️⃣ ‼️ Вставьте код в поле <b>«Комментарий»</b>\n"
+        "5️⃣ Нажмите «Проверить баланс»\n\n"
+        "✅ 1 руб. = 1 анализ"
     )
     keyboard = [
         [InlineKeyboardButton("✅ Перейти к оплате", url=DA_PROFILE_URL)],
         [InlineKeyboardButton("🔄 Проверить баланс",
-                              callback_data=f'find_topup_by_amount_{token}')],
+                              callback_data=f'check_balance_{token}')],
         [InlineKeyboardButton("🏠 В главное меню",
                               callback_data='back_to_menu')]
     ]
     await safe_edit_message(
         query, text, InlineKeyboardMarkup(keyboard), parse_mode='HTML'
+    )
+
+
+async def handle_check_balance_status(query, user_id, token):
+    """
+    Проверка: был ли засчитан донат с данным токеном.
+
+    Слушатель (WebSocket/polling) сам обрабатывает входящие донаты и
+    меняет статус на 'paid'. Эта функция просто смотрит в БД.
+    Если донат ещё не зачтен — предлагает подождать или обратиться в поддержку.
+    """
+    from config import DA_PROFILE_URL
+
+    topup = database.get_any_topup_by_token(token)
+    if not topup:
+        await safe_edit_message(
+            query,
+            "❌ <b>Код не найден</b>\n\n"
+            "Возможно, срок действия кода истёк.\n"
+            "Вернитесь в меню и создайте новый запрос.",
+            keyboards.main_menu_keyboard(),
+            parse_mode='HTML'
+        )
+        return
+
+    if topup['status'] == 'paid':
+        balance = database.get_user_balance(user_id)
+        credited = topup['amount_rub']
+        analyses_word = (
+            "анализ" if credited == 1
+            else "анализа" if 2 <= credited <= 4
+            else "анализов"
+        )
+        await safe_edit_message(
+            query,
+            f"✅ <b>Баланс пополнен!</b>\n\n"
+            f"💰 Зачислено: <b>+{credited} руб.</b> ({credited} {analyses_word})\n"
+            f"💳 Ваш баланс: <b>{balance} руб.</b>\n\n"
+            "Выберите матч для покупки анализа!",
+            keyboards.main_menu_keyboard(),
+            parse_mode='HTML'
+        )
+        return
+
+    # Статус pending — ещё не зачтено
+    from config import SUPPORT_USERNAME
+    support_text = (
+        f"@{SUPPORT_USERNAME}" if SUPPORT_USERNAME else "администратора"
+    )
+    keyboard = [
+        [InlineKeyboardButton("🔄 Проверить ещё раз",
+                              callback_data=f'check_balance_{token}')],
+        [InlineKeyboardButton("✅ Перейти к оплате", url=DA_PROFILE_URL)],
+        [InlineKeyboardButton("🏠 В главное меню",
+                              callback_data='back_to_menu')]
+    ]
+    await safe_edit_message(
+        query,
+        "⏳ <b>Оплата ещё не зачтена</b>\n\n"
+        "Убедитесь, что:\n"
+        f"• Вставили код <code>{token}</code> в комментарий к донату\n"
+        "• Подождали 1-2 минуты после оплаты\n\n"
+        "Если всё верно — нажмите «Проверить ещё раз».\n\n"
+        "<i>Если отправили донат без кода — напишите "
+        f"{support_text} и укажите:\n"
+        f"• уникальный код: <code>{token}</code>\n"
+        "• сумму и время доната.</i>",
+        InlineKeyboardMarkup(keyboard),
+        parse_mode='HTML'
     )
 
 

@@ -15,7 +15,6 @@ def main_menu_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 
-
 def back_to_main_keyboard():
     """Клавиатура с кнопкой назад в главное меню"""
     return InlineKeyboardMarkup([

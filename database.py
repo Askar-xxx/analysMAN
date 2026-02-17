@@ -587,7 +587,7 @@ def create_balance_topup(user_id, amount_rub=0):
     token = uuid.uuid4().hex[:12].upper()
     amount_kopeks = amount_rub * 100
     created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    expires_at = (datetime.now() + timedelta(minutes=10)).strftime('%Y-%m-%d %H:%M:%S')
+    expires_at = (datetime.now() + timedelta(minutes=30)).strftime('%Y-%m-%d %H:%M:%S')
 
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -764,7 +764,6 @@ def get_purchase_by_token(token):
     purchase = cursor.fetchone()
     conn.close()
     return purchase
-
 
 
 def get_user_stats(user_id):

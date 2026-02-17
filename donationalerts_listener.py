@@ -87,7 +87,7 @@ async def _process_topup(topup, amount_kopeks, donation_id):
     user_id = topup['user_id']
     is_flexible = (topup['amount_rub'] == 0)  # любая сумма
 
-    from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram import Bot
     from config import TOKEN
     bot = Bot(token=TOKEN)
 
@@ -136,35 +136,13 @@ async def _process_topup(topup, amount_kopeks, donation_id):
         logger.error(f"❌ Ошибка complete_balance_topup для топапа {topup_id}")
         return
 
-    analyses_word = (
-        "анализ" if amount_rub == 1
-        else "анализа" if 2 <= amount_rub <= 4
-        else "анализов"
-    )
     new_balance = database.get_user_balance(user_id)
     logger.info(
         f"✅ Баланс пользователя {user_id} пополнен на {amount_rub} руб. "
         f"(топап {topup_id}). Новый баланс: {new_balance} руб."
     )
-    nav_keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎯 Выбрать матч", callback_data='category_sports')],
-        [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
-    ])
-    try:
-        await bot.send_message(
-            chat_id=user_id,
-            text=(
-                f"✅ <b>Баланс пополнен!</b>\n\n"
-                f"💰 Пополнено: <b>+{amount_rub} руб.</b> "
-                f"({amount_rub} {analyses_word})\n"
-                f"💳 Ваш баланс: <b>{new_balance} руб.</b>\n\n"
-                "Теперь вы можете приобрести анализы матчей!"
-            ),
-            parse_mode='HTML',
-            reply_markup=nav_keyboard
-        )
-    except Exception as e:
-        logger.error(f"Не удалось отправить уведомление о пополнении: {e}")
+    # Уведомление не отправляем: пользователь получит результат
+    # при нажатии кнопки «Проверить баланс» в меню пополнения.
 
 
 async def process_donation(donation_data):
