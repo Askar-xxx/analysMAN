@@ -1,19 +1,15 @@
 import logging
+import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
+from telegram.ext import (
+    ContextTypes, CallbackQueryHandler, CommandHandler,
+    MessageHandler, filters
+)
 import database
 import keyboards
 from utils import safe_edit_message, send_main_menu, format_match_info
 from datetime import datetime, timedelta
 
-# START TEMPORARY DISABLE BALANCE LOGIC — MVP PURCHASE FLOW (2026-02-16)
-# # Импорты из payment_handlers
-# from payment_handlers import (
-#     handle_deposit_menu,
-#     handle_deposit_amount,
-# )
-# END TEMPORARY DISABLE BALANCE LOGIC
-# TODO: Restore after MVP — see mvp_scan_report.md
 
 MENU_MAIN = 'main'
 MENU_MY_ANALYSIS = 'my_analysis'
@@ -102,16 +98,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['menu_history'].append(MENU_PURCHASED_SPORT)
         context.user_data['current_sport'] = sport
         await handle_purchased_date(query, user_id, sport, date_str)
-    # START TEMPORARY DISABLE BALANCE LOGIC — MVP PURCHASE FLOW (2026-02-16)
-    # elif query.data in ['deposit', 'deposit_150', 'deposit_300',
-    #                     'deposit_600', 'deposit_800']:
-    #     if query.data == 'deposit':
-    #         # Сохраняем предыдущее меню
-    #         context.user_data['menu_history'].append(MENU_MAIN)
-    #         await handle_deposit_menu(update, context)
-    #     else:
-    #         await handle_deposit_amount(update, context)
-    # END TEMPORARY DISABLE BALANCE LOGIC
+    elif query.data == 'deposit':
+        context.user_data['menu_history'].append(MENU_MAIN)
+        await handle_deposit_menu(query, user_id)
+    elif query.data in ['deposit_1', 'deposit_3', 'deposit_5']:
+        amount = int(query.data.split('_')[1])
+        await handle_deposit_amount(query, user_id, amount)
+    elif query.data.startswith('check_topup_'):
+        token = query.data.split('check_topup_')[1]
+        await handle_check_topup(query, user_id, token)
+    elif query.data.startswith('find_topup_by_amount_'):
+        token = query.data.split('find_topup_by_amount_')[1]
+        await handle_find_topup_by_amount(query, user_id, token, context)
     else:
         await safe_edit_message(
             query,
@@ -285,155 +283,117 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_match_detail(query, user_id, match_id):
-    """
-    Обработка детальной страницы матча (упрощённая для MVP).
+    """Обработка детальной страницы матча с проверкой баланса."""
+    from config import ANALYSIS_PRICE_RUB
 
-    TEMPORARY (2026-02-16): Убраны проверки баланса.
-    Всегда показывает кнопку "Купить анализ" (без проверки средств).
-    """
     match = database.get_match_by_id(match_id)
     if not match:
         await safe_edit_message(query, "Матч не найден.",
                                 keyboards.main_menu_keyboard())
         return
+
     has_purchased = database.has_purchased_analysis(user_id, match_id)
+    user_balance = database.get_user_balance(user_id)
+    price = ANALYSIS_PRICE_RUB
     text = format_match_info(match)
 
     if has_purchased:
-        # Если анализ уже куплен - показываем кнопку для просмотра PNG
         text += "\n\n✅ Вы уже приобрели этот анализ"
-        keyboard = [
-            [InlineKeyboardButton("📊 Показать анализ", callback_data=f'show_analysis_{match_id}')],
-            [InlineKeyboardButton("◀️ Назад", callback_data='back')],
-            [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
-        ]
+    elif user_balance >= price:
+        text += (
+            f"\n\n💳 Ваш баланс: <b>{user_balance} руб.</b> | "
+            f"Стоимость: <b>{price} руб.</b>\n"
+            "Нажмите «Купить анализ» для мгновенной покупки с баланса."
+        )
     else:
-        # START TEMPORARY DISABLE BALANCE LOGIC — MVP PURCHASE FLOW (2026-02-16)
-        # Убрали: проверку баланса, отображение цены, кнопку "Пополнить баланс"
-        # Теперь: только кнопка "Купить анализ" и "Назад"
-        # END TEMPORARY DISABLE BALANCE LOGIC
-        text += "\n\nДля просмотра анализа необходимо приобрести его."
-        keyboard = keyboards.match_detail_keyboard(match_id, has_purchased)
+        text += (
+            f"\n\n💳 Ваш баланс: <b>{user_balance} руб.</b> | "
+            f"Стоимость: <b>{price} руб.</b>\n"
+            "Недостаточно средств. Пополните баланс для покупки анализа."
+        )
 
-    await safe_edit_message(
-        query,
-        text,
-        InlineKeyboardMarkup(keyboard) if has_purchased else keyboard
+    keyboard = keyboards.match_detail_keyboard(
+        match_id, has_purchased, user_balance, price
     )
+    await safe_edit_message(query, text, keyboard, parse_mode='HTML')
 
 
 async def handle_purchase(query, user_id):
-    """
-    Обработка покупки анализа через DonationAlerts (MVP версия).
+    """Покупка анализа с баланса (мгновенная оплата)."""
+    from config import ANALYSIS_PRICE_RUB
 
-    TEMPORARY (2026-02-16): Упрощённый flow без списания баланса.
-    Создаёт pending purchase с token и отправляет инструкцию для оплаты.
-    Генерация анализа и отправка происходит в webhook после оплаты.
-    """
-    from config import ANALYSIS_PRICE_RUB, DA_PROFILE_URL
-
-    await query.answer()  # Убираем "часики" на кнопке
+    await query.answer()
 
     match_id = int(query.data.split('_')[1])
     match = database.get_match_by_id(match_id)
     if not match:
-        await query.message.reply_text(
-            "❌ Матч не найден.",
-            reply_markup=keyboards.main_menu_keyboard()
-        )
-        return
-
-    # Проверяем, не куплен ли уже анализ (status='paid')
-    if database.has_purchased_analysis(user_id, match_id):
-        await query.message.reply_text(
-            "✅ Вы уже оплатили анализ для этого матча!\n\n"
-            f"{match['team1']} vs {match['team2']}\n\n"
-            "Откройте раздел «Мои анализы» чтобы получить его.",
-            reply_markup=keyboards.main_menu_keyboard()
-        )
-        return
-
-    # Проверяем, есть ли pending покупка (уже создана, ждёт оплаты)
-    pending = database.has_pending_purchase(user_id, match_id)
-    if pending:
-        existing_token = pending['token']
-        text = "💰 <b>Ожидается оплата...</b>\n\n"
-        text += "⏳ <b>У вас уже есть активный заказ!</b>\n\n"
-        text += f"🏆 Матч: <b>{match['team1']} vs {match['team2']}</b>\n"
-        text += f"💵 Стоимость: <b>{ANALYSIS_PRICE_RUB} руб.</b>\n\n"
-        text += "━━━━━━━━━━━━━━━━━━━\n\n"
-        text += "👇 <b>Скопируйте этот код:</b> 👇\n"
-        text += f"<code>{existing_token}</code>\n\n"
-        text += "<b>📋 Инструкция по оплате:</b>\n"
-        text += "1️⃣ Нажмите кнопку «Приобрести анализ» ниже\n"
-        text += f"2️⃣ Отправьте донат на сумму <b>{ANALYSIS_PRICE_RUB} руб.</b>\n"
-        text += "3️⃣ В сообщении к донату вставьте код выше 👆\n\n"
-        text += "⏱ Код действителен <b>30 минут</b>\n\n"
-        text += "✨ После оплаты анализ будет автоматически создан и отправлен вам в течение <b>30-60 секунд</b>."
-        keyboard = [
-            [InlineKeyboardButton("✅ Приобрести анализ", url=DA_PROFILE_URL)],
-            [InlineKeyboardButton("◀️ Назад", callback_data='back')],
-            [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
-        ]
         await safe_edit_message(
-            query,
-            text,
-            InlineKeyboardMarkup(keyboard),
-            parse_mode='HTML'
+            query, "❌ Матч не найден.", keyboards.main_menu_keyboard()
         )
         return
 
-    # Конвертируем в dict
     match_dict = dict(match) if not isinstance(match, dict) else match
 
-    # Создаём pending purchase с уникальным token
-    success, token = database.purchase_analysis(user_id, match_id)
-    if not success:
-        await query.message.reply_text(
-            f"❌ Ошибка создания заказа:\n{token}",
-            reply_markup=keyboards.main_menu_keyboard()
+    # Уже куплен?
+    if database.has_purchased_analysis(user_id, match_id):
+        text = (
+            f"✅ Вы уже приобрели анализ для этого матча!\n\n"
+            f"🏆 {match_dict['team1']} vs {match_dict['team2']}\n\n"
+            "Откройте раздел «Мои анализы» чтобы посмотреть его."
+        )
+        await safe_edit_message(
+            query, text, keyboards.main_menu_keyboard(), parse_mode='HTML'
         )
         return
 
-    # Формируем инструкцию для оплаты (РЕДАКТИРУЕМ текущее сообщение)
-    text = "💰 <b>Ожидается оплата...</b>\n\n"
-    text += f"🏆 Матч: <b>{match_dict['team1']} vs {match_dict['team2']}</b>\n"
-    text += f"📅 Дата: {match_dict['match_date']} в {match_dict['match_time']} МСК\n"
-    text += f"💵 Стоимость: <b>{ANALYSIS_PRICE_RUB} руб.</b>\n\n"
-    text += "━━━━━━━━━━━━━━━━━━━\n\n"
-    text += "👇 <b>Скопируйте этот код:</b> 👇\n"
-    text += f"<code>{token}</code>\n\n"
-    text += "<b>📋 Инструкция по оплате:</b>\n"
-    text += "1️⃣ Нажмите кнопку «Перейти к оплате» ниже\n"
-    text += f"2️⃣ Отправьте донат на сумму <b>{ANALYSIS_PRICE_RUB} руб.</b>\n"
-    text += "3️⃣ В сообщении к донату вставьте код выше 👆\n\n"
-    text += "⏱ Код действителен <b>30 минут</b>\n\n"
-    text += "✨ После оплаты анализ будет автоматически создан и отправлен вам в течение <b>30-60 секунд</b>."
+    # Проверка баланса
+    price = ANALYSIS_PRICE_RUB
+    user_balance = database.get_user_balance(user_id)
+    if user_balance < price:
+        text = (
+            f"❌ <b>Недостаточно средств</b>\n\n"
+            f"💳 Ваш баланс: <b>{user_balance} руб.</b>\n"
+            f"💵 Стоимость анализа: <b>{price} руб.</b>\n\n"
+            "Пополните баланс и вернитесь к покупке."
+        )
+        keyboard = [
+            [InlineKeyboardButton("💰 Пополнить баланс",
+                                  callback_data='deposit')],
+            [InlineKeyboardButton("◀️ Назад", callback_data='back')],
+            [InlineKeyboardButton("🏠 В главное меню",
+                                  callback_data='back_to_menu')]
+        ]
+        await safe_edit_message(
+            query, text, InlineKeyboardMarkup(keyboard), parse_mode='HTML'
+        )
+        return
 
-    # Кнопка со ссылкой на DonationAlerts + кнопки навигации
-    keyboard = [
-        [InlineKeyboardButton("✅ Приобрести анализ", url=DA_PROFILE_URL)],
-        [InlineKeyboardButton("◀️ Назад к матчам", callback_data='back')],
-        [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
-    ]
+    # Списываем с баланса и создаём paid purchase
+    success, message = database.purchase_analysis(user_id, match_id)
+    if not success:
+        await safe_edit_message(
+            query,
+            f"❌ Ошибка покупки: {message}",
+            keyboards.main_menu_keyboard()
+        )
+        return
 
-    # РЕДАКТИРУЕМ текущее сообщение вместо создания нового
+    # Мгновенная генерация анализа
     await safe_edit_message(
         query,
-        text,
-        InlineKeyboardMarkup(keyboard),
+        f"⏳ <b>Генерируем анализ...</b>\n\n"
+        f"🏆 {match_dict['team1']} vs {match_dict['team2']}\n\n"
+        "🤖 Собираем данные и создаём анализ...\n"
+        "⏱ Это займёт <b>30-60 секунд</b>.",
+        None,
         parse_mode='HTML'
     )
 
-    # Сохраняем message_id для последующего удаления listener'ом
-    # Находим purchase_id по token
-    conn = database.get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT id FROM purchases WHERE token = ?', (token,))
-    purchase = cursor.fetchone()
-    conn.close()
-    if purchase:
-        database.update_instruction_message_id(purchase['id'], query.message.message_id)
+    from webhook_server import generate_and_send_analysis
+    await generate_and_send_analysis(
+        user_id, match_id, match_dict,
+        instruction_message_id=query.message.message_id
+    )
 
 
 async def handle_show_analysis(query, user_id, match_id):
@@ -838,11 +798,440 @@ async def admin_clean_purchases(update: Update, context: ContextTypes.DEFAULT_TY
     await update.message.reply_text(text)
 
 
+async def handle_check_topup(query, user_id, token):
+    """
+    Ручная проверка оплаты через DA API.
+
+    Вызывается кнопкой «Проверить оплату» если листенер был недоступен.
+    Запрашивает последние донаты DA и ищет совпадение по token.
+    Засчитывает полный amount_rub даже если DA удержала комиссию.
+    """
+    import re
+    import requests as http_requests
+    from config import DA_ACCESS_TOKEN, DA_PROFILE_URL
+
+    # Проверяем, не обработан ли уже этот токен
+    topup = database.get_any_topup_by_token(token)
+    if not topup:
+        await safe_edit_message(
+            query,
+            "❌ Код пополнения не найден. Возможно, срок действия истёк.\n\n"
+            "Вернитесь в меню и создайте новый запрос.",
+            keyboards.main_menu_keyboard()
+        )
+        return
+
+    if topup['status'] == 'paid':
+        balance = database.get_user_balance(user_id)
+        await safe_edit_message(
+            query,
+            f"✅ <b>Оплата уже зачтена!</b>\n\n"
+            f"💳 Ваш баланс: <b>{balance} руб.</b>",
+            keyboards.main_menu_keyboard(),
+            parse_mode='HTML'
+        )
+        return
+
+    # Показываем "Проверяем..."
+    await safe_edit_message(
+        query,
+        "🔄 <b>Проверяем оплату в DonationAlerts...</b>\n\n"
+        "Это займёт несколько секунд.",
+        None,
+        parse_mode='HTML'
+    )
+
+    # Запрашиваем последние донаты DA API
+    try:
+        headers = {'Authorization': f'Bearer {DA_ACCESS_TOKEN}'}
+        response = http_requests.get(
+            'https://www.donationalerts.com/api/v1/alerts/donations?limit=30',
+            headers=headers,
+            timeout=10
+        )
+        response.raise_for_status()
+        donations = response.json().get('data', [])
+    except Exception as e:
+        logger.error(f"Ошибка запроса DA API при check_topup: {e}")
+        keyboard = [
+            [InlineKeyboardButton("🔄 Попробовать ещё раз",
+                                  callback_data=f'check_topup_{token}')],
+            [InlineKeyboardButton("✅ Перейти к оплате", url=DA_PROFILE_URL)],
+            [InlineKeyboardButton("🏠 В главное меню",
+                                  callback_data='back_to_menu')]
+        ]
+        await safe_edit_message(
+            query,
+            "❌ <b>Не удалось связаться с DonationAlerts</b>\n\n"
+            "Попробуйте ещё раз через минуту или обратитесь в поддержку.",
+            InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
+        return
+
+    # Ищем донат с нашим токеном
+    found_donation = None
+    for donation in donations:
+        msg = donation.get('message', '') or ''
+        match = re.search(r'\b([A-Z0-9]{12})\b', msg.upper())
+        if match and match.group(1) == token.upper():
+            found_donation = donation
+            break
+
+    if not found_donation:
+        amount_rub = topup['amount_rub']
+        keyboard = [
+            [InlineKeyboardButton("🔄 Проверить ещё раз",
+                                  callback_data=f'check_topup_{token}')],
+            [InlineKeyboardButton("✅ Перейти к оплате", url=DA_PROFILE_URL)],
+            [InlineKeyboardButton("❓ Не вставил код в донат",
+                                  callback_data=f'find_topup_by_amount_{token}')],
+            [InlineKeyboardButton("🏠 В главное меню",
+                                  callback_data='back_to_menu')]
+        ]
+        await safe_edit_message(
+            query,
+            f"⏳ <b>Оплата пока не найдена</b>\n\n"
+            f"Донат на сумму <b>{amount_rub} руб.</b> с вашим кодом "
+            f"ещё не появился в системе.\n\n"
+            "Если вы уже отправили — подождите 1-2 минуты и нажмите «Проверить ещё раз».\n\n"
+            "Отправили донат <b>без кода</b> в комментарии? "
+            "Нажмите «Не вставил код в донат» — бот найдёт платёж по сумме.\n\n"
+            f"Ваш код: <code>{token}</code>",
+            InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
+        return
+
+    # Найден — проверяем сумму с допуском 15% на комиссию
+    received_kopeks = int(float(str(found_donation['amount'])) * 100)
+    expected_kopeks = topup['amount_kopeks']
+    min_acceptable = int(expected_kopeks * 0.85)
+
+    if received_kopeks < min_acceptable:
+        received_rub = received_kopeks / 100
+        amount_rub = topup['amount_rub']
+        keyboard = [
+            [InlineKeyboardButton("✅ Перейти к оплате", url=DA_PROFILE_URL)],
+            [InlineKeyboardButton("🏠 В главное меню",
+                                  callback_data='back_to_menu')]
+        ]
+        await safe_edit_message(
+            query,
+            f"❌ <b>Недостаточная сумма</b>\n\n"
+            f"Получено: <b>{received_rub:.2f} руб.</b>\n"
+            f"Требуется: <b>{amount_rub} руб.</b> "
+            f"(с учётом комиссии: от {min_acceptable / 100:.2f} руб.)\n\n"
+            "Пожалуйста, отправьте донат на полную сумму с тем же кодом.",
+            InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
+        return
+
+    # Всё хорошо — засчитываем полный amount_rub (без вычета комиссии)
+    donation_id = str(found_donation['id'])
+    ok = database.complete_balance_topup(topup['id'], donation_id)
+    if not ok:
+        await safe_edit_message(
+            query,
+            "❌ Ошибка зачисления баланса. Обратитесь в поддержку.",
+            keyboards.main_menu_keyboard()
+        )
+        return
+
+    new_balance = database.get_user_balance(user_id)
+    amount_rub = topup['amount_rub']
+    analyses_word = (
+        "анализ" if amount_rub == 1
+        else "анализа" if 2 <= amount_rub <= 4
+        else "анализов"
+    )
+    await safe_edit_message(
+        query,
+        f"✅ <b>Баланс пополнен!</b>\n\n"
+        f"💰 Пополнено: <b>+{amount_rub} руб.</b> ({amount_rub} {analyses_word})\n"
+        f"💳 Ваш баланс: <b>{new_balance} руб.</b>\n\n"
+        "Выберите матч для покупки анализа!",
+        keyboards.main_menu_keyboard(),
+        parse_mode='HTML'
+    )
+    logger.info(
+        f"✅ [check_topup] Баланс user={user_id} пополнен на {amount_rub} руб. "
+        f"через ручную проверку. donation_id={donation_id}"
+    )
+
+
+async def handle_find_topup_by_amount(query, user_id, token, context):
+    """
+    Запрашивает у пользователя ввод уникального кода для поиска доната.
+
+    Если пользователь отправил донат без кода в комментарии,
+    он должен ввести код вручную. Бот сохраняет состояние и ждёт
+    текстового сообщения с кодом.
+    """
+    topup = database.get_any_topup_by_token(token)
+    if not topup:
+        await safe_edit_message(
+            query,
+            "❌ Код пополнения не найден. Возможно, срок действия истёк.\n\n"
+            "Вернитесь в меню и создайте новый запрос.",
+            keyboards.main_menu_keyboard()
+        )
+        return
+
+    if topup['status'] == 'paid':
+        balance = database.get_user_balance(user_id)
+        await safe_edit_message(
+            query,
+            f"✅ <b>Оплата уже зачтена!</b>\n\n"
+            f"💳 Ваш баланс: <b>{balance} руб.</b>",
+            keyboards.main_menu_keyboard(),
+            parse_mode='HTML'
+        )
+        return
+
+    # Сохраняем состояние ожидания ввода кода
+    context.user_data['awaiting_manual_code'] = True
+
+    cancel_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Отмена", callback_data='back_to_menu')]
+    ])
+    await safe_edit_message(
+        query,
+        "📝 <b>Введите ваш уникальный код</b>\n\n"
+        "Код из 12 символов был показан вам в инструкции по оплате.\n"
+        "Найдите его в истории переписки с ботом и отправьте сюда:\n\n"
+        "<i>Пример: AB12CD34EF56</i>",
+        cancel_keyboard,
+        parse_mode='HTML'
+    )
+
+
+async def handle_topup_code_input(update: Update,
+                                   context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обработчик текстового сообщения с уникальным кодом пополнения.
+
+    Пользователь вводит код вручную (если забыл вставить его в DA донат).
+    Ищем его донат по сумме из соответствующего pending топапа.
+    """
+    if not context.user_data.get('awaiting_manual_code'):
+        return  # Игнорируем обычные сообщения
+
+    user_id = update.effective_user.id
+    typed_code = update.message.text.strip().upper()
+
+    # Сбрасываем состояние сразу
+    context.user_data['awaiting_manual_code'] = False
+
+    # Валидация формата: ровно 12 символов, буквы/цифры
+    if not re.match(r'^[A-Z0-9]{12}$', typed_code):
+        await update.message.reply_text(
+            "❌ <b>Неверный формат кода</b>\n\n"
+            "Код должен содержать ровно <b>12 символов</b> "
+            "(только буквы A–Z и цифры 0–9).\n\n"
+            "Проверьте код в истории чата с ботом и попробуйте снова.",
+            parse_mode='HTML',
+            reply_markup=keyboards.main_menu_keyboard()
+        )
+        return
+
+    # Ищем топап по введённому коду
+    topup = database.get_any_topup_by_token(typed_code)
+    if not topup:
+        await update.message.reply_text(
+            "❌ <b>Код не найден</b>\n\n"
+            "Не удалось найти запрос пополнения с этим кодом. "
+            "Возможно, срок действия истёк (30 минут).\n\n"
+            "Создайте новый запрос через меню пополнения.",
+            parse_mode='HTML',
+            reply_markup=keyboards.main_menu_keyboard()
+        )
+        return
+
+    # Защита: код должен принадлежать этому пользователю
+    if topup['user_id'] != user_id:
+        logger.warning(
+            f"[manual_code] user={user_id} попытался использовать чужой "
+            f"код {typed_code} (владелец: {topup['user_id']})"
+        )
+        await update.message.reply_text(
+            "❌ Этот код принадлежит другому пользователю.",
+            reply_markup=keyboards.main_menu_keyboard()
+        )
+        return
+
+    if topup['status'] == 'paid':
+        balance = database.get_user_balance(user_id)
+        await update.message.reply_text(
+            f"✅ <b>Этот код уже засчитан!</b>\n\n"
+            f"💳 Ваш баланс: <b>{balance} руб.</b>",
+            parse_mode='HTML',
+            reply_markup=keyboards.main_menu_keyboard()
+        )
+        return
+
+    amount_rub = topup['amount_rub']
+    expected_kopeks = topup['amount_kopeks']
+    min_acceptable = int(expected_kopeks * 0.85)
+
+    searching_msg = await update.message.reply_text(
+        f"🔍 <b>Ищем ваш донат в DonationAlerts...</b>\n\n"
+        f"Ожидаемая сумма: <b>{amount_rub} руб.</b>",
+        parse_mode='HTML'
+    )
+
+    import requests as http_requests
+    from config import DA_ACCESS_TOKEN
+    try:
+        headers = {'Authorization': f'Bearer {DA_ACCESS_TOKEN}'}
+        response = http_requests.get(
+            'https://www.donationalerts.com/api/v1/alerts/donations?limit=30',
+            headers=headers,
+            timeout=10
+        )
+        response.raise_for_status()
+        donations = response.json().get('data', [])
+    except Exception as e:
+        logger.error(f"Ошибка DA API при ручном вводе кода: {e}")
+        await searching_msg.edit_text(
+            "❌ <b>Не удалось связаться с DonationAlerts</b>\n\n"
+            "Попробуйте позже или воспользуйтесь кнопкой «Проверить оплату».",
+            parse_mode='HTML',
+            reply_markup=keyboards.main_menu_keyboard()
+        )
+        return
+
+    # Ищем донат: нужная сумма, без кода в комментарии, ещё не засчитан
+    candidates = []
+    for donation in donations:
+        received_kopeks = int(float(str(donation.get('amount', 0))) * 100)
+        if received_kopeks < min_acceptable:
+            continue
+
+        msg = donation.get('message', '') or ''
+        # Пропускаем донаты с кодом — они обработаются автоматически
+        if re.search(r'\b([A-Z0-9]{12})\b', msg.upper()):
+            continue
+
+        # Пропускаем уже засчитанные донаты
+        if database.is_donation_event_used(str(donation['id'])):
+            continue
+
+        candidates.append(donation)
+
+    if not candidates:
+        await searching_msg.edit_text(
+            f"⏳ <b>Подходящий донат не найден</b>\n\n"
+            f"Не нашли незасчитанный донат на сумму около "
+            f"<b>{amount_rub} руб.</b> без кода в комментарии.\n\n"
+            "Возможные причины:\n"
+            "• Донат ещё не появился в системе — подождите 1-2 мин\n"
+            "• Указанная сумма не совпадает с требуемой\n\n"
+            "Попробуйте ещё раз через «Проверить оплату» или обратитесь "
+            "в поддержку.",
+            parse_mode='HTML',
+            reply_markup=keyboards.main_menu_keyboard()
+        )
+        return
+
+    best = candidates[0]
+    donation_id = str(best['id'])
+
+    ok = database.complete_balance_topup(topup['id'], donation_id)
+    if not ok:
+        await searching_msg.edit_text(
+            "❌ Ошибка зачисления баланса. Обратитесь в поддержку.",
+            reply_markup=keyboards.main_menu_keyboard()
+        )
+        return
+
+    new_balance = database.get_user_balance(user_id)
+    analyses_word = (
+        "анализ" if amount_rub == 1
+        else "анализа" if 2 <= amount_rub <= 4
+        else "анализов"
+    )
+    logger.info(
+        f"✅ [manual_code] Баланс user={user_id} пополнен на {amount_rub} руб. "
+        f"код={typed_code}, donation_id={donation_id}"
+    )
+    await searching_msg.edit_text(
+        f"✅ <b>Баланс пополнен!</b>\n\n"
+        f"💰 Пополнено: <b>+{amount_rub} руб.</b> ({amount_rub} {analyses_word})\n"
+        f"💳 Ваш баланс: <b>{new_balance} руб.</b>\n\n"
+        "Донат успешно найден и засчитан!\n"
+        "В следующий раз вставляйте код в комментарий к донату.",
+        parse_mode='HTML',
+        reply_markup=keyboards.main_menu_keyboard()
+    )
+
+
+async def handle_deposit_menu(query, user_id):
+    """Показывает меню пополнения баланса с текущим балансом."""
+    balance = database.get_user_balance(user_id)
+    text = (
+        "💰 <b>ПОПОЛНЕНИЕ БАЛАНСА</b>\n\n"
+        f"💳 Ваш текущий баланс: <b>{balance} руб.</b> ({balance} анализов)\n\n"
+        "Выберите сумму пополнения:\n"
+        "1 руб. = 1 анализ\n\n"
+        "После выбора суммы вы получите уникальный код.\n"
+        "Отправьте донат с этим кодом в комментарии на DonationAlerts — "
+        "баланс пополнится автоматически."
+    )
+    await safe_edit_message(
+        query, text, keyboards.deposit_menu_keyboard(), parse_mode='HTML'
+    )
+
+
+async def handle_deposit_amount(query, user_id, amount_rub):
+    """Создаёт pending топап и показывает инструкцию по оплате через DA."""
+    from config import DA_PROFILE_URL
+
+    token = database.create_balance_topup(user_id, amount_rub)
+    analyses_word = (
+        "анализ" if amount_rub == 1
+        else "анализа" if 2 <= amount_rub <= 4
+        else "анализов"
+    )
+
+    text = (
+        f"💰 <b>Пополнение баланса на {amount_rub} руб.</b>\n"
+        f"📊 Вы получите: <b>{amount_rub} {analyses_word}</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━━\n\n"
+        "👇 <b>Скопируйте этот код:</b> 👇\n"
+        f"<code>{token}</code>\n\n"
+        "<b>📋 Инструкция:</b>\n"
+        "1️⃣ Нажмите кнопку «Перейти к оплате» ниже\n"
+        f"2️⃣ Отправьте донат на сумму <b>{amount_rub} руб.</b>\n"
+        "3️⃣ В сообщении к донату вставьте код выше 👆\n\n"
+        "⏱ Код действителен <b>30 минут</b>\n\n"
+        "✅ После оплаты баланс пополнится автоматически в течение "
+        "<b>15-30 секунд</b>."
+    )
+    keyboard = [
+        [InlineKeyboardButton("✅ Перейти к оплате", url=DA_PROFILE_URL)],
+        [InlineKeyboardButton("🔄 Проверить оплату",
+                              callback_data=f'check_topup_{token}')],
+        [InlineKeyboardButton("◀️ Назад к выбору суммы",
+                              callback_data='deposit')],
+        [InlineKeyboardButton("🏠 В главное меню",
+                              callback_data='back_to_menu')]
+    ]
+    await safe_edit_message(
+        query, text, InlineKeyboardMarkup(keyboard), parse_mode='HTML'
+    )
+
+
 def setup_user_handlers(application):
     """Настройка обработчиков пользователей"""
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("clean_purchases", admin_clean_purchases))
     application.add_handler(CallbackQueryHandler(button_handler))
+    # Обработчик ввода кода при ручном вводе (забыл вставить в DA донат)
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_topup_code_input)
+    )
 
 
 async def handle_sport_selection_back(query, context, sport):

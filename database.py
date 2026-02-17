@@ -84,6 +84,23 @@ def init_db():
             added_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS balance_topups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            amount_rub INTEGER NOT NULL,
+            amount_kopeks INTEGER NOT NULL,
+            token TEXT UNIQUE NOT NULL,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            donation_event_id TEXT,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_topups_token ON balance_topups(token)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_topups_user_id ON balance_topups(user_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_topups_status ON balance_topups(status)')
     # ПРОВЕРЯЕМ И ОБНОВЛЯЕМ СУЩЕСТВУЮЩУЮ ТАБЛИЦУ
     # Если таблица уже существует, добавляем недостающие поля
     cursor.execute("PRAGMA table_info(matches)")
@@ -97,6 +114,7 @@ def init_db():
         ('home_team_id', 'TEXT'),
         ('away_team_id', 'TEXT'),
         ('match_datetime', 'TEXT'),
+        ('analysis_png_path', 'TEXT'),
     ]
     for column_name, column_type in new_columns:
         if column_name not in existing_columns:
@@ -106,9 +124,32 @@ def init_db():
             except sqlite3.OperationalError as e:
                 print(f"Не удалось добавить поле {column_name}: {e}")
 
-    # Индексы
+    # Индексы для matches
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_match_date ON matches(match_date)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_api_event_id ON matches(api_event_id)')
+
+    # Авто-миграция таблицы purchases (добавляем DA-поля если отсутствуют)
+    cursor.execute("PRAGMA table_info(purchases)")
+    purchases_columns = [col[1] for col in cursor.fetchall()]
+    new_purchases_columns = [
+        ('token', 'TEXT'),
+        ('status', "TEXT DEFAULT 'paid'"),
+        ('amount', 'INTEGER'),
+        ('expires_at', 'TEXT'),
+        ('donation_event_id', 'TEXT'),
+    ]
+    for column_name, column_type in new_purchases_columns:
+        if column_name not in purchases_columns:
+            try:
+                cursor.execute(f'ALTER TABLE purchases ADD COLUMN {column_name} {column_type}')
+                print(f"Добавлено поле {column_name} в таблицу purchases")
+            except sqlite3.OperationalError as e:
+                print(f"Не удалось добавить поле {column_name}: {e}")
+
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_purchases_token ON purchases(token)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_purchases_status ON purchases(status)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_purchases_user_id ON purchases(user_id)')
+
     conn.commit()
     conn.close()
     print("База данных инициализирована")
@@ -452,71 +493,175 @@ def get_or_create_user(user_id, username=None):
 # TODO: Restore after MVP — see mvp_scan_report.md
 
 def add_balance(user_id, amount):
-    """Заглушка для MVP - баланс обновляется через DonationAlerts webhook"""
-    pass
+    """Пополняет баланс пользователя на указанную сумму (в рублях)."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE users
+        SET balance = balance + ?
+        WHERE user_id = ?
+    ''', (amount, user_id))
+    conn.commit()
+    conn.close()
+
+
+def get_user_balance(user_id):
+    """Возвращает текущий баланс пользователя (в рублях)."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return 0
+    balance = row['balance']
+    return balance if balance is not None else 0
 
 
 def purchase_analysis(user_id, match_id):
     """
-    Создаёт pending purchase для DonationAlerts оплаты (MVP версия).
+    Покупает анализ с баланса пользователя (мгновенная оплата).
 
-    TEMPORARY (2026-02-16): Убрана проверка баланса и списание средств.
-    Теперь создаёт запись со status='pending' и уникальным token.
+    Проверяет баланс, списывает ANALYSIS_PRICE_RUB рублей,
+    создаёт запись со status='paid'.
 
     Returns:
-        tuple: (success: bool, message_or_token: str)
-            - Если success=True: message_or_token содержит token для оплаты
-            - Если success=False: message_or_token содержит сообщение об ошибке
+        tuple: (success: bool, message: str)
     """
-    import uuid
-    from datetime import timedelta
     from config import ANALYSIS_PRICE_RUB
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('SELECT price FROM matches WHERE id = ?', (match_id,))
+
+    cursor.execute('SELECT * FROM matches WHERE id = ?', (match_id,))
     match = cursor.fetchone()
     if not match:
         conn.close()
         return False, "Матч не найден"
 
-    # START TEMPORARY DISABLE BALANCE LOGIC — MVP PURCHASE FLOW (2026-02-16)
-    # Старая логика (закомментирована):
-    # - Проверка баланса пользователя
-    # - Списание средств
-    # - Обновление total_analysis_bought
-    #
-    # price = match['price']
-    # cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
-    # user = cursor.fetchone()
-    # if not user:
-    #     conn.close()
-    #     return False, "Пользователь не найден"
-    # if user['balance'] < price:
-    #     conn.close()
-    #     return False, f"Недостаточно средств. Нужно: {price} руб., у вас: {user['balance']} руб."
-    # cursor.execute('''
-    #     UPDATE users
-    #     SET balance = balance - ?,
-    #         total_analysis_bought = total_analysis_bought + 1
-    #     WHERE user_id = ?
-    # ''', (price, user_id))
-    # END TEMPORARY DISABLE BALANCE LOGIC
+    cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
+    user = cursor.fetchone()
+    if not user:
+        conn.close()
+        return False, "Пользователь не найден"
 
-    # Новая логика: создание pending purchase с token
-    token = uuid.uuid4().hex[:12].upper()  # Уникальный 12-символьный код
-    amount = ANALYSIS_PRICE_RUB * 100  # Цена в копейках (например, 2 руб = 200 коп)
-    purchase_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    expires_at = (datetime.now() + timedelta(minutes=30)).strftime('%Y-%m-%d %H:%M:%S')
+    price = ANALYSIS_PRICE_RUB
+    if user['balance'] < price:
+        conn.close()
+        return False, (
+            f"Недостаточно средств. Нужно: {price} руб., "
+            f"у вас: {user['balance']} руб."
+        )
 
+    # Списываем с баланса
     cursor.execute('''
-        INSERT INTO purchases (user_id, match_id, purchase_date, token, status, amount, expires_at)
-        VALUES (?, ?, ?, ?, 'pending', ?, ?)
-    ''', (user_id, match_id, purchase_date, token, amount, expires_at))
+        UPDATE users
+        SET balance = balance - ?,
+            total_analysis_bought = total_analysis_bought + 1
+        WHERE user_id = ?
+    ''', (price, user_id))
+
+    # Создаём оплаченную покупку сразу
+    purchase_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    cursor.execute('''
+        INSERT INTO purchases (user_id, match_id, purchase_date, status, amount)
+        VALUES (?, ?, ?, 'paid', ?)
+    ''', (user_id, match_id, purchase_date, price * 100))
+
     conn.commit()
     conn.close()
+    return True, "Покупка успешна"
 
-    return True, token  # Возвращаем token вместо сообщения "Покупка успешна"
+
+def create_balance_topup(user_id, amount_rub):
+    """
+    Создаёт pending запись пополнения баланса.
+
+    Returns:
+        str: уникальный token для DA комментария
+    """
+    import uuid
+    token = uuid.uuid4().hex[:12].upper()
+    amount_kopeks = amount_rub * 100
+    created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    expires_at = (datetime.now() + timedelta(minutes=30)).strftime('%Y-%m-%d %H:%M:%S')
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO balance_topups
+        (user_id, amount_rub, amount_kopeks, token, status, created_at, expires_at)
+        VALUES (?, ?, ?, ?, 'pending', ?, ?)
+    ''', (user_id, amount_rub, amount_kopeks, token, created_at, expires_at))
+    conn.commit()
+    conn.close()
+    return token
+
+
+def get_topup_by_token(token):
+    """Возвращает pending запись пополнения по token."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT * FROM balance_topups
+        WHERE token = ? AND status = 'pending'
+    ''', (token,))
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+
+def get_any_topup_by_token(token):
+    """Возвращает любую запись пополнения по token (pending или paid)."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM balance_topups WHERE token = ?', (token,))
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+
+def is_donation_event_used(donation_event_id):
+    """Проверяет, был ли уже засчитан донат с данным donation_event_id."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT id FROM balance_topups WHERE donation_event_id = ?',
+        (str(donation_event_id),)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
+
+
+def complete_balance_topup(topup_id, donation_event_id):
+    """Помечает пополнение как выполненное и пополняет баланс пользователя."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Получаем данные топапа
+    cursor.execute('SELECT user_id, amount_rub FROM balance_topups WHERE id = ?', (topup_id,))
+    topup = cursor.fetchone()
+    if not topup:
+        conn.close()
+        return False
+
+    # Обновляем статус
+    cursor.execute('''
+        UPDATE balance_topups
+        SET status = 'paid', donation_event_id = ?
+        WHERE id = ?
+    ''', (donation_event_id, topup_id))
+
+    # Пополняем баланс (COALESCE защищает от NULL у старых пользователей)
+    cursor.execute('''
+        UPDATE users SET balance = COALESCE(balance, 0) + ?
+        WHERE user_id = ?
+    ''', (topup['amount_rub'], topup['user_id']))
+
+    conn.commit()
+    conn.close()
+    return True
 
 
 def has_purchased_analysis(user_id, match_id):
@@ -571,21 +716,6 @@ def get_purchase_by_token(token):
     conn.close()
     return purchase
 
-
-# START TEMPORARY DISABLE BALANCE LOGIC — MVP PURCHASE FLOW (2026-02-16)
-# def get_user_balance(user_id):
-#     conn = get_db_connection()
-#     cursor = conn.cursor()
-#     cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
-#     result = cursor.fetchone()
-#     conn.close()
-#     return result['balance'] if result else 0
-# END TEMPORARY DISABLE BALANCE LOGIC
-# TODO: Restore after MVP — see mvp_scan_report.md
-
-def get_user_balance(user_id):
-    """Заглушка для MVP - баланс не используется"""
-    return 0
 
 
 def get_user_stats(user_id):
