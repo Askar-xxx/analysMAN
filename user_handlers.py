@@ -1138,6 +1138,8 @@ async def handle_deposit_menu(query, user_id):
     await safe_edit_message(
         query, text, InlineKeyboardMarkup(keyboard), parse_mode='HTML'
     )
+    # Сохраняем message_id для редактирования при зачислении
+    database.update_topup_instruction_message(token, query.message.message_id)
 
 
 async def handle_check_balance_status(query, user_id, token):

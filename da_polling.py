@@ -224,23 +224,43 @@ async def _handle_topup_donation(topup, donation_id, amount_rub):
         else "анализов"
     )
 
-    from telegram import Bot
+    text = (
+        f"✅ <b>Баланс пополнен!</b>\n\n"
+        f"💰 Зачислено: <b>+{received_rub} руб.</b> ({received_rub} {analyses_word})\n"
+        f"💳 Ваш баланс: <b>{new_balance} руб.</b>\n\n"
+        "Выберите матч для покупки анализа!"
+    )
+
+    from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
     from config import TOKEN
     bot = Bot(token=TOKEN)
 
-    try:
-        await bot.send_message(
-            chat_id=user_id,
-            text=(
-                f"✅ <b>Баланс пополнен!</b>\n\n"
-                f"💰 Зачислено: <b>+{received_rub} руб.</b> ({received_rub} {analyses_word})\n"
-                f"💳 Ваш баланс: <b>{new_balance} руб.</b>\n\n"
-                "Выберите матч для покупки анализа!"
-            ),
-            parse_mode='HTML'
-        )
-    except Exception as e:
-        logger.error(f"Ошибка отправки уведомления пользователю {user_id}: {e}")
+    instruction_message_id = topup['instruction_message_id']
+
+    # Редактируем сообщение с инструкцией (одно окно)
+    edited = False
+    if instruction_message_id:
+        try:
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')
+            ]])
+            await bot.edit_message_text(
+                chat_id=user_id,
+                message_id=instruction_message_id,
+                text=text,
+                parse_mode='HTML',
+                reply_markup=keyboard
+            )
+            edited = True
+        except Exception as e:
+            logger.warning(f"Не удалось отредактировать сообщение: {e}")
+
+    # Fallback: новое сообщение если редактирование не сработало
+    if not edited:
+        try:
+            await bot.send_message(chat_id=user_id, text=text, parse_mode='HTML')
+        except Exception as e:
+            logger.error(f"Ошибка отправки уведомления пользователю {user_id}: {e}")
 
     return True
 

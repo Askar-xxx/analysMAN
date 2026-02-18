@@ -107,6 +107,15 @@ def init_db():
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_topups_token ON balance_topups(token)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_topups_user_id ON balance_topups(user_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_topups_status ON balance_topups(status)')
+
+    # Авто-миграция balance_topups
+    cursor.execute("PRAGMA table_info(balance_topups)")
+    topups_columns = [col[1] for col in cursor.fetchall()]
+    if 'instruction_message_id' not in topups_columns:
+        try:
+            cursor.execute('ALTER TABLE balance_topups ADD COLUMN instruction_message_id INTEGER')
+        except Exception as e:
+            print(f"Не удалось добавить instruction_message_id в balance_topups: {e}")
     # ПРОВЕРЯЕМ И ОБНОВЛЯЕМ СУЩЕСТВУЮЩУЮ ТАБЛИЦУ
     # Если таблица уже существует, добавляем недостающие поля
     cursor.execute("PRAGMA table_info(matches)")
@@ -605,6 +614,18 @@ def create_balance_topup(user_id, amount_rub=0):
     conn.commit()
     conn.close()
     return token
+
+
+def update_topup_instruction_message(token, message_id):
+    """Сохраняет message_id инструкции пополнения для последующего редактирования."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        'UPDATE balance_topups SET instruction_message_id = ? WHERE token = ?',
+        (message_id, token)
+    )
+    conn.commit()
+    conn.close()
 
 
 def get_topup_by_token(token):
