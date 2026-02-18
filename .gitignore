@@ -31,6 +31,7 @@ nul
 *.log
 *.txt
 !requirements.txt
+!WORKFLOW.txt
 
 # Секреты — только .env с реальными значениями
 # config.py теперь читает из переменных окружения и коммитится
