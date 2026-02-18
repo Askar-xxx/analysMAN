@@ -7,6 +7,7 @@ Polling listener для DonationAlerts (вместо WebSocket).
 """
 import asyncio
 import logging
+import re
 import requests
 import database
 from config import DA_ACCESS_TOKEN
@@ -47,7 +48,10 @@ def get_recent_donations(limit=10):
 
 async def process_donation(donation_data):
     """
-    Обрабатывает донат (аналогично donationalerts_listener.py).
+    Обрабатывает донат.
+
+    Сначала ищет token в таблице purchases (прямая DA покупка анализа).
+    Если не найдено — ищет в balance_topups (пополнение баланса).
 
     Args:
         donation_data: dict с данными доната
@@ -55,151 +59,190 @@ async def process_donation(donation_data):
     try:
         donation_id = donation_data['id']
         amount_str = str(donation_data['amount'])
-        message = donation_data.get('message', '')
+        message = donation_data.get('message') or ''
         username = donation_data.get('username', 'Anonymous')
 
         logger.info(f"📥 Обработка доната ID={donation_id} от {username}: {amount_str} руб.")
 
-        # Конвертируем сумму в копейки
         amount_rub = float(amount_str)
         amount_kopeks = int(amount_rub * 100)
 
         # Извлекаем token из комментария
-        import re
-        match = re.search(r'\b([A-Z0-9]{12})\b', message.upper())
-        if not match:
-            logger.warning(f"Token не найден в сообщении: {message}")
+        token_match = re.search(r'\b([A-Z0-9]{12})\b', message.upper())
+        if not token_match:
+            logger.warning(f"Token не найден в сообщении: '{message}'")
             return False
 
-        token = match.group(1)
+        token = token_match.group(1)
         logger.info(f"🔑 Извлечён token: {token}")
 
-        # Ищем pending purchase по token
+        # === 1. Ищем pending purchase (прямая покупка анализа) ===
         purchase = database.get_purchase_by_token(token)
 
-        if not purchase:
-            # Проверяем идемпотентность
-            conn = database.get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT donation_event_id, status FROM purchases WHERE token = ?
-            ''', (token,))
-            existing = cursor.fetchone()
-            conn.close()
-
-            if existing and existing['donation_event_id'] == str(donation_id):
-                logger.info(f"Donation {donation_id} уже обработан (идемпотентность)")
-                return True
-
-            logger.warning(f"Pending purchase с token {token} не найден")
-            return False
-
-        purchase_id = purchase['id']
-        user_id = purchase['user_id']
-        match_id = purchase['match_id']
-        expected_amount = purchase['amount']
-        # sqlite3.Row не поддерживает .get(), используем прямую индексацию
-        instruction_message_id = purchase['instruction_message_id']
-
-        logger.info(f"✅ Найден purchase ID={purchase_id}, user={user_id}, match={match_id}")
-
-        # Проверяем сумму
-        if amount_kopeks != expected_amount:
-            conn.close()
-            logger.warning(f"⚠️ Сумма не совпадает: получено {amount_kopeks}, ожидалось {expected_amount}")
-
-            # Отправляем уведомление пользователю о недостаточной сумме
-            from telegram import Bot
-            from config import TOKEN
-            bot = Bot(token=TOKEN)
-
-            expected_rub = expected_amount / 100
-            received_rub = amount_kopeks / 100
-
-            error_text = (
-                "❌ <b>Недостаточно средств</b>\n\n"
-                f"Получено: <b>{received_rub:.0f} руб.</b>\n"
-                f"Требуется: <b>{expected_rub:.0f} руб.</b>\n\n"
-                "Ваш заказ остаётся активным. Пожалуйста, отправьте донат "
-                f"на правильную сумму (<b>{expected_rub:.0f} руб.</b>) с тем же кодом."
+        if purchase:
+            return await _handle_purchase_donation(
+                purchase, donation_id, amount_kopeks
             )
 
-            try:
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=error_text,
-                    parse_mode='HTML'
-                )
-                logger.info(f"Отправлено уведомление о недостаточной сумме пользователю {user_id}")
-            except Exception as e:
-                logger.error(f"Не удалось отправить уведомление о недостаточной сумме: {e}")
+        # === 2. Ищем в balance_topups (пополнение баланса) ===
+        topup = database.get_topup_by_token(token)
 
-            return False
+        if topup:
+            return await _handle_topup_donation(topup, donation_id, amount_rub)
 
-        logger.info(f"💰 Сумма совпадает: {amount_kopeks} копеек")
-
-        # Получаем данные матча
-        match = database.get_match_by_id(match_id)
-        if not match:
-            logger.error(f"❌ Матч {match_id} не найден в БД")
-            return False
-
-        match_dict = dict(match) if not isinstance(match, dict) else match
-
-        # Генерируем анализ и отправляем пользователю
-        logger.info(f"🤖 Запуск генерации анализа для матча {match_id}...")
-
-        from webhook_server import generate_and_send_analysis
-        success = await generate_and_send_analysis(
-            user_id, match_id, match_dict, instruction_message_id
-        )
-
-        if success:
-            # Обновляем purchase на status='paid' ТОЛЬКО после успешной генерации
-            conn = database.get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute('''
-                UPDATE purchases
-                SET status = 'paid', donation_event_id = ?
-                WHERE id = ?
-            ''', (str(donation_id), purchase_id))
-            conn.commit()
-            conn.close()
-
-            logger.info(f"✅ Донат обработан успешно! Purchase {purchase_id} оплачен и анализ отправлен.")
+        # === 3. Не найдено нигде — проверяем идемпотентность ===
+        if database.is_donation_event_used(str(donation_id)):
+            logger.info(f"Donation {donation_id} уже засчитан ранее (идемпотентность)")
             return True
-        else:
-            logger.error(f"❌ Ошибка генерации анализа для purchase {purchase_id}")
 
-            # Отправляем уведомление пользователю об ошибке
-            from telegram import Bot
-            from config import TOKEN
-            bot = Bot(token=TOKEN)
-
-            error_text = (
-                "❌ <b>Ошибка генерации анализа</b>\n\n"
-                f"🏆 Матч: <b>{match_dict['team1']} vs {match_dict['team2']}</b>\n\n"
-                "К сожалению, произошла ошибка при создании анализа. "
-                "Ваш заказ остаётся активным — попробуйте получить анализ через "
-                "раздел «Мои анализы» через несколько минут.\n\n"
-                "Если проблема повторится, обратитесь в поддержку."
-            )
-
-            try:
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=error_text,
-                    parse_mode='HTML'
-                )
-                logger.info(f"Отправлено уведомление об ошибке генерации пользователю {user_id}")
-            except Exception as e:
-                logger.error(f"Не удалось отправить уведомление об ошибке: {e}")
-
-            return False
+        logger.warning(f"Token {token} не найден ни в purchases, ни в balance_topups")
+        return False
 
     except Exception as e:
         logger.error(f"❌ Ошибка обработки доната: {e}", exc_info=True)
         return False
+
+
+async def _handle_purchase_donation(purchase, donation_id, amount_kopeks):
+    """Обрабатывает донат для прямой покупки анализа (purchases)."""
+    purchase_id = purchase['id']
+    user_id = purchase['user_id']
+    match_id = purchase['match_id']
+    expected_amount = purchase['amount']
+    instruction_message_id = purchase['instruction_message_id']
+
+    logger.info(f"✅ Найден purchase ID={purchase_id}, user={user_id}, match={match_id}")
+
+    # Проверяем сумму
+    if amount_kopeks != expected_amount:
+        logger.warning(f"⚠️ Сумма не совпадает: получено {amount_kopeks}, ожидалось {expected_amount}")
+
+        from telegram import Bot
+        from config import TOKEN
+        bot = Bot(token=TOKEN)
+
+        expected_rub = expected_amount / 100
+        received_rub = amount_kopeks / 100
+
+        try:
+            await bot.send_message(
+                chat_id=user_id,
+                text=(
+                    "❌ <b>Недостаточно средств</b>\n\n"
+                    f"Получено: <b>{received_rub:.0f} руб.</b>\n"
+                    f"Требуется: <b>{expected_rub:.0f} руб.</b>\n\n"
+                    "Ваш заказ остаётся активным. Пожалуйста, отправьте донат "
+                    f"на правильную сумму (<b>{expected_rub:.0f} руб.</b>) с тем же кодом."
+                ),
+                parse_mode='HTML'
+            )
+        except Exception as e:
+            logger.error(f"Не удалось отправить уведомление о недостаточной сумме: {e}")
+
+        return False
+
+    logger.info(f"💰 Сумма совпадает: {amount_kopeks} копеек")
+
+    match = database.get_match_by_id(match_id)
+    if not match:
+        logger.error(f"❌ Матч {match_id} не найден в БД")
+        return False
+
+    match_dict = dict(match) if not isinstance(match, dict) else match
+
+    logger.info(f"🤖 Запуск генерации анализа для матча {match_id}...")
+
+    from webhook_server import generate_and_send_analysis
+    success = await generate_and_send_analysis(
+        user_id, match_id, match_dict, instruction_message_id
+    )
+
+    if success:
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE purchases
+            SET status = 'paid', donation_event_id = ?
+            WHERE id = ?
+        ''', (str(donation_id), purchase_id))
+        conn.commit()
+        conn.close()
+
+        logger.info(f"✅ Purchase {purchase_id} оплачен и анализ отправлен.")
+        return True
+    else:
+        logger.error(f"❌ Ошибка генерации анализа для purchase {purchase_id}")
+
+        from telegram import Bot
+        from config import TOKEN
+        bot = Bot(token=TOKEN)
+
+        try:
+            await bot.send_message(
+                chat_id=user_id,
+                text=(
+                    "❌ <b>Ошибка генерации анализа</b>\n\n"
+                    f"🏆 Матч: <b>{match_dict['team1']} vs {match_dict['team2']}</b>\n\n"
+                    "К сожалению, произошла ошибка при создании анализа. "
+                    "Ваш заказ остаётся активным — попробуйте получить анализ через "
+                    "раздел «Мои анализы» через несколько минут.\n\n"
+                    "Если проблема повторится, обратитесь в поддержку."
+                ),
+                parse_mode='HTML'
+            )
+        except Exception as e:
+            logger.error(f"Не удалось отправить уведомление об ошибке: {e}")
+
+        return False
+
+
+async def _handle_topup_donation(topup, donation_id, amount_rub):
+    """Обрабатывает донат для пополнения баланса (balance_topups)."""
+    topup_id = topup['id']
+    user_id = topup['user_id']
+
+    # Идемпотентность
+    if database.is_donation_event_used(str(donation_id)):
+        logger.info(f"Donation {donation_id} уже засчитан в balance_topups")
+        return True
+
+    received_rub = int(amount_rub)  # целые рубли
+    ok = database.complete_balance_topup(topup_id, str(donation_id), received_rub)
+    if not ok:
+        logger.error(f"Ошибка complete_balance_topup для topup {topup_id}")
+        return False
+
+    new_balance = database.get_user_balance(user_id)
+    logger.info(
+        f"✅ Баланс user={user_id} пополнен на {received_rub} руб. "
+        f"(donation {donation_id}), новый баланс: {new_balance}"
+    )
+
+    analyses_word = (
+        "анализ" if received_rub == 1
+        else "анализа" if 2 <= received_rub <= 4
+        else "анализов"
+    )
+
+    from telegram import Bot
+    from config import TOKEN
+    bot = Bot(token=TOKEN)
+
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text=(
+                f"✅ <b>Баланс пополнен!</b>\n\n"
+                f"💰 Зачислено: <b>+{received_rub} руб.</b> ({received_rub} {analyses_word})\n"
+                f"💳 Ваш баланс: <b>{new_balance} руб.</b>\n\n"
+                "Выберите матч для покупки анализа!"
+            ),
+            parse_mode='HTML'
+        )
+    except Exception as e:
+        logger.error(f"Ошибка отправки уведомления пользователю {user_id}: {e}")
+
+    return True
 
 
 async def poll_donations():
