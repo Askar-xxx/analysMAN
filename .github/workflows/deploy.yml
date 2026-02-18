@@ -38,7 +38,9 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: DOCKER_HUB_USERNAME,DOCKER_HUB_TOKEN
           script: |
+            echo "$DOCKER_HUB_TOKEN" | docker login -u "$DOCKER_HUB_USERNAME" --password-stdin
             cd ~/sports-bot
             docker compose pull
             docker compose up -d --remove-orphans
