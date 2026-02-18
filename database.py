@@ -72,6 +72,12 @@ def init_db():
             user_id INTEGER NOT NULL,
             match_id INTEGER NOT NULL,
             purchase_date TEXT NOT NULL,
+            token TEXT UNIQUE,
+            status TEXT DEFAULT 'pending',
+            amount REAL,
+            expires_at TEXT,
+            donation_event_id TEXT,
+            instruction_message_id INTEGER,
             FOREIGN KEY (user_id) REFERENCES users (user_id),
             FOREIGN KEY (match_id) REFERENCES matches (id)
         )
