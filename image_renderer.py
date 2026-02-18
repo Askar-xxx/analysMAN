@@ -3,6 +3,7 @@
 """
 import logging
 import os
+import platform
 from PIL import Image, ImageDraw, ImageFont
 from typing import List, Tuple
 
@@ -29,8 +30,7 @@ COL2_WIDTH_PCT = 0.36  # Команда 1
 COL3_WIDTH_PCT = 0.36  # Команда 2
 
 # Пути к шрифтам (Windows / Linux-Docker)
-import platform as _platform
-if _platform.system() == 'Windows':
+if platform.system() == 'Windows':
     FONT_PATHS = {
         'regular': 'C:\\Windows\\Fonts\\arial.ttf',
         'bold': 'C:\\Windows\\Fonts\\arialbd.ttf',
