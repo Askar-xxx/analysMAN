@@ -1,0 +1,19 @@
+services:
+  bot:
+    build: .
+    image: sports-bot:latest
+    restart: unless-stopped
+    env_file: .env
+    entrypoint: ["/bin/bash", "docker-entrypoint.sh"]
+    volumes:
+      # База данных и кэш анализов — персистентны между перезапусками
+      - bot_data:/app/analysis_cache
+      - ./sports_bot.db:/app/sports_bot.db
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  bot_data:

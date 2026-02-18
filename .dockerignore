@@ -1,0 +1,40 @@
+# Git
+.git
+.gitignore
+
+# Python артефакты
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Виртуальное окружение
+venv/
+.venv/
+env/
+
+# Секреты и локальные конфиги
+.env
+*.env
+
+# База данных (монтируется как volume)
+*.db
+*.sqlite3
+
+# Кэш анализов (монтируется как volume)
+analysis_cache/
+temp/
+
+# IDE и OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Документация и dev-инструменты
+.claude/
+SESSION_CONTEXT.txt
+DA_secret_token.md
+
+# Логи
+*.log

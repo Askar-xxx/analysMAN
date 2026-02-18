@@ -28,12 +28,21 @@ COL1_WIDTH_PCT = 0.28  # Аспект анализа
 COL2_WIDTH_PCT = 0.36  # Команда 1
 COL3_WIDTH_PCT = 0.36  # Команда 2
 
-# Пути к шрифтам (Windows)
-FONT_PATHS = {
-    'regular': 'C:\\Windows\\Fonts\\arial.ttf',
-    'bold': 'C:\\Windows\\Fonts\\arialbd.ttf',
-    'mono': 'C:\\Windows\\Fonts\\cour.ttf',  # Courier New
-}
+# Пути к шрифтам (Windows / Linux-Docker)
+import platform as _platform
+if _platform.system() == 'Windows':
+    FONT_PATHS = {
+        'regular': 'C:\\Windows\\Fonts\\arial.ttf',
+        'bold': 'C:\\Windows\\Fonts\\arialbd.ttf',
+        'mono': 'C:\\Windows\\Fonts\\cour.ttf',
+    }
+else:
+    # Linux (Docker): apt-get install -y fonts-liberation
+    FONT_PATHS = {
+        'regular': '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+        'bold': '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+        'mono': '/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf',
+    }
 
 
 def _hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:

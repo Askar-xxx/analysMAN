@@ -32,10 +32,14 @@ nul
 *.txt
 !requirements.txt
 
-# Config secrets
-config.py
+# Секреты — только .env с реальными значениями
+# config.py теперь читает из переменных окружения и коммитится
 .env
 *.env
+!.env.example
+
+# Docker
+.env.prod
 
 # Telegram session
 *.session

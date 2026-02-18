@@ -1,10 +1,22 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+  # Вызывается из deploy.yml как reusable workflow
+  workflow_call:
+
+env:
+  TELEGRAM_TOKEN: test
+  DEEPSEEK_API_KEY: test
+  THESPORTSDB_KEY: test
+  DA_CLIENT_ID: test
+  DA_CLIENT_SECRET: test
+  DA_ACCESS_TOKEN: test
+  DA_PROFILE_URL: https://www.donationalerts.com/r/test
+  ANALYSIS_PRICE_RUB: "150"
+  MAIN_ADMIN_ID: "0"
+  SUPPORT_USERNAME: test
 
 jobs:
   test:
@@ -22,12 +34,6 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install pytest flake8
-
-      - name: Create config stub
-        run: |
-          echo 'TOKEN = "test"' > config.py
-          echo 'DEEPSEEK_API_KEY = "test"' >> config.py
-          echo 'THESPORTSDB_KEY = "test"' >> config.py
 
       - name: Lint with flake8
         run: |

@@ -4,6 +4,7 @@ OAuth авторизация для DonationAlerts API.
 
 Получает access_token и refresh_token для доступа к API.
 """
+import os
 import requests
 from flask import Flask, request
 import webbrowser
@@ -128,36 +129,53 @@ def start_oauth_flow():
     return tokens
 
 
-def save_tokens_to_config(tokens):
+def save_tokens_to_env(tokens):
     """
-    Сохраняет токены в config.py.
+    Сохраняет токены в файл .env.
+
+    Если .env не существует — создаёт его.
+    Если строки DA_ACCESS_TOKEN / DA_REFRESH_TOKEN уже есть — обновляет их.
 
     Args:
         tokens: dict с ключами access_token, refresh_token
     """
     import re
 
-    config_path = 'config.py'
+    env_path = '.env'
 
-    with open(config_path, 'r', encoding='utf-8') as f:
-        content = f.read()
+    # Читаем текущее содержимое .env (или создаём пустой файл)
+    if os.path.exists(env_path):
+        with open(env_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+    else:
+        content = ''
 
-    # Обновляем токены
-    content = re.sub(
-        r'DA_ACCESS_TOKEN = .*',
-        f'DA_ACCESS_TOKEN = "{tokens["access_token"]}"',
-        content
-    )
-    content = re.sub(
-        r'DA_REFRESH_TOKEN = .*',
-        f'DA_REFRESH_TOKEN = "{tokens["refresh_token"]}"',
-        content
-    )
+    # Обновляем или добавляем DA_ACCESS_TOKEN
+    if re.search(r'^DA_ACCESS_TOKEN=', content, re.MULTILINE):
+        content = re.sub(
+            r'^DA_ACCESS_TOKEN=.*',
+            f'DA_ACCESS_TOKEN={tokens["access_token"]}',
+            content,
+            flags=re.MULTILINE
+        )
+    else:
+        content += f'\nDA_ACCESS_TOKEN={tokens["access_token"]}'
 
-    with open(config_path, 'w', encoding='utf-8') as f:
-        f.write(content)
+    # Обновляем или добавляем DA_REFRESH_TOKEN
+    if re.search(r'^DA_REFRESH_TOKEN=', content, re.MULTILINE):
+        content = re.sub(
+            r'^DA_REFRESH_TOKEN=.*',
+            f'DA_REFRESH_TOKEN={tokens["refresh_token"]}',
+            content,
+            flags=re.MULTILINE
+        )
+    else:
+        content += f'\nDA_REFRESH_TOKEN={tokens["refresh_token"]}'
 
-    logger.info(f"✅ Токены сохранены в {config_path}")
+    with open(env_path, 'w', encoding='utf-8') as f:
+        f.write(content.strip() + '\n')
+
+    logger.info(f"✅ Токены сохранены в {env_path}")
 
 
 if __name__ == '__main__':
@@ -169,8 +187,8 @@ if __name__ == '__main__':
     """
     try:
         tokens_data = start_oauth_flow()
-        save_tokens_to_config(tokens_data)
-        print("\n✅ Готово! Токены сохранены в config.py")
-        print("Теперь можно запустить: python donationalerts_listener.py")
+        save_tokens_to_env(tokens_data)
+        print("\n✅ Готово! Токены сохранены в .env")
+        print("Теперь можно запустить: python da_polling.py")
     except Exception as e:
         print(f"\n❌ Ошибка: {e}")
