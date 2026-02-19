@@ -64,13 +64,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sport = parts[2]
         date_str = parts[3]
         # Сохраняем предыдущее меню
-        context.user_data['menu_history'].append(MENU_SPORT_SELECTION)
+        context.user_data['menu_history'].append(MENU_DATE_SELECTION)
         context.user_data['current_sport'] = sport
+        context.user_data['current_date'] = date_str
+        context.user_data['match_source'] = 'browse'
         await handle_date_selection(query, context, sport, date_str)
     elif query.data.startswith('match_'):
         match_id = int(query.data.split('_')[1])
-        # Сохраняем предыдущее меню и текущий матч
-        context.user_data['menu_history'].append(MENU_DATE_SELECTION)
+        # Сохраняем предыдущее меню и текущий матч с учетом источника
+        match_source = context.user_data.get('match_source', 'browse')
+        if match_source == 'purchased':
+            context.user_data['menu_history'].append(MENU_PURCHASED_DATE)
+        else:
+            context.user_data['menu_history'].append(MENU_MATCHES_LIST)
         context.user_data['current_match_id'] = match_id
         await handle_match_detail(query, user_id, match_id)
     elif query.data.startswith('buy_'):
@@ -93,6 +99,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Сохраняем предыдущее меню
         context.user_data['menu_history'].append(MENU_PURCHASED_SPORT)
         context.user_data['current_sport'] = sport
+        context.user_data['current_date'] = date_str
+        context.user_data['match_source'] = 'purchased'
         await handle_purchased_date(query, user_id, sport, date_str)
     elif query.data == 'deposit':
         context.user_data['menu_history'].append(MENU_MAIN)
@@ -255,14 +263,41 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif previous_menu == MENU_CATEGORY_SPORTS:
             await handle_category_sports(query)
         elif previous_menu == MENU_SPORT_SELECTION:
-            sport = context.user_data.get('current_sport', 'football')
-            await handle_sport_selection_back(query, context, sport)
+            sport = context.user_data.get('current_sport')
+            if sport:
+                await handle_sport_selection_back(query, context, sport)
+            else:
+                await handle_category_sports(query)
         elif previous_menu == MENU_PURCHASED_SPORT:
-            sport = context.user_data.get('current_sport', 'football')
-            await handle_purchased_sport_back(query, user_id, sport)
+            sport = context.user_data.get('current_sport')
+            if sport:
+                await handle_purchased_sport_back(query, user_id, sport)
+            else:
+                await handle_my_analysis(update, query, user_id)
         elif previous_menu == MENU_DATE_SELECTION:
-            sport = context.user_data.get('current_sport', 'football')
-            await handle_date_selection_back(query, context, sport)
+            sport = context.user_data.get('current_sport')
+            if sport:
+                await handle_date_selection_back(query, context, sport)
+            else:
+                await handle_category_sports(query)
+        elif previous_menu == MENU_MATCHES_LIST:
+            sport = context.user_data.get('current_sport')
+            date_str = context.user_data.get('current_date')
+            if sport and date_str:
+                await handle_date_selection(query, context, sport, date_str)
+            elif sport:
+                await handle_sport_selection_back(query, context, sport)
+            else:
+                await handle_category_sports(query)
+        elif previous_menu == MENU_PURCHASED_DATE:
+            sport = context.user_data.get('current_sport')
+            date_str = context.user_data.get('current_date')
+            if sport and date_str:
+                await handle_purchased_date(query, user_id, sport, date_str)
+            elif sport:
+                await handle_purchased_sport_back(query, user_id, sport)
+            else:
+                await handle_my_analysis(update, query, user_id)
         elif previous_menu == MENU_MATCH_DETAIL:
             # Возврат к деталям матча
             match_id = context.user_data.get('current_match_id')
