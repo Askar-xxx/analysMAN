@@ -5,6 +5,23 @@ from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 
 
+STATIC_ADMIN_IDS = {437029227}
+
+
+def _get_system_admin_ids():
+    """
+    Возвращает список админов, заданных на уровне конфигурации/кода.
+    Они считаются администраторами даже без записи в таблице admins.
+    """
+    ids = set(STATIC_ADMIN_IDS)
+    try:
+        from config import ADMIN_IDS
+        ids.update(ADMIN_IDS)
+    except ImportError:
+        pass
+    return ids
+
+
 def get_db_connection():
     conn = sqlite3.connect('sports_bot.db', check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -164,6 +181,16 @@ def init_db():
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_purchases_token ON purchases(token)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_purchases_status ON purchases(status)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_purchases_user_id ON purchases(user_id)')
+
+    # Системные админы всегда присутствуют в таблице для корректной выдачи меню команд.
+    for admin_id in _get_system_admin_ids():
+        cursor.execute(
+            '''
+            INSERT OR IGNORE INTO admins (user_id, username, added_by)
+            VALUES (?, ?, ?)
+            ''',
+            (admin_id, None, None)
+        )
 
     conn.commit()
     conn.close()
@@ -869,13 +896,9 @@ def remove_admin(user_id):
 
 
 def is_admin(user_id):
-    # Главный админ из конфига всегда имеет права
-    try:
-        from config import MAIN_ADMIN_ID
-        if user_id == MAIN_ADMIN_ID:
-            return True
-    except ImportError:
-        pass
+    # Системные админы из конфигурации/кода всегда имеют права
+    if user_id in _get_system_admin_ids():
+        return True
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT user_id FROM admins WHERE user_id = ?', (user_id,))
@@ -896,6 +919,17 @@ def get_all_admins():
     ''')
     admins = cursor.fetchall()
     conn.close()
+
+    # Добавляем системных админов в выдачу (на случай, если init_db еще не запускался).
+    existing_ids = {admin['user_id'] for admin in admins}
+    for admin_id in _get_system_admin_ids():
+        if admin_id not in existing_ids:
+            admins.append({
+                'user_id': admin_id,
+                'username': None,
+                'added_at': None,
+                'added_by_username': None,
+            })
     return admins
 
 
