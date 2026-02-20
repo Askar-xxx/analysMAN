@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
 import database
@@ -21,6 +22,22 @@ MENU_DEPOSIT = 'deposit'
 logger = logging.getLogger(__name__)
 
 
+async def _cleanup_topup_step_images(query, context):
+    """Удаляет служебные STEP_скриншоты второго UX из истории чата."""
+    message_ids = context.user_data.pop('topup_step_image_ids', [])
+    if not message_ids:
+        return
+
+    bot = query.message.get_bot()
+    chat_id = query.message.chat_id
+    for message_id in message_ids:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception:
+            # Игнорируем: сообщение могло быть удалено вручную/автоматически.
+            pass
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
     await send_main_menu(update, context)
@@ -36,6 +53,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Сохраняем текущее меню для навигации назад
     if not context.user_data.get('menu_history'):
         context.user_data['menu_history'] = []
+    # Скриншоты шага пополнения показываем только в рамках второго UX.
+    # Не удаляем их при повторном входе во 2-й шаг и при проверке баланса.
+    if (
+        not query.data.startswith('confirm_code_copy_')
+        and not query.data.startswith('check_balance_')
+    ):
+        await _cleanup_topup_step_images(query, context)
     # Обработка различных callback_data
     if query.data == 'back':
         # Возвращаемся назад по истории
@@ -108,6 +132,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == 'deposit':
         context.user_data['menu_history'].append(MENU_MAIN)
         await handle_deposit_menu(query, user_id)
+    elif query.data.startswith('confirm_code_copy_'):
+        token = query.data.split('confirm_code_copy_')[1]
+        await handle_confirm_code_copy(query, context, user_id, token)
     elif query.data.startswith('check_balance_'):
         token = query.data.split('check_balance_')[1]
         await handle_check_balance_status(query, user_id, token)
@@ -1179,32 +1206,37 @@ async def handle_find_topup_by_amount(query, user_id, token):
     )
 
 
-async def handle_deposit_menu(query, user_id):
-    """
-    Пополнение баланса: показывает уникальный код, который нужно вставить
-    в комментарий доната на DonationAlerts.
-
-    Если у пользователя есть действующий pending топап — показывает тот же
-    код, чтобы он не потерял его при повторном входе в меню.
-    Новый токен создаётся только если старый истёк или отсутствует.
-    """
+async def _show_deposit_payment_screen(query, context, user_id, token):
+    """Шаг 2: текущий UX оплаты (после подтверждения копирования кода)."""
     from config import DA_PROFILE_URL
 
-    existing = database.get_pending_topup_by_user(user_id)
-    if existing:
-        token = existing['token']
-    else:
-        token = database.create_balance_topup(user_id, amount_rub=0)
-    balance = database.get_user_balance(user_id)
+    topup = database.get_topup_by_token(token)
+    if not topup or topup['user_id'] != user_id:
+        await safe_edit_message(
+            query,
+            "❌ Код пополнения не найден или истёк.\n\n"
+            "Вернитесь в меню и создайте новый запрос.",
+            keyboards.main_menu_keyboard()
+        )
+        return
 
+    balance = database.get_user_balance(user_id)
+    top_pointer_line = "👇👇👇👇👇"
+    bottom_pointer_line = "☝️☝️☝️☝️☝️"
+    code_lines = (
+        f"<code>{token}</code>\n"
+        f"<code>{token}</code>\n"
+        f"<code>{token}</code>"
+    )
     text = (
         "💰 <b>ПОПОЛНЕНИЕ БАЛАНСА</b>\n\n"
         f"💳 Текущий баланс: <b>{balance} руб.</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━\n\n"
         "⚠️ <b>ВАЖНО — сохраните ваш уникальный код:</b>\n\n"
-        f"🔑 <code>{token}</code>\n\n"
+        f"{top_pointer_line}\n{code_lines}\n{bottom_pointer_line}\n\n"
         "<b>Этот код нужно вставить в комментарий к донату!</b>\n"
-        "<i>Без кода баланс не пополнится. Код действует 30 минут.</i>\n\n"
+        "<b>⚠️НЕ СКОПИРОВАЛ КОД - БАЛАНС НЕ ПОПОЛНИТСЯ⚠️</b>\n"
+        "<i>Код действует 30 минут.</i>\n\n"
         "━━━━━━━━━━━━━━━━━━━\n\n"
         "📋 <b>Инструкция:</b>\n"
         f"1️⃣ Скопируйте код: <code>{token}</code>\n"
@@ -1221,11 +1253,98 @@ async def handle_deposit_menu(query, user_id):
         [InlineKeyboardButton("🏠 В главное меню",
                               callback_data='back_to_menu')]
     ]
+    bot = query.message.get_bot()
+    chat_id = query.message.chat_id
+
+    # Сначала отправляем 2 скриншота STEP_1 и STEP_2 (если файлы есть).
+    base_dir = Path(__file__).resolve().parent
+    step_images = [
+        ("STEP 1", base_dir / 'assets' / 'STEP_1.png'),
+        ("STEP 2", base_dir / 'assets' / 'STEP_2.png'),
+    ]
+    for caption, image_path in step_images:
+        if not image_path.exists():
+            logger.warning(f"Файл скриншота не найден: {image_path}")
+            continue
+        try:
+            with image_path.open('rb') as image_file:
+                sent_photo = await bot.send_photo(
+                    chat_id=chat_id,
+                    photo=image_file,
+                    caption=caption
+                )
+                context.user_data.setdefault('topup_step_image_ids', []).append(
+                    sent_photo.message_id
+                )
+        except Exception as e:
+            logger.warning(f"Не удалось отправить скриншот {image_path}: {e}")
+
+    # Затем отправляем привычный текст/кнопки отдельным сообщением.
+    sent_message = await bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='HTML'
+    )
+
+    # Удаляем прошлое сообщение с чекбоксом, чтобы порядок в чате был правильный.
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+    # Сохраняем message_id нового сообщения для редактирования при зачислении.
+    database.update_topup_instruction_message(token, sent_message.message_id)
+
+
+async def handle_confirm_code_copy(query, context, user_id, token):
+    """Переход на шаг оплаты после чекбокса «Я скопировал код»."""
+    await _show_deposit_payment_screen(query, context, user_id, token)
+
+
+async def handle_deposit_menu(query, user_id):
+    """
+    Пополнение баланса: показывает уникальный код, который нужно вставить
+    в комментарий доната на DonationAlerts.
+
+    Если у пользователя есть действующий pending топап — показывает тот же
+    код, чтобы он не потерял его при повторном входе в меню.
+    Новый токен создаётся только если старый истёк или отсутствует.
+    """
+    existing = database.get_pending_topup_by_user(user_id)
+    if existing:
+        token = existing['token']
+    else:
+        token = database.create_balance_topup(user_id, amount_rub=0)
+    balance = database.get_user_balance(user_id)
+    top_pointer_line = "👇👇👇👇👇"
+    bottom_pointer_line = "☝️☝️☝️☝️☝️"
+    code_lines = (
+        f"<code>{token}</code>\n"
+        f"<code>{token}</code>\n"
+        f"<code>{token}</code>"
+    )
+
+    text = (
+        "💰 <b>ПОПОЛНЕНИЕ БАЛАНСА</b>\n\n"
+        f"💳 Текущий баланс: <b>{balance} руб.</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━━\n\n"
+        "⚠️ <b>ШАГ 1: СКОПИРУЙТЕ ВАШ КОД</b>\n\n"
+        f"{top_pointer_line}\n{code_lines}\n{bottom_pointer_line}\n\n"
+        "<b>Этот код нужно вставить в комментарий к донату!</b>\n"
+        "<b>⚠️НЕ СКОПИРОВАЛ КОД - БАЛАНС НЕ ПОПОЛНИТСЯ⚠️</b>\n"
+        "<i>Код действует 30 минут.</i>\n\n"
+        "После копирования нажмите кнопку ниже."
+    )
+    keyboard = [
+        [InlineKeyboardButton("☐ Я СКОПИРОВАЛ КОД",
+                              callback_data=f'confirm_code_copy_{token}')],
+        [InlineKeyboardButton("🏠 В главное меню",
+                              callback_data='back_to_menu')]
+    ]
     await safe_edit_message(
         query, text, InlineKeyboardMarkup(keyboard), parse_mode='HTML'
     )
-    # Сохраняем message_id для редактирования при зачислении
-    database.update_topup_instruction_message(token, query.message.message_id)
 
 
 async def handle_check_balance_status(query, user_id, token):
