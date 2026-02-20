@@ -1337,7 +1337,7 @@ async def handle_deposit_menu(query, user_id):
         "После копирования нажмите кнопку ниже."
     )
     keyboard = [
-        [InlineKeyboardButton("☐ Я СКОПИРОВАЛ КОД",
+        [InlineKeyboardButton("Я СКОПИРОВАЛ КОД",
                               callback_data=f'confirm_code_copy_{token}')],
         [InlineKeyboardButton("🏠 В главное меню",
                               callback_data='back_to_menu')]
