@@ -1,10 +1,11 @@
 import logging
+from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
 import database
 import keyboards
 from utils import safe_edit_message, send_main_menu, format_match_info
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 
 MENU_MAIN = 'main'
@@ -19,6 +20,22 @@ MENU_MATCH_DETAIL = 'match_detail'
 MENU_DEPOSIT = 'deposit'
 
 logger = logging.getLogger(__name__)
+
+
+async def _cleanup_topup_step_images(query, context):
+    """Удаляет служебные STEP_скриншоты второго UX из истории чата."""
+    message_ids = context.user_data.pop('topup_step_image_ids', [])
+    if not message_ids:
+        return
+
+    bot = query.message.get_bot()
+    chat_id = query.message.chat_id
+    for message_id in message_ids:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception:
+            # Игнорируем: сообщение могло быть удалено вручную/автоматически.
+            pass
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -36,6 +53,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Сохраняем текущее меню для навигации назад
     if not context.user_data.get('menu_history'):
         context.user_data['menu_history'] = []
+    # Скриншоты шага пополнения показываем только в рамках второго UX.
+    # Не удаляем их при повторном входе во 2-й шаг и при проверке баланса.
+    if (
+        not query.data.startswith('confirm_code_copy_')
+        and not query.data.startswith('check_balance_')
+    ):
+        await _cleanup_topup_step_images(query, context)
     # Обработка различных callback_data
     if query.data == 'back':
         # Возвращаемся назад по истории
@@ -75,10 +99,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         match_source = context.user_data.get('match_source', 'browse')
         if match_source == 'purchased':
             context.user_data['menu_history'].append(MENU_PURCHASED_DATE)
+            context.user_data['current_match_id'] = match_id
+            await handle_show_analysis(query, user_id, match_id)
+            return
         else:
             context.user_data['menu_history'].append(MENU_MATCHES_LIST)
         context.user_data['current_match_id'] = match_id
-        await handle_match_detail(query, user_id, match_id)
+        await handle_match_detail(query, user_id, match_id, match_source=match_source)
     elif query.data.startswith('buy_'):
         match_id = int(query.data.split('_')[1])
         # Сохраняем текущее меню (детали матча) в историю
@@ -105,6 +132,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == 'deposit':
         context.user_data['menu_history'].append(MENU_MAIN)
         await handle_deposit_menu(query, user_id)
+    elif query.data.startswith('confirm_code_copy_'):
+        token = query.data.split('confirm_code_copy_')[1]
+        await handle_confirm_code_copy(query, context, user_id, token)
     elif query.data.startswith('check_balance_'):
         token = query.data.split('check_balance_')[1]
         await handle_check_balance_status(query, user_id, token)
@@ -302,7 +332,10 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Возврат к деталям матча
             match_id = context.user_data.get('current_match_id')
             if match_id:
-                await handle_match_detail(query, user_id, match_id)
+                match_source = context.user_data.get('match_source', 'browse')
+                await handle_match_detail(
+                    query, user_id, match_id, match_source=match_source
+                )
             else:
                 await send_main_menu(update, context)
         else:
@@ -313,7 +346,7 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_main_menu(update, context)
 
 
-async def handle_match_detail(query, user_id, match_id):
+async def handle_match_detail(query, user_id, match_id, match_source='browse'):
     """Обработка детальной страницы матча с проверкой баланса."""
     from config import ANALYSIS_PRICE_RUB
 
@@ -328,7 +361,7 @@ async def handle_match_detail(query, user_id, match_id):
     price = ANALYSIS_PRICE_RUB
     text = format_match_info(match)
 
-    if has_purchased:
+    if has_purchased and match_source != 'purchased':
         text += "\n\n✅ Вы уже приобрели этот анализ"
     elif user_balance >= price:
         text += (
@@ -993,7 +1026,7 @@ async def handle_find_topup_by_amount(query, user_id, token):
     подходящий незасчитанный донат в последних 30 записях DA.
     """
     import requests as http_requests
-    from config import DA_ACCESS_TOKEN, DA_PROFILE_URL
+    from config import DA_ACCESS_TOKEN, DA_PROFILE_URL, SUPPORT_USERNAME
 
     topup = database.get_any_topup_by_token(token)
     if not topup:
@@ -1048,29 +1081,53 @@ async def handle_find_topup_by_amount(query, user_id, token):
         )
         return
 
-    # Временной порог: последние 4 часа в UTC (DA API отдаёт время в UTC).
-    # Используем utcnow() чтобы избежать ошибок часового пояса.
-    cutoff_dt = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=4)
+    # Ищем кандидатов только в окне конкретного topup:
+    # [created_at .. expires_at + 10 минут].
+    try:
+        topup_created_dt = datetime.strptime(
+            str(topup['created_at'])[:19], '%Y-%m-%d %H:%M:%S'
+        )
+        topup_deadline_dt = datetime.strptime(
+            str(topup['expires_at'])[:19], '%Y-%m-%d %H:%M:%S'
+        ) + timedelta(minutes=10)
+    except Exception:
+        logger.error(
+            "Не удалось распарсить окно topup для find_topup_by_amount: "
+            f"token={token}, created_at={topup['created_at']}, expires_at={topup['expires_at']}"
+        )
+        await safe_edit_message(
+            query,
+            "❌ <b>Не удалось выполнить безопасную проверку</b>\n\n"
+            "Пожалуйста, создайте новый запрос на пополнение и повторите оплату с кодом.",
+            keyboards.main_menu_keyboard(),
+            parse_mode='HTML'
+        )
+        return
 
-    # Ищем незасчитанный донат с любой суммой > 0 за последние 4 часа
     candidates = []
     for donation in donations:
+        donation_id = str(donation.get('id', ''))
         received_kopeks = int(float(str(donation.get('amount', 0))) * 100)
         if received_kopeks <= 0:
             continue
-        # Фильтрация по времени (DA отдаёт UTC)
+
+        # Фильтрация по времени доната.
         created_at_str = donation.get('created_at', '')
-        if created_at_str:
-            try:
-                donation_dt = datetime.strptime(created_at_str[:19], '%Y-%m-%d %H:%M:%S')
-                if donation_dt < cutoff_dt:
-                    continue
-            except Exception:
-                pass  # если формат другой — не фильтруем
-        # Пропускаем донаты, уже связанные с каким-либо токеном
-        if database.is_donation_event_used(str(donation['id'])):
+        if not created_at_str:
             continue
-        candidates.append(donation)
+        try:
+            donation_dt = datetime.strptime(created_at_str[:19], '%Y-%m-%d %H:%M:%S')
+        except Exception:
+            continue
+
+        if donation_dt < topup_created_dt or donation_dt > topup_deadline_dt:
+            continue
+
+        # Пропускаем донаты, уже связанные с каким-либо токеном
+        if not donation_id or database.is_donation_event_used(donation_id):
+            continue
+
+        candidates.append((donation_dt, donation))
 
     if not candidates:
         keyboard = [
@@ -1080,20 +1137,41 @@ async def handle_find_topup_by_amount(query, user_id, token):
             [InlineKeyboardButton("🏠 В главное меню",
                                   callback_data='back_to_menu')]
         ]
+        support_text = f"@{SUPPORT_USERNAME}" if SUPPORT_USERNAME else "поддержку"
         await safe_edit_message(
             query,
             "⏳ <b>Незасчитанный донат не найден</b>\n\n"
-            "Возможные причины:\n"
-            "• Донат ещё не появился в системе — подождите 1-2 мин\n"
-            "• Донат уже был засчитан ранее\n\n"
-            "Если оплата точно была, обратитесь в поддержку.",
+            "Мы проверяем только безопасное окно вашего запроса пополнения.\n"
+            "Если платёж был без кода и не найден — обратитесь в "
+            f"{support_text} с суммой и временем доната.",
             InlineKeyboardMarkup(keyboard),
             parse_mode='HTML'
         )
         return
 
-    # Берём самый свежий подходящий донат, зачисляем фактическую сумму
-    best = candidates[0]
+    if len(candidates) > 1:
+        keyboard = [
+            [InlineKeyboardButton("🔄 Проверить ещё раз",
+                                  callback_data=f'find_topup_by_amount_{token}')],
+            [InlineKeyboardButton("🏠 В главное меню",
+                                  callback_data='back_to_menu')]
+        ]
+        support_text = f"@{SUPPORT_USERNAME}" if SUPPORT_USERNAME else "поддержку"
+        await safe_edit_message(
+            query,
+            "⚠️ <b>Найдено несколько возможных донатов</b>\n\n"
+            "Для безопасности автозачёт отключён, чтобы не зачислить чужой платёж.\n"
+            f"Напишите в {support_text} и укажите сумму/время доната и ваш код.",
+            InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
+        logger.warning(
+            f"[find_by_amount] Найдено несколько кандидатов: token={token}, count={len(candidates)}"
+        )
+        return
+
+    # Кандидат ровно один — можно безопасно зачислить.
+    _, best = candidates[0]
     donation_id = str(best['id'])
     received_rub = int(float(str(best['amount'])))  # целые рубли
 
@@ -1128,32 +1206,37 @@ async def handle_find_topup_by_amount(query, user_id, token):
     )
 
 
-async def handle_deposit_menu(query, user_id):
-    """
-    Пополнение баланса: показывает уникальный код, который нужно вставить
-    в комментарий доната на DonationAlerts.
-
-    Если у пользователя есть действующий pending топап — показывает тот же
-    код, чтобы он не потерял его при повторном входе в меню.
-    Новый токен создаётся только если старый истёк или отсутствует.
-    """
+async def _show_deposit_payment_screen(query, context, user_id, token):
+    """Шаг 2: текущий UX оплаты (после подтверждения копирования кода)."""
     from config import DA_PROFILE_URL
 
-    existing = database.get_pending_topup_by_user(user_id)
-    if existing:
-        token = existing['token']
-    else:
-        token = database.create_balance_topup(user_id, amount_rub=0)
-    balance = database.get_user_balance(user_id)
+    topup = database.get_topup_by_token(token)
+    if not topup or topup['user_id'] != user_id:
+        await safe_edit_message(
+            query,
+            "❌ Код пополнения не найден или истёк.\n\n"
+            "Вернитесь в меню и создайте новый запрос.",
+            keyboards.main_menu_keyboard()
+        )
+        return
 
+    balance = database.get_user_balance(user_id)
+    top_pointer_line = "👇👇👇👇👇"
+    bottom_pointer_line = "☝️☝️☝️☝️☝️"
+    code_lines = (
+        f"<code>{token}</code>\n"
+        f"<code>{token}</code>\n"
+        f"<code>{token}</code>"
+    )
     text = (
         "💰 <b>ПОПОЛНЕНИЕ БАЛАНСА</b>\n\n"
         f"💳 Текущий баланс: <b>{balance} руб.</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━\n\n"
         "⚠️ <b>ВАЖНО — сохраните ваш уникальный код:</b>\n\n"
-        f"🔑 <code>{token}</code>\n\n"
+        f"{top_pointer_line}\n{code_lines}\n{bottom_pointer_line}\n\n"
         "<b>Этот код нужно вставить в комментарий к донату!</b>\n"
-        "<i>Без кода баланс не пополнится. Код действует 30 минут.</i>\n\n"
+        "<b>⚠️НЕ СКОПИРОВАЛ КОД - БАЛАНС НЕ ПОПОЛНИТСЯ⚠️</b>\n"
+        "<i>Код действует 30 минут.</i>\n\n"
         "━━━━━━━━━━━━━━━━━━━\n\n"
         "📋 <b>Инструкция:</b>\n"
         f"1️⃣ Скопируйте код: <code>{token}</code>\n"
@@ -1170,11 +1253,98 @@ async def handle_deposit_menu(query, user_id):
         [InlineKeyboardButton("🏠 В главное меню",
                               callback_data='back_to_menu')]
     ]
+    bot = query.message.get_bot()
+    chat_id = query.message.chat_id
+
+    # Сначала отправляем 2 скриншота STEP_1 и STEP_2 (если файлы есть).
+    base_dir = Path(__file__).resolve().parent
+    step_images = [
+        ("STEP 1", base_dir / 'assets' / 'STEP_1.png'),
+        ("STEP 2", base_dir / 'assets' / 'STEP_2.png'),
+    ]
+    for caption, image_path in step_images:
+        if not image_path.exists():
+            logger.warning(f"Файл скриншота не найден: {image_path}")
+            continue
+        try:
+            with image_path.open('rb') as image_file:
+                sent_photo = await bot.send_photo(
+                    chat_id=chat_id,
+                    photo=image_file,
+                    caption=caption
+                )
+                context.user_data.setdefault('topup_step_image_ids', []).append(
+                    sent_photo.message_id
+                )
+        except Exception as e:
+            logger.warning(f"Не удалось отправить скриншот {image_path}: {e}")
+
+    # Затем отправляем привычный текст/кнопки отдельным сообщением.
+    sent_message = await bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='HTML'
+    )
+
+    # Удаляем прошлое сообщение с чекбоксом, чтобы порядок в чате был правильный.
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+    # Сохраняем message_id нового сообщения для редактирования при зачислении.
+    database.update_topup_instruction_message(token, sent_message.message_id)
+
+
+async def handle_confirm_code_copy(query, context, user_id, token):
+    """Переход на шаг оплаты после чекбокса «Я скопировал код»."""
+    await _show_deposit_payment_screen(query, context, user_id, token)
+
+
+async def handle_deposit_menu(query, user_id):
+    """
+    Пополнение баланса: показывает уникальный код, который нужно вставить
+    в комментарий доната на DonationAlerts.
+
+    Если у пользователя есть действующий pending топап — показывает тот же
+    код, чтобы он не потерял его при повторном входе в меню.
+    Новый токен создаётся только если старый истёк или отсутствует.
+    """
+    existing = database.get_pending_topup_by_user(user_id)
+    if existing:
+        token = existing['token']
+    else:
+        token = database.create_balance_topup(user_id, amount_rub=0)
+    balance = database.get_user_balance(user_id)
+    top_pointer_line = "👇👇👇👇👇"
+    bottom_pointer_line = "☝️☝️☝️☝️☝️"
+    code_lines = (
+        f"<code>{token}</code>\n"
+        f"<code>{token}</code>\n"
+        f"<code>{token}</code>"
+    )
+
+    text = (
+        "💰 <b>ПОПОЛНЕНИЕ БАЛАНСА</b>\n\n"
+        f"💳 Текущий баланс: <b>{balance} руб.</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━━\n\n"
+        "⚠️ <b>ШАГ 1: СКОПИРУЙТЕ ВАШ КОД</b>\n\n"
+        f"{top_pointer_line}\n{code_lines}\n{bottom_pointer_line}\n\n"
+        "<b>Этот код нужно вставить в комментарий к донату!</b>\n"
+        "<b>⚠️НЕ СКОПИРОВАЛ КОД - БАЛАНС НЕ ПОПОЛНИТСЯ⚠️</b>\n"
+        "<i>Код действует 30 минут.</i>\n\n"
+        "После копирования нажмите кнопку ниже."
+    )
+    keyboard = [
+        [InlineKeyboardButton("☐ Я СКОПИРОВАЛ КОД",
+                              callback_data=f'confirm_code_copy_{token}')],
+        [InlineKeyboardButton("🏠 В главное меню",
+                              callback_data='back_to_menu')]
+    ]
     await safe_edit_message(
         query, text, InlineKeyboardMarkup(keyboard), parse_mode='HTML'
     )
-    # Сохраняем message_id для редактирования при зачислении
-    database.update_topup_instruction_message(token, query.message.message_id)
 
 
 async def handle_check_balance_status(query, user_id, token):
