@@ -57,6 +57,24 @@ async def scheduled_sync_matches():
         logger.error("=" * 60, exc_info=True)
 
 
+async def scheduled_expire_topups():
+    """Периодическая установка статуса expired для просроченных pending топапов."""
+    from datetime import datetime
+    try:
+        expired_count = database.expire_pending_topups()
+        if expired_count > 0:
+            logger.info(
+                f"[{datetime.now().strftime('%H:%M:%S')}] APScheduler: "
+                f"истекших топапов переведено в expired: {expired_count}"
+            )
+    except Exception as e:
+        logger.error(
+            f"[{datetime.now().strftime('%H:%M:%S')}] APScheduler: "
+            f"ОШИБКА очистки истекших топапов: {e}",
+            exc_info=True
+        )
+
+
 async def post_init(application):
     """Callback после инициализации бота (в контексте event loop)"""
     # Устанавливаем команды в меню Telegram для администраторов
@@ -82,9 +100,18 @@ async def post_init(application):
         name='Синхронизация при старте'
     )
 
+    # Очистка истекших pending топапов каждые 15 минут
+    scheduler.add_job(
+        scheduled_expire_topups,
+        trigger=IntervalTrigger(minutes=15),
+        id='expire_pending_topups',
+        name='Истечение pending топапов',
+        replace_existing=True
+    )
+
     scheduler.start()
     logger.info("=" * 60)
-    logger.info("APScheduler запущен: синхронизация каждые 6 часов")
+    logger.info("APScheduler запущен: синхронизация каждые 6 часов, очистка топапов каждые 15 минут")
     logger.info("=" * 60)
 
     # Сохраняем scheduler в bot_data для graceful shutdown

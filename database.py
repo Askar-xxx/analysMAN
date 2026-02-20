@@ -632,13 +632,30 @@ def get_topup_by_token(token):
     """Возвращает pending запись пополнения по token."""
     conn = get_db_connection()
     cursor = conn.cursor()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     cursor.execute('''
         SELECT * FROM balance_topups
-        WHERE token = ? AND status = 'pending'
-    ''', (token,))
+        WHERE token = ? AND status = 'pending' AND expires_at > ?
+    ''', (token, now))
     row = cursor.fetchone()
     conn.close()
     return row
+
+
+def expire_pending_topups():
+    """Переводит истёкшие pending пополнения в статус expired."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    cursor.execute('''
+        UPDATE balance_topups
+        SET status = 'expired'
+        WHERE status = 'pending' AND expires_at <= ?
+    ''', (now,))
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return affected
 
 
 def get_pending_topup_by_user(user_id):

@@ -44,4 +44,8 @@ jobs:
             cd ~/sports-bot
             docker compose pull
             docker compose up -d --remove-orphans
-            docker image prune -f
+            
+            #cleanup (чистим без удаления volumes)
+	    docker container prune -f
+	    docker image prune -af --filter "until=168h"
+	    docker builder prune -af --filter "until=168h"
