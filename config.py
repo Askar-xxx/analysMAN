@@ -57,5 +57,9 @@ DA_PROFILE_URL = os.environ.get('DA_PROFILE_URL', '')
 ANALYSIS_PRICE_RUB = float(os.environ.get('ANALYSIS_PRICE_RUB', '150'))
 
 # === Администратор ===
-MAIN_ADMIN_ID = int(os.environ.get('MAIN_ADMIN_ID', '0'))
+_admin_ids_raw = os.environ.get('ADMIN_ID', '')
+ADMIN_IDS = {
+    int(x.strip()) for x in _admin_ids_raw.split(',')
+    if x.strip().isdigit()
+}
 SUPPORT_USERNAME = os.environ.get('SUPPORT_USERNAME', '')

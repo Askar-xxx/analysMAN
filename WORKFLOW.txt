@@ -48,7 +48,7 @@
     DA_ACCESS_TOKEN       — получается через da_oauth.py (см. раздел 5)
     DA_PROFILE_URL        — ссылка на страницу донатов
     ANALYSIS_PRICE_RUB    — цена анализа (сейчас 1 для теста)
-    MAIN_ADMIN_ID         — твой Telegram ID
+    ADMIN_ID              — Telegram ID админа(ов) через запятую
     SUPPORT_USERNAME      — юзернейм поддержки
 
 Шаг 4 — Запустить бота локально

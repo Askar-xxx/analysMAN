@@ -128,7 +128,7 @@ docker compose up -d --force-recreate
 | `DA_ACCESS_TOKEN`    | DonationAlerts Access Token                   |
 | `DA_PROFILE_URL`     | Ссылка на страницу донатов                    |
 | `ANALYSIS_PRICE_RUB` | Цена анализа в рублях                         |
-| `MAIN_ADMIN_ID`      | Telegram ID администратора                    |
+| `ADMIN_ID`           | Telegram ID админа(ов), через запятую         |
 | `SUPPORT_USERNAME`   | Username поддержки                            |
 | `DOCKER_HUB_USERNAME`| Логин Docker Hub                              |
 | `DOCKER_HUB_TOKEN`   | Access Token Docker Hub (Read & Write)        |
