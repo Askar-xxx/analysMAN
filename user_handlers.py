@@ -4,7 +4,7 @@ from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
 import database
 import keyboards
 from utils import safe_edit_message, send_main_menu, format_match_info
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 
 MENU_MAIN = 'main'
@@ -75,10 +75,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         match_source = context.user_data.get('match_source', 'browse')
         if match_source == 'purchased':
             context.user_data['menu_history'].append(MENU_PURCHASED_DATE)
+            context.user_data['current_match_id'] = match_id
+            await handle_show_analysis(query, user_id, match_id)
+            return
         else:
             context.user_data['menu_history'].append(MENU_MATCHES_LIST)
         context.user_data['current_match_id'] = match_id
-        await handle_match_detail(query, user_id, match_id)
+        await handle_match_detail(query, user_id, match_id, match_source=match_source)
     elif query.data.startswith('buy_'):
         match_id = int(query.data.split('_')[1])
         # Сохраняем текущее меню (детали матча) в историю
@@ -302,7 +305,10 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Возврат к деталям матча
             match_id = context.user_data.get('current_match_id')
             if match_id:
-                await handle_match_detail(query, user_id, match_id)
+                match_source = context.user_data.get('match_source', 'browse')
+                await handle_match_detail(
+                    query, user_id, match_id, match_source=match_source
+                )
             else:
                 await send_main_menu(update, context)
         else:
@@ -313,7 +319,7 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_main_menu(update, context)
 
 
-async def handle_match_detail(query, user_id, match_id):
+async def handle_match_detail(query, user_id, match_id, match_source='browse'):
     """Обработка детальной страницы матча с проверкой баланса."""
     from config import ANALYSIS_PRICE_RUB
 
@@ -328,7 +334,7 @@ async def handle_match_detail(query, user_id, match_id):
     price = ANALYSIS_PRICE_RUB
     text = format_match_info(match)
 
-    if has_purchased:
+    if has_purchased and match_source != 'purchased':
         text += "\n\n✅ Вы уже приобрели этот анализ"
     elif user_balance >= price:
         text += (
@@ -993,7 +999,7 @@ async def handle_find_topup_by_amount(query, user_id, token):
     подходящий незасчитанный донат в последних 30 записях DA.
     """
     import requests as http_requests
-    from config import DA_ACCESS_TOKEN, DA_PROFILE_URL
+    from config import DA_ACCESS_TOKEN, DA_PROFILE_URL, SUPPORT_USERNAME
 
     topup = database.get_any_topup_by_token(token)
     if not topup:
@@ -1048,29 +1054,53 @@ async def handle_find_topup_by_amount(query, user_id, token):
         )
         return
 
-    # Временной порог: последние 4 часа в UTC (DA API отдаёт время в UTC).
-    # Используем utcnow() чтобы избежать ошибок часового пояса.
-    cutoff_dt = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=4)
+    # Ищем кандидатов только в окне конкретного topup:
+    # [created_at .. expires_at + 10 минут].
+    try:
+        topup_created_dt = datetime.strptime(
+            str(topup['created_at'])[:19], '%Y-%m-%d %H:%M:%S'
+        )
+        topup_deadline_dt = datetime.strptime(
+            str(topup['expires_at'])[:19], '%Y-%m-%d %H:%M:%S'
+        ) + timedelta(minutes=10)
+    except Exception:
+        logger.error(
+            "Не удалось распарсить окно topup для find_topup_by_amount: "
+            f"token={token}, created_at={topup['created_at']}, expires_at={topup['expires_at']}"
+        )
+        await safe_edit_message(
+            query,
+            "❌ <b>Не удалось выполнить безопасную проверку</b>\n\n"
+            "Пожалуйста, создайте новый запрос на пополнение и повторите оплату с кодом.",
+            keyboards.main_menu_keyboard(),
+            parse_mode='HTML'
+        )
+        return
 
-    # Ищем незасчитанный донат с любой суммой > 0 за последние 4 часа
     candidates = []
     for donation in donations:
+        donation_id = str(donation.get('id', ''))
         received_kopeks = int(float(str(donation.get('amount', 0))) * 100)
         if received_kopeks <= 0:
             continue
-        # Фильтрация по времени (DA отдаёт UTC)
+
+        # Фильтрация по времени доната.
         created_at_str = donation.get('created_at', '')
-        if created_at_str:
-            try:
-                donation_dt = datetime.strptime(created_at_str[:19], '%Y-%m-%d %H:%M:%S')
-                if donation_dt < cutoff_dt:
-                    continue
-            except Exception:
-                pass  # если формат другой — не фильтруем
-        # Пропускаем донаты, уже связанные с каким-либо токеном
-        if database.is_donation_event_used(str(donation['id'])):
+        if not created_at_str:
             continue
-        candidates.append(donation)
+        try:
+            donation_dt = datetime.strptime(created_at_str[:19], '%Y-%m-%d %H:%M:%S')
+        except Exception:
+            continue
+
+        if donation_dt < topup_created_dt or donation_dt > topup_deadline_dt:
+            continue
+
+        # Пропускаем донаты, уже связанные с каким-либо токеном
+        if not donation_id or database.is_donation_event_used(donation_id):
+            continue
+
+        candidates.append((donation_dt, donation))
 
     if not candidates:
         keyboard = [
@@ -1080,20 +1110,41 @@ async def handle_find_topup_by_amount(query, user_id, token):
             [InlineKeyboardButton("🏠 В главное меню",
                                   callback_data='back_to_menu')]
         ]
+        support_text = f"@{SUPPORT_USERNAME}" if SUPPORT_USERNAME else "поддержку"
         await safe_edit_message(
             query,
             "⏳ <b>Незасчитанный донат не найден</b>\n\n"
-            "Возможные причины:\n"
-            "• Донат ещё не появился в системе — подождите 1-2 мин\n"
-            "• Донат уже был засчитан ранее\n\n"
-            "Если оплата точно была, обратитесь в поддержку.",
+            "Мы проверяем только безопасное окно вашего запроса пополнения.\n"
+            "Если платёж был без кода и не найден — обратитесь в "
+            f"{support_text} с суммой и временем доната.",
             InlineKeyboardMarkup(keyboard),
             parse_mode='HTML'
         )
         return
 
-    # Берём самый свежий подходящий донат, зачисляем фактическую сумму
-    best = candidates[0]
+    if len(candidates) > 1:
+        keyboard = [
+            [InlineKeyboardButton("🔄 Проверить ещё раз",
+                                  callback_data=f'find_topup_by_amount_{token}')],
+            [InlineKeyboardButton("🏠 В главное меню",
+                                  callback_data='back_to_menu')]
+        ]
+        support_text = f"@{SUPPORT_USERNAME}" if SUPPORT_USERNAME else "поддержку"
+        await safe_edit_message(
+            query,
+            "⚠️ <b>Найдено несколько возможных донатов</b>\n\n"
+            "Для безопасности автозачёт отключён, чтобы не зачислить чужой платёж.\n"
+            f"Напишите в {support_text} и укажите сумму/время доната и ваш код.",
+            InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
+        logger.warning(
+            f"[find_by_amount] Найдено несколько кандидатов: token={token}, count={len(candidates)}"
+        )
+        return
+
+    # Кандидат ровно один — можно безопасно зачислить.
+    _, best = candidates[0]
     donation_id = str(best['id'])
     received_rub = int(float(str(best['amount'])))  # целые рубли
 

@@ -3,12 +3,34 @@
 # Для Docker — переменные передаются через docker-compose.yml / env_file.
 
 import os
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+ENV_PATH = BASE_DIR / '.env'
+
+
+def _load_env_fallback(path: Path):
+    """Простой загрузчик .env без внешних зависимостей."""
+    if not path.exists():
+        return
+
+    for line in path.read_text(encoding='utf-8').splitlines():
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        # Не перезаписываем уже заданные переменные окружения.
+        os.environ.setdefault(key, value)
+
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+
+    load_dotenv(ENV_PATH, override=False)
 except ImportError:
-    pass  # python-dotenv не установлен — env vars должны быть выставлены вручную
+    _load_env_fallback(ENV_PATH)
 
 # === Telegram ===
 TOKEN = os.environ.get('TELEGRAM_TOKEN', '')
