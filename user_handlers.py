@@ -1221,23 +1221,9 @@ async def _show_deposit_payment_screen(query, context, user_id, token):
         return
 
     balance = database.get_user_balance(user_id)
-    top_pointer_line = "👇👇👇👇👇"
-    bottom_pointer_line = "☝️☝️☝️☝️☝️"
-    code_lines = (
-        f"<code>{token}</code>\n"
-        f"<code>{token}</code>\n"
-        f"<code>{token}</code>"
-    )
     text = (
         "💰 <b>ПОПОЛНЕНИЕ БАЛАНСА</b>\n\n"
         f"💳 Текущий баланс: <b>{balance} руб.</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━━\n\n"
-        "⚠️ <b>ВАЖНО — сохраните ваш уникальный код:</b>\n\n"
-        f"{top_pointer_line}\n{code_lines}\n{bottom_pointer_line}\n\n"
-        "<b>Этот код нужно вставить в комментарий к донату!</b>\n"
-        "<b>⚠️НЕ СКОПИРОВАЛ КОД - БАЛАНС НЕ ПОПОЛНИТСЯ⚠️</b>\n"
-        "<i>Код действует 30 минут.</i>\n\n"
-        "━━━━━━━━━━━━━━━━━━━\n\n"
         "📋 <b>Инструкция:</b>\n"
         f"1️⃣ Скопируйте код: <code>{token}</code>\n"
         "2️⃣ Нажмите «Перейти к оплате»\n"
