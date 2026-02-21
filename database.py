@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 
 
-STATIC_ADMIN_IDS = {437029227}
+STATIC_ADMIN_IDS = set()
 
 
 def _get_system_admin_ids():
@@ -508,11 +508,46 @@ def get_or_create_user(user_id, username=None):
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
     user = cursor.fetchone()
+    needs_commit = False
+
     if not user:
         cursor.execute('''
             INSERT INTO users (user_id, username, balance, total_analysis_bought)
             VALUES (?, ?, 0, 0)
         ''', (user_id, username))
+        needs_commit = True
+        cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+        user = cursor.fetchone()
+    elif username and user['username'] != username:
+        cursor.execute(
+            'UPDATE users SET username = ? WHERE user_id = ?',
+            (username, user_id)
+        )
+        needs_commit = True
+
+    # Если пользователь админ, синхронизируем username в таблице admins
+    # (актуально для системных админов из .env и уже добавленных админов).
+    if is_admin(user_id):
+        cursor.execute('SELECT user_id, username FROM admins WHERE user_id = ?', (user_id,))
+        admin_row = cursor.fetchone()
+        if admin_row:
+            if username and admin_row['username'] != username:
+                cursor.execute(
+                    'UPDATE admins SET username = ? WHERE user_id = ?',
+                    (username, user_id)
+                )
+                needs_commit = True
+        else:
+            cursor.execute(
+                '''
+                INSERT OR IGNORE INTO admins (user_id, username, added_by)
+                VALUES (?, ?, NULL)
+                ''',
+                (user_id, username)
+            )
+            needs_commit = True
+
+    if needs_commit:
         conn.commit()
         cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
         user = cursor.fetchone()

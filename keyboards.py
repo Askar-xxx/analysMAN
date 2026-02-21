@@ -9,8 +9,9 @@ def main_menu_keyboard():
                               callback_data='category_sports')],
         [
             InlineKeyboardButton("📊 Мои анализы", callback_data='my_analysis'),
-            InlineKeyboardButton("💰 Пополнить баланс", callback_data='deposit')
-        ]
+            InlineKeyboardButton("💎 Приобрести алмазы", callback_data='deposit')
+        ],
+        [InlineKeyboardButton("🎧 Техподдержка", callback_data='support')]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -91,13 +92,13 @@ def match_detail_keyboard(match_id, has_purchased, user_balance=0, price=1):
         ]
     elif user_balance >= price:
         keyboard = [
-            [InlineKeyboardButton("✅ Купить анализ",
+            [InlineKeyboardButton("✅ Приобрести анализ",
                                   callback_data=f'buy_{match_id}')],
             [InlineKeyboardButton("◀️ Назад", callback_data='back')]
         ]
     else:
         keyboard = [
-            [InlineKeyboardButton("💰 Пополнить баланс",
+            [InlineKeyboardButton("💎 Приобрести алмазы",
                                   callback_data='deposit')],
             [InlineKeyboardButton("◀️ Назад", callback_data='back')]
         ]

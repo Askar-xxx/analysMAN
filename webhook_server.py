@@ -95,25 +95,6 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
 
         bot = Bot(token=TOKEN)
 
-        # Обновляем сообщение с инструкцией на статус генерации
-        if instruction_message_id:
-            try:
-                progress_text = (
-                    "⏳ <b>Создаётся анализ...</b>\n\n"
-                    f"🏆 Матч: <b>{match_dict['team1']} vs {match_dict['team2']}</b>\n\n"
-                    "🤖 Собираем данные и генерируем анализ...\n"
-                    "⏱ Это займёт <b>30-60 секунд</b>, пожалуйста, подождите."
-                )
-                await bot.edit_message_text(
-                    chat_id=user_id,
-                    message_id=instruction_message_id,
-                    text=progress_text,
-                    parse_mode='HTML'
-                )
-                logger.info(f"Сообщение обновлено на статус генерации (message_id={instruction_message_id})")
-            except Exception as e:
-                logger.warning(f"Не удалось обновить сообщение: {e}")
-
         # Этап 1: Сбор обогащённых данных
         logger.info(f"Сбор данных для матча {match_id}...")
         enriched_data = {}
@@ -170,6 +151,14 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
         logger.info("Анализ и PNG путь сохранены в БД")
 
         # Этап 4: Отправка пользователю
+        sport = match_dict.get('sport')
+        match_date = match_dict.get('match_date')
+        back_callback_data = (
+            f"analysis_back_{sport}_{match_date}"
+            if sport and match_date
+            else 'back'
+        )
+
         if png_path:
             # Отправляем PNG с caption
             from datetime import datetime as dt
@@ -192,7 +181,7 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
             # Кнопки навигации
             from telegram import InlineKeyboardButton, InlineKeyboardMarkup
             keyboard = [
-                [InlineKeyboardButton("◀️ Назад к матчам", callback_data='back')],
+                [InlineKeyboardButton("◀️ Назад", callback_data=back_callback_data)],
                 [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
             ]
 
@@ -223,7 +212,7 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
             # Кнопки навигации
             from telegram import InlineKeyboardButton, InlineKeyboardMarkup
             keyboard = [
-                [InlineKeyboardButton("◀️ Назад к матчам", callback_data='back')],
+                [InlineKeyboardButton("◀️ Назад", callback_data=back_callback_data)],
                 [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
             ]
 

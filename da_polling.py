@@ -225,9 +225,9 @@ async def _handle_topup_donation(topup, donation_id, amount_rub):
     )
 
     text = (
-        f"✅ <b>Баланс пополнен!</b>\n\n"
-        f"💰 Зачислено: <b>+{received_rub} руб.</b> ({received_rub} {analyses_word})\n"
-        f"💳 Ваш баланс: <b>{new_balance} руб.</b>\n\n"
+        f"✅ <b>Алмазы зачислены!</b>\n\n"
+        f"💎 Зачислено: <b>+{received_rub} 💎</b> ({received_rub} {analyses_word})\n"
+        f"💠 У вас: <b>{new_balance} алмазов</b>\n\n"
         "Выберите матч для покупки анализа!"
     )
 

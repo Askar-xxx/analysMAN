@@ -254,7 +254,7 @@ async def safe_edit_message(query, text, reply_markup=None, parse_mode='HTML'):
 
 
 async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправка главного меню с балансом"""
+    """Отправка главного меню с количеством алмазов"""
     from keyboards import main_menu_keyboard
     user_id = update.effective_user.id
     username = update.effective_user.username
@@ -265,7 +265,7 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 Приветствую, {update.effective_user.mention_html()}! 👋
 
-💰 *Ваш баланс:* {balance} руб.
+💎 *У вас:* {balance} алмазов
 
 Я ваш персональный помощник в мире спортивной аналитики и мероприятий.
 

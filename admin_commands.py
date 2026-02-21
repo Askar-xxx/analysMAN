@@ -490,7 +490,12 @@ async def setup_admin_commands_menu(bot):
     Устанавливает список команд в меню Telegram для каждого администратора.
     Вызывается при старте бота (post_init).
     """
-    from telegram import BotCommand, BotCommandScopeChat
+    from telegram import (
+        BotCommand,
+        BotCommandScopeAllPrivateChats,
+        BotCommandScopeChat,
+        BotCommandScopeDefault
+    )
 
     admin_commands = [
         BotCommand('adminhelp', 'Справка по всем командам'),
@@ -503,7 +508,17 @@ async def setup_admin_commands_menu(bot):
         BotCommand('clean_all_matches', '⚠️ Удалить ВСЕ матчи и анализы'),
     ]
 
+    # На случай если ранее команды были выставлены глобально:
+    # очищаем их, чтобы обычные пользователи не видели админские команды.
+    try:
+        await bot.set_my_commands([], scope=BotCommandScopeDefault())
+        await bot.set_my_commands([], scope=BotCommandScopeAllPrivateChats())
+        logger.info("Глобальные команды очищены (default/all_private_chats)")
+    except Exception as e:
+        logger.warning(f"Не удалось очистить глобальные команды: {e}")
+
     admins = database.get_all_admins()
+    admin_ids = {admin['user_id'] for admin in admins}
     for admin in admins:
         try:
             await bot.set_my_commands(
@@ -513,6 +528,19 @@ async def setup_admin_commands_menu(bot):
             logger.info(f"Команды меню установлены для admin user_id={admin['user_id']}")
         except Exception as e:
             logger.warning(f"Не удалось установить команды для admin {admin['user_id']}: {e}")
+
+    # Чистим персональные команды у всех не-админов (если ранее были выставлены)
+    # чтобы бывшие админы не видели устаревшее меню.
+    for user in database.get_all_users():
+        user_id = user['user_id']
+        if user_id in admin_ids:
+            continue
+        try:
+            await bot.set_my_commands([], scope=BotCommandScopeChat(chat_id=user_id))
+        except Exception as e:
+            logger.debug(
+                f"Не удалось очистить chat-scope команды для user_id={user_id}: {e}"
+            )
 
 
 def setup_admin_handlers(application):
