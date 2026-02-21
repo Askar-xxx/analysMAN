@@ -109,6 +109,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Сохраняем предыдущее меню
         context.user_data['menu_history'].append(MENU_MAIN)
         await handle_my_analysis(update, query, user_id)
+    elif query.data == 'support':
+        # Сохраняем предыдущее меню
+        context.user_data['menu_history'].append(MENU_MAIN)
+        await handle_support(query)
     elif query.data.startswith('sport_'):
         sport = query.data.split('_')[1]
         # Сохраняем предыдущее меню
@@ -1405,6 +1409,40 @@ async def handle_deposit_menu(query, context, user_id):
     ]
     await safe_edit_message(
         query, text, InlineKeyboardMarkup(keyboard), parse_mode='HTML'
+    )
+
+
+async def handle_support(query):
+    """Экран техподдержки."""
+    from config import SUPPORT_USERNAME
+
+    username = (SUPPORT_USERNAME or '').strip().lstrip('@')
+    if username:
+        support_text = f"@{username}"
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                "✍️ Написать в поддержку",
+                url=f"https://t.me/{username}"
+            )],
+            [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
+        ])
+        text = (
+            "🎧 <b>Техподдержка</b>\n\n"
+            f"Если возникли вопросы или проблемы, напишите в {support_text}."
+        )
+    else:
+        keyboard = keyboards.back_to_main_keyboard()
+        text = (
+            "🎧 <b>Техподдержка</b>\n\n"
+            "Контакт поддержки пока не настроен.\n"
+            "Напишите администратору бота."
+        )
+
+    await safe_edit_message(
+        query,
+        text,
+        keyboard,
+        parse_mode='HTML'
     )
 
 
