@@ -12,6 +12,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
 async def scheduled_sync_matches():
     """Периодическая синхронизация матчей из TheSportsDB"""
     from datetime import datetime
