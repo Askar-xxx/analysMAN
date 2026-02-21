@@ -12,43 +12,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 async def scheduled_sync_matches():
     """Периодическая синхронизация матчей из TheSportsDB"""
     from datetime import datetime
     logger.info("=" * 60)
-    logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] APScheduler: ЗАПУСК синхронизации...")
+    logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] APScheduler: ЗАПУСК синхронизации матчей...")
     logger.info("=" * 60)
     try:
-        # 1. Синхронизация новых матчей
         from sync_matches import SportsDBSyncer
-        logger.info("Шаг 1/3: Синхронизация новых матчей...")
+        # Режим top3: берёт топ-15 матчей из топ-лиг (Premier League, La Liga, Bundesliga)
+        # и топ-кубков (Champions League, Europa League) на ближайшие 3 дня
         syncer = SportsDBSyncer(mode='top3', limit=15)
         matches = syncer.sync()
         results = syncer.save_matches_to_db(matches)
+        logger.info("=" * 60)
+        logger.info(
+            f"[{datetime.now().strftime('%H:%M:%S')}] APScheduler: синхронизация ЗАВЕРШЕНА"
+        )
         logger.info(
             f"Найдено: {results['total']}, "
             f"Добавлено: {results['inserted']}, "
             f"Пропущено: {results['skipped']}"
-        )
-
-        # 2. Удаление старых матчей без покупок
-        logger.info("Шаг 2/3: Удаление старых матчей...")
-        deleted_matches = database.delete_finished_matches_without_purchases()
-        if deleted_matches > 0:
-            logger.info(f"Удалено старых матчей: {deleted_matches}")
-
-        # 3. Очистка старых покупок (анализы хранятся 1 день после матча)
-        logger.info("Шаг 3/3: Очистка старых покупок...")
-        deleted = database.cleanup_old_purchases()
-        if deleted > 0:
-            logger.info(f"Удалено старых покупок: {deleted}")
-        else:
-            logger.info("Старых покупок для удаления не найдено")
-
-        logger.info("=" * 60)
-        logger.info(
-            f"[{datetime.now().strftime('%H:%M:%S')}] APScheduler: синхронизация ЗАВЕРШЕНА"
         )
         logger.info("=" * 60)
     except Exception as e:
@@ -57,37 +41,16 @@ async def scheduled_sync_matches():
         logger.error("=" * 60, exc_info=True)
 
 
-async def scheduled_expire_topups():
-    """Периодическая установка статуса expired для просроченных pending топапов."""
-    from datetime import datetime
-    try:
-        expired_count = database.expire_pending_topups()
-        if expired_count > 0:
-            logger.info(
-                f"[{datetime.now().strftime('%H:%M:%S')}] APScheduler: "
-                f"истекших топапов переведено в expired: {expired_count}"
-            )
-    except Exception as e:
-        logger.error(
-            f"[{datetime.now().strftime('%H:%M:%S')}] APScheduler: "
-            f"ОШИБКА очистки истекших топапов: {e}",
-            exc_info=True
-        )
-
-
 async def post_init(application):
     """Callback после инициализации бота (в контексте event loop)"""
-    # Устанавливаем команды в меню Telegram для администраторов
-    from admin_commands import setup_admin_commands_menu
-    await setup_admin_commands_menu(application.bot)
-
     # Настройка APScheduler для периодической синхронизации
     scheduler = AsyncIOScheduler()
 
-    # Периодическая синхронизация каждые 6 часов
+    # Периодическая синхронизация каждые 30 секунд (для теста)
+    # TODO: В продакшене изменить на hours=6
     scheduler.add_job(
         scheduled_sync_matches,
-        trigger=IntervalTrigger(hours=6),
+        trigger=IntervalTrigger(seconds=30),
         id='sync_matches',
         name='Синхронизация матчей TheSportsDB',
         replace_existing=True
@@ -100,22 +63,20 @@ async def post_init(application):
         name='Синхронизация при старте'
     )
 
-    # Очистка истекших pending топапов каждые 15 минут
-    scheduler.add_job(
-        scheduled_expire_topups,
-        trigger=IntervalTrigger(minutes=15),
-        id='expire_pending_topups',
-        name='Истечение pending топапов',
-        replace_existing=True
-    )
-
     scheduler.start()
     logger.info("=" * 60)
-    logger.info("APScheduler запущен: синхронизация каждые 6 часов, очистка топапов каждые 15 минут")
+    logger.info("APScheduler запущен: синхронизация каждые 30 СЕКУНД (тестовый режим)")
     logger.info("=" * 60)
 
     # Сохраняем scheduler в bot_data для graceful shutdown
     application.bot_data['scheduler'] = scheduler
+
+    # Выставляем меню команд только для админов.
+    try:
+        from admin_commands import setup_admin_commands_menu
+        await setup_admin_commands_menu(application.bot)
+    except Exception as e:
+        logger.warning(f"Не удалось настроить меню админских команд: {e}")
 
 
 async def post_shutdown(application):
@@ -139,8 +100,10 @@ def main():
 
     # Импортируем и настраиваем обработчики
     from user_handlers import setup_user_handlers
+    from payment_handlers import setup_payment_handlers
     from admin_commands import setup_admin_handlers
     setup_user_handlers(application)
+    setup_payment_handlers(application)
     setup_admin_handlers(application)
 
     print("Бот запущен...")

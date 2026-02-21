@@ -256,3 +256,18 @@ def setup_payment_handlers(application):
 """
 
 # END TEMPORARY DISABLE BALANCE LOGIC
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def setup_payment_handlers(application):
+    """
+    Временная заглушка, пока legacy-модуль payment_handlers отключён.
+    Логика пополнения сейчас живёт в user_handlers.py.
+    """
+    logger.info(
+        "setup_payment_handlers: legacy payment_handlers отключён, "
+        "дополнительные хендлеры не зарегистрированы."
+    )

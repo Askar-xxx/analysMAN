@@ -225,9 +225,9 @@ async def _handle_topup_donation(topup, donation_id, amount_rub):
     )
 
     text = (
-        f"✅ <b>Алмазы зачислены!</b>\n\n"
-        f"💎 Зачислено: <b>+{received_rub} 💎</b> ({received_rub} {analyses_word})\n"
-        f"💠 У вас: <b>{new_balance} алмазов</b>\n\n"
+        f"✅ <b>Баланс пополнен!</b>\n\n"
+        f"💰 Зачислено: <b>+{received_rub} руб.</b> ({received_rub} {analyses_word})\n"
+        f"💳 Ваш баланс: <b>{new_balance} руб.</b>\n\n"
         "Выберите матч для покупки анализа!"
     )
 
@@ -236,14 +236,26 @@ async def _handle_topup_donation(topup, donation_id, amount_rub):
     bot = Bot(token=TOKEN)
 
     instruction_message_id = topup['instruction_message_id']
+    topup_keys = topup.keys() if hasattr(topup, 'keys') else []
+    return_match_id = topup['return_match_id'] if 'return_match_id' in topup_keys else None
+
+    keyboard_rows = []
+    if return_match_id:
+        keyboard_rows.append([
+            InlineKeyboardButton(
+                "🎯 Вернуться к матчу",
+                callback_data=f"return_to_match_{return_match_id}"
+            )
+        ])
+    keyboard_rows.append([
+        InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')
+    ])
+    keyboard = InlineKeyboardMarkup(keyboard_rows)
 
     # Редактируем сообщение с инструкцией (одно окно)
     edited = False
     if instruction_message_id:
         try:
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')
-            ]])
             await bot.edit_message_text(
                 chat_id=user_id,
                 message_id=instruction_message_id,
@@ -258,7 +270,12 @@ async def _handle_topup_donation(topup, donation_id, amount_rub):
     # Fallback: новое сообщение если редактирование не сработало
     if not edited:
         try:
-            await bot.send_message(chat_id=user_id, text=text, parse_mode='HTML')
+            await bot.send_message(
+                chat_id=user_id,
+                text=text,
+                parse_mode='HTML',
+                reply_markup=keyboard
+            )
         except Exception as e:
             logger.error(f"Ошибка отправки уведомления пользователю {user_id}: {e}")
 

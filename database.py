@@ -118,6 +118,8 @@ def init_db():
             created_at TEXT NOT NULL,
             expires_at TEXT NOT NULL,
             donation_event_id TEXT,
+            return_match_id INTEGER,
+            return_match_source TEXT,
             FOREIGN KEY (user_id) REFERENCES users (user_id)
         )
     ''')
@@ -133,6 +135,16 @@ def init_db():
             cursor.execute('ALTER TABLE balance_topups ADD COLUMN instruction_message_id INTEGER')
         except Exception as e:
             print(f"Не удалось добавить instruction_message_id в balance_topups: {e}")
+    if 'return_match_id' not in topups_columns:
+        try:
+            cursor.execute('ALTER TABLE balance_topups ADD COLUMN return_match_id INTEGER')
+        except Exception as e:
+            print(f"Не удалось добавить return_match_id в balance_topups: {e}")
+    if 'return_match_source' not in topups_columns:
+        try:
+            cursor.execute('ALTER TABLE balance_topups ADD COLUMN return_match_source TEXT')
+        except Exception as e:
+            print(f"Не удалось добавить return_match_source в balance_topups: {e}")
     # ПРОВЕРЯЕМ И ОБНОВЛЯЕМ СУЩЕСТВУЮЩУЮ ТАБЛИЦУ
     # Если таблица уже существует, добавляем недостающие поля
     cursor.execute("PRAGMA table_info(matches)")
@@ -511,10 +523,12 @@ def get_or_create_user(user_id, username=None):
     needs_commit = False
 
     if not user:
+        from config import ANALYSIS_PRICE_RUB
+        welcome_bonus = int(ANALYSIS_PRICE_RUB)
         cursor.execute('''
             INSERT INTO users (user_id, username, balance, total_analysis_bought)
-            VALUES (?, ?, 0, 0)
-        ''', (user_id, username))
+            VALUES (?, ?, ?, 0)
+        ''', (user_id, username, welcome_bonus))
         needs_commit = True
         cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
         user = cursor.fetchone()
@@ -685,6 +699,22 @@ def update_topup_instruction_message(token, message_id):
     cursor.execute(
         'UPDATE balance_topups SET instruction_message_id = ? WHERE token = ?',
         (message_id, token)
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_topup_return_target(token, match_id=None, match_source='browse'):
+    """Сохраняет цель возврата к матчу после пополнения (для автозачёта listener'ом)."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        '''
+        UPDATE balance_topups
+        SET return_match_id = ?, return_match_source = ?
+        WHERE token = ?
+        ''',
+        (match_id, match_source if match_id else None, token)
     )
     conn.commit()
     conn.close()

@@ -258,14 +258,21 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from keyboards import main_menu_keyboard
     user_id = update.effective_user.id
     username = update.effective_user.username
-    database.get_or_create_user(user_id, username)
+    user = database.get_or_create_user(user_id, username)
     balance = database.get_user_balance(user_id)
+    from config import ANALYSIS_PRICE_RUB
+    is_new = (user['total_analysis_bought'] == 0
+              and balance == int(ANALYSIS_PRICE_RUB))
+    bonus_line = (
+        f"\n🎁 *Вам начислено {int(ANALYSIS_PRICE_RUB)} 💎 — первый анализ бесплатно!*"
+        if is_new else ""
+    )
     welcome_text = f"""
 🎉 *Добро пожаловать в бот "Спортивная аналитика"!* 🎉
 
 Приветствую, {update.effective_user.mention_html()}! 👋
 
-💎 *У вас:* {balance} алмазов
+💎 *У вас:* {balance} 💎{bonus_line}
 
 Я ваш персональный помощник в мире спортивной аналитики и мероприятий.
 
