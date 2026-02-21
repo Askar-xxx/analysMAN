@@ -1261,7 +1261,7 @@ async def handle_check_balance_status(query, user_id, token):
         parse_mode='HTML'
     )
 
- 
+
 async def handle_support_menu(query):
     """Экран техподдержки из главного меню."""
     from config import SUPPORT_USERNAME
