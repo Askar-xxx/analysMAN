@@ -11,7 +11,10 @@ def main_menu_keyboard():
             InlineKeyboardButton("📊 Мои анализы", callback_data='my_analysis'),
             InlineKeyboardButton("💎 Приобрести алмазы", callback_data='deposit')
         ],
-        [InlineKeyboardButton("🎧 Техподдержка", callback_data='support')]
+        [
+            InlineKeyboardButton("⚙️ Как это работает", callback_data='how_it_works'),
+            InlineKeyboardButton("🎧 Техподдержка", callback_data='support')
+        ]
     ]
     return InlineKeyboardMarkup(keyboard)
 

@@ -4,7 +4,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
 import database
 import keyboards
-from utils import safe_edit_message, send_main_menu, format_match_info
+from utils import safe_edit_message, send_main_menu, format_match_info, decline_almazy
 from datetime import datetime, timedelta
 
 
@@ -93,7 +93,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ):
         await _cleanup_topup_step_images(query, context)
     # Обработка различных callback_data
-    if query.data == 'back':
+    if query.data in ('back', 'go_back'):
         # Возвращаемся назад по истории
         await go_back(update, context)
         return
@@ -113,6 +113,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Сохраняем предыдущее меню
         context.user_data['menu_history'].append(MENU_MAIN)
         await handle_support(query)
+    elif query.data == 'how_it_works':
+        # Сохраняем предыдущее меню
+        context.user_data['menu_history'].append(MENU_MAIN)
+        await handle_how_it_works(query)
     elif query.data.startswith('sport_'):
         sport = query.data.split('_')[1]
         # Сохраняем предыдущее меню
@@ -240,15 +244,28 @@ async def handle_sport_selection(query, context, sport):
         await safe_edit_message(
             query,
             "Этот вид спорта пока не поддерживается.",
-            keyboards.main_menu_keyboard()
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data='go_back')]
+            ])
+        )
+        return
+    if sport in ['basketball', 'hockey']:
+        await safe_edit_message(
+            query,
+            "🚧 Данный вид спорта находится в разработке.",
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data='go_back')]
+            ])
         )
         return
     dates = database.get_available_dates_with_matches(sport)
     if not dates:
         await safe_edit_message(
             query,
-            f"На ближайшую неделю матчей по {sport} нет.",
-            keyboards.main_menu_keyboard()
+            "На ближайшую неделю матчей по футболу нет.",
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data='go_back')]
+            ])
         )
         return
     # Сохраняем текущий спорт
@@ -435,15 +452,15 @@ async def handle_match_detail(query, user_id, match_id, match_source='browse'):
         text += "\n\n✅ Вы уже приобрели этот анализ"
     elif user_balance >= price:
         text += (
-            f"\n\n💎 У вас: <b>{user_balance} 💎</b> | "
-            f"Стоимость: <b>{price} 💎</b>\n"
+            f"\n\n💎 У вас: <b>{user_balance} {decline_almazy(user_balance)}</b> | "
+            f"Стоимость: <b>{price} {decline_almazy(price)}</b>\n"
             "Нажмите «Купить анализ» для мгновенной покупки с баланса."
         )
     else:
         text += (
-            f"\n\n💎 У вас: <b>{user_balance} 💎</b> | "
-            f"Стоимость: <b>{price} 💎</b>\n"
-            "Недостаточно 💎. Пополните баланс для покупки анализа."
+            f"\n\n💎 У вас: <b>{user_balance} {decline_almazy(user_balance)}</b> | "
+            f"Стоимость: <b>{price} {decline_almazy(price)}</b>\n"
+            "Недостаточно алмазов. Пополните баланс для покупки анализа."
         )
 
     keyboard = keyboards.match_detail_keyboard(
@@ -485,9 +502,9 @@ async def handle_purchase(query, user_id):
     user_balance = database.get_user_balance(user_id)
     if user_balance < price:
         text = (
-            f"❌ <b>Недостаточно 💎</b>\n\n"
-            f"💎 У вас: <b>{user_balance} 💎</b>\n"
-            f"💵 Стоимость анализа: <b>{price} 💎</b>\n\n"
+            f"❌ <b>Недостаточно алмазов</b>\n\n"
+            f"💎 У вас: <b>{user_balance} {decline_almazy(user_balance)}</b>\n"
+            f"💵 Стоимость анализа: <b>{price} {decline_almazy(price)}</b>\n\n"
             "Пополните баланс и вернитесь к покупке."
         )
         keyboard = [
@@ -960,7 +977,7 @@ async def handle_check_topup(query, user_id, token, context):
         await safe_edit_message(
             query,
             f"✅ <b>Оплата уже зачтена!</b>\n\n"
-            f"💎 У вас: <b>{balance} 💎</b>",
+            f"💎 У вас: <b>{balance} {decline_almazy(balance)}</b>",
             _build_post_topup_keyboard(context),
             parse_mode='HTML'
         )
@@ -1047,9 +1064,9 @@ async def handle_check_topup(query, user_id, token, context):
         await safe_edit_message(
             query,
             f"❌ <b>Недостаточная сумма</b>\n\n"
-            f"Получено: <b>{received_rub:.2f} 💎</b>\n"
-            f"Требуется: <b>{amount_rub} 💎</b> "
-            f"(с учётом комиссии: от {min_acceptable / 100:.2f} 💎)\n\n"
+            f"Получено: <b>{received_rub:.2f} {decline_almazy(received_rub)}</b>\n"
+            f"Требуется: <b>{amount_rub} {decline_almazy(amount_rub)}</b> "
+            f"(с учётом комиссии: от {min_acceptable / 100:.2f} {decline_almazy(min_acceptable / 100)})\n\n"
             "Пожалуйста, отправьте донат на полную сумму с тем же кодом.",
             InlineKeyboardMarkup(keyboard),
             parse_mode='HTML'
@@ -1077,8 +1094,8 @@ async def handle_check_topup(query, user_id, token, context):
     await safe_edit_message(
         query,
         f"✅ <b>Баланс пополнен!</b>\n\n"
-        f"💰 Пополнено: <b>+{amount_rub} 💎</b> ({amount_rub} {analyses_word})\n"
-        f"💎 У вас: <b>{new_balance} 💎</b>\n\n"
+        f"💰 Пополнено: <b>+{amount_rub} {decline_almazy(amount_rub)}</b> ({amount_rub} {analyses_word})\n"
+        f"💎 У вас: <b>{new_balance} {decline_almazy(new_balance)}</b>\n\n"
         "Выберите матч для покупки анализа!",
         _build_post_topup_keyboard(context),
         parse_mode='HTML'
@@ -1113,7 +1130,7 @@ async def handle_find_topup_by_amount(query, user_id, token, context):
         await safe_edit_message(
             query,
             f"✅ <b>Оплата уже зачтена!</b>\n\n"
-            f"💎 У вас: <b>{balance} 💎</b>",
+            f"💎 У вас: <b>{balance} {decline_almazy(balance)}</b>",
             _build_post_topup_keyboard(context),
             parse_mode='HTML'
         )
@@ -1267,8 +1284,8 @@ async def handle_find_topup_by_amount(query, user_id, token, context):
     await safe_edit_message(
         query,
         f"✅ <b>Баланс пополнен!</b>\n\n"
-        f"💰 Пополнено: <b>+{received_rub} 💎</b> ({received_rub} {analyses_word})\n"
-        f"💎 У вас: <b>{new_balance} 💎</b>\n\n"
+        f"💰 Пополнено: <b>+{received_rub} {decline_almazy(received_rub)}</b> ({received_rub} {analyses_word})\n"
+        f"💎 У вас: <b>{new_balance} {decline_almazy(new_balance)}</b>\n\n"
         "Донат найден и успешно засчитан!\n"
         "В следующий раз указывайте код в комментарии к донату.",
         _build_post_topup_keyboard(context),
@@ -1290,17 +1307,20 @@ async def _show_deposit_payment_screen(query, context, user_id, token):
         )
         return
 
+    from config import ANALYSIS_PRICE_RUB
     balance = database.get_user_balance(user_id)
+    price = int(ANALYSIS_PRICE_RUB)
     text = (
         "💰 <b>ПОПОЛНЕНИЕ БАЛАНСА</b>\n\n"
-        f"💎 У вас: <b>{balance} 💎</b>\n\n"
+        f"💎 У вас: <b>{balance} {decline_almazy(balance)}</b>\n\n"
         "📋 <b>Инструкция:</b>\n"
         f"1️⃣ Скопируйте код: <code>{token}</code>\n"
         "2️⃣ Нажмите «Перейти к оплате»\n"
         "3️⃣ Отправьте донат на любую сумму в рублях\n"
         "4️⃣ ‼️ Вставьте код в поле <b>«Комментарий»</b>\n"
         "5️⃣ Нажмите «Проверить баланс»\n\n"
-        "✅ 1 руб. = 1 💎 = 1 анализ"
+        f"✅ 1 анализ = {price} {decline_almazy(price)}\n"
+        "💱 1 руб. = 1 алмаз"
     )
     keyboard = [
         [InlineKeyboardButton("✅ Перейти к оплате", url=DA_PROFILE_URL)],
@@ -1392,12 +1412,12 @@ async def handle_deposit_menu(query, context, user_id):
 
     text = (
         "💰 <b>ПОПОЛНЕНИЕ БАЛАНСА</b>\n\n"
-        f"💎 У вас: <b>{balance} 💎</b>\n\n"
+        f"💎 У вас: <b>{balance} {decline_almazy(balance)}</b>\n\n"
         "━━━━━━━━━━━━━━━━━\n\n"
         "⚠️ <b>ШАГ 1: СКОПИРУЙТЕ ВАШ КОД</b>\n"
         "⚠️ <b>ШАГ 2: ВСТАВЬТЕ В КОММЕНТАРИИ К ДОНАТУ</b>\n\n"
         f"{top_pointer_line}\n{code_lines}\n{bottom_pointer_line}\n\n"
-        "<b>⚠️НЕ СКОПИРОВАЛ КОД - 💎 НЕ ЗАЧИСЛЯТСЯ⚠️</b>\n"
+        "<b>⚠️ НЕ СКОПИРОВАЛ КОД — АЛМАЗЫ НЕ ЗАЧИСЛЯТСЯ ⚠️</b>\n"
         "<i>Код действует 30 минут.</i>\n\n"
         "После копирования нажмите кнопку ниже."
     )
@@ -1412,6 +1432,47 @@ async def handle_deposit_menu(query, context, user_id):
     )
 
 
+async def handle_how_it_works(query):
+    """Экран «Как это работает» — информационная брошюра."""
+    from config import ANALYSIS_PRICE_RUB
+
+    price = int(ANALYSIS_PRICE_RUB)
+    text = (
+        "⚙️ <b>Как это работает</b>\n\n"
+
+        "📌 <b>Что это такое</b>\n"
+        "AI-анализ футбольных матчей в формате карточки: "
+        "форма команд, личные встречи, статистика, турнирное положение.\n"
+        "Без прогнозов, коэффициентов и советов по ставкам — "
+        "только чистая аналитика.\n\n"
+
+        "🏆 <b>Доступные турниры</b>\n"
+        "• Английская Премьер-лига\n"
+        "• Ла Лига\n"
+        "• Бундеслига\n"
+        "• Лига чемпионов УЕФА\n"
+        "• Лига Европы УЕФА\n\n"
+
+        "⏳ <b>Расписание</b>\n"
+        "Матчи появляются за 3 дня до начала.\n"
+        "Время матчей указано по МСК.\n\n"
+
+        "💎 <b>Оплата</b>\n"
+        f"1 анализ = {price} {decline_almazy(price)}\n"
+        "1 руб. = 1 алмаз\n"
+        "Пополнение через DonationAlerts: "
+        "отправляешь донат с кодом в комментарии — алмазы зачисляются.\n\n"
+
+        "📂 <b>Мои анализы</b>\n"
+        "Купленные анализы хранятся в разделе «Мои анализы» "
+        "в течение 1 дня после окончания матча."
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Назад", callback_data='go_back')]
+    ])
+    await safe_edit_message(query, text, keyboard, parse_mode='HTML')
+
+
 async def handle_support(query):
     """Экран техподдержки."""
     from config import SUPPORT_USERNAME
@@ -1420,18 +1481,16 @@ async def handle_support(query):
     if username:
         support_text = f"@{username}"
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(
-                "✍️ Написать в поддержку",
-                url=f"https://t.me/{username}"
-            )],
-            [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
+            [InlineKeyboardButton("⬅️ Назад", callback_data='go_back')]
         ])
         text = (
             "🎧 <b>Техподдержка</b>\n\n"
             f"Если возникли вопросы или проблемы, напишите в {support_text}."
         )
     else:
-        keyboard = keyboards.back_to_main_keyboard()
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Назад", callback_data='go_back')]
+        ])
         text = (
             "🎧 <b>Техподдержка</b>\n\n"
             "Контакт поддержки пока не настроен.\n"
@@ -1479,8 +1538,8 @@ async def handle_check_balance_status(query, user_id, token, context):
         await safe_edit_message(
             query,
             f"✅ <b>Баланс пополнен!</b>\n\n"
-            f"💰 Зачислено: <b>+{credited} 💎</b> ({credited} {analyses_word})\n"
-            f"💎 У вас: <b>{balance} 💎</b>\n\n"
+            f"💰 Зачислено: <b>+{credited} {decline_almazy(credited)}</b> ({credited} {analyses_word})\n"
+            f"💎 У вас: <b>{balance} {decline_almazy(balance)}</b>\n\n"
             "Выберите матч для приобретения анализа!",
             _build_post_topup_keyboard(context),
             parse_mode='HTML'

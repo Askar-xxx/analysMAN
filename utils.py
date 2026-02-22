@@ -7,6 +7,20 @@ import database
 
 logger = logging.getLogger(__name__)
 
+
+def decline_almazy(n):
+    """Склонение слова 'алмаз' по числу: 1 алмаз, 2 алмаза, 5 алмазов."""
+    n = int(abs(float(n)))
+    if 11 <= n % 100 <= 14:
+        return "алмазов"
+    rem = n % 10
+    if rem == 1:
+        return "алмаз"
+    elif 2 <= rem <= 4:
+        return "алмаза"
+    return "алмазов"
+
+
 # Запрещённые корни слов (регистронезависимо)
 BANNED_ROOTS = re.compile(
     r'\b\S*(?:коэффициент|ставк|прогноз)\S*\b',
@@ -264,7 +278,7 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_new = (user['total_analysis_bought'] == 0
               and balance == int(ANALYSIS_PRICE_RUB))
     bonus_line = (
-        f"\n🎁 *Вам начислено {int(ANALYSIS_PRICE_RUB)} 💎 — первый анализ бесплатно!*"
+        f"\n🎁 *Вам начислено {int(ANALYSIS_PRICE_RUB)} {decline_almazy(int(ANALYSIS_PRICE_RUB))} — первый анализ бесплатно!*"
         if is_new else ""
     )
     welcome_text = f"""
@@ -272,7 +286,7 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 Приветствую, {update.effective_user.mention_html()}! 👋
 
-💎 *У вас:* {balance} 💎{bonus_line}
+💎 *У вас:* {balance} {decline_almazy(balance)}{bonus_line}
 
 Я ваш персональный помощник в мире спортивной аналитики и мероприятий.
 
