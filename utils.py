@@ -277,8 +277,9 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from config import ANALYSIS_PRICE_RUB
     is_new = (user['total_analysis_bought'] == 0
               and balance == int(ANALYSIS_PRICE_RUB))
+    bonus_amount = int(ANALYSIS_PRICE_RUB)
     bonus_line = (
-        f"\n🎁 *Вам начислено {int(ANALYSIS_PRICE_RUB)} {decline_almazy(int(ANALYSIS_PRICE_RUB))} — первый анализ бесплатно!*"
+        f"\n🎁 *Вам начислено {bonus_amount} {decline_almazy(bonus_amount)} — первый анализ бесплатно!*"
         if is_new else ""
     )
     welcome_text = f"""
