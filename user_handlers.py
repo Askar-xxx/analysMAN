@@ -4,7 +4,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
 import database
 import keyboards
-from utils import safe_edit_message, send_main_menu, format_match_info, decline_almazy
+from utils import safe_edit_message, send_main_menu, format_match_info
 from datetime import datetime, timedelta
 
 
@@ -210,13 +210,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_category_sports(query):
     """Обработка выбора категории спорта"""
     sports_text = """
-🎯 *ВЫБЕРИТЕ ВИД СПОРТА*
+🎯 <b>ВЫБЕРИТЕ ВИД СПОРТА</b>
 
 Выберите интересующий вас вид спорта для просмотра доступных матчей и анализов:
 
-⚽ *Футбол* - Европейские лиги, Кубки, международные матчи
-🏀 *Баскетбол* - НБА, Евролига, национальные чемпионаты
-🏒 *Хоккей* - КХЛ, НХЛ, международные турниры
+⚽ <b>Футбол</b> - Европейские лиги, Кубки, международные матчи
+🏀 <b>Баскетбол</b> - НБА, Евролига, национальные чемпионаты
+🏒 <b>Хоккей</b> - КХЛ, НХЛ, международные турниры
 
 👇 Выберите вид спорта ниже:
 """
@@ -322,10 +322,10 @@ async def handle_date_selection(query, context, sport, date_str):
     sport_names = {'football': '⚽ Футбол', 'basketball': '🏀 Баскетбол',
                    'hockey': '🏒 Хоккей'}
     sport_display = sport_names.get(sport, sport)
-    text = f"{sport_display} *Матчи на {date_label}:*\n\n"
+    text = f"{sport_display} <b>Матчи на {date_label}:</b>\n\n"
     for match in matches:
         text += f"• {match['team1']} vs {match['team2']} в {match['match_time']}\n"
-    text += "\n👇 *Выберите матч для просмотра анализа:*"
+    text += "\n👇 <b>Выберите матч для просмотра анализа:</b>"
     keyboard = []
     for match in matches:
         button_text = f"{match['team1']} vs {match['team2']} ({match['match_time']})"
@@ -452,15 +452,15 @@ async def handle_match_detail(query, user_id, match_id, match_source='browse'):
         text += "\n\n✅ Вы уже приобрели этот анализ"
     elif user_balance >= price:
         text += (
-            f"\n\n💎 У вас: <b>{user_balance} {decline_almazy(user_balance)}</b> | "
-            f"Стоимость: <b>{price} {decline_almazy(price)}</b>\n"
+            f"\n\nУ вас: <b>{user_balance}</b> 💎 | "
+            f"Стоимость: <b>{price}</b> 💎\n"
             "Нажмите «Купить анализ» для мгновенной покупки с баланса."
         )
     else:
         text += (
-            f"\n\n💎 У вас: <b>{user_balance} {decline_almazy(user_balance)}</b> | "
-            f"Стоимость: <b>{price} {decline_almazy(price)}</b>\n"
-            "Недостаточно алмазов. Пополните баланс для покупки анализа."
+            f"\n\nУ вас: <b>{user_balance}</b> 💎 | "
+            f"Стоимость: <b>{price}</b> 💎\n"
+            "Недостаточно 💎. Пополните баланс для покупки анализа."
         )
 
     keyboard = keyboards.match_detail_keyboard(
@@ -502,9 +502,9 @@ async def handle_purchase(query, user_id):
     user_balance = database.get_user_balance(user_id)
     if user_balance < price:
         text = (
-            f"❌ <b>Недостаточно алмазов</b>\n\n"
-            f"💎 У вас: <b>{user_balance} {decline_almazy(user_balance)}</b>\n"
-            f"💵 Стоимость анализа: <b>{price} {decline_almazy(price)}</b>\n\n"
+            f"❌ <b>Недостаточно 💎</b>\n\n"
+            f"У вас: <b>{user_balance}</b> 💎\n"
+            f"💵 Стоимость анализа: <b>{price}</b> 💎\n\n"
             "Пополните баланс и вернитесь к покупке."
         )
         keyboard = [
@@ -746,7 +746,7 @@ async def handle_my_analysis(update: Update, query, user_id):
     # Получаем все купленные матчи
     purchased_matches = database.get_purchased_matches_by_user(user_id)
     if not purchased_matches:
-        text = "📭 *У вас пока нет купленных анализов*\n\n"
+        text = "📭 <b>У вас пока нет купленных анализов</b>\n\n"
         text += "Выберите спорт в главном меню, чтобы приобрести анализы матчей."
         keyboard = [
             [InlineKeyboardButton("◀️ Назад", callback_data='back')],
@@ -764,9 +764,9 @@ async def handle_my_analysis(update: Update, query, user_id):
     for match in purchased_matches:
         sport = match['sport']
         sports_with_counts[sport] = sports_with_counts.get(sport, 0) + 1
-    text = "📊 *ВАШИ КУПЛЕННЫЕ АНАЛИЗЫ*\n\n"
+    text = "📊 <b>ВАШИ КУПЛЕННЫЕ АНАЛИЗЫ</b>\n\n"
     text += f"Всего анализов: {len(purchased_matches)}\n\n"
-    text += "👇 *Выберите вид спорта для просмотра:*\n"
+    text += "👇 <b>Выберите вид спорта для просмотра:</b>\n"
     await safe_edit_message(
         query,
         text,
@@ -842,10 +842,10 @@ async def handle_purchased_date(query, user_id, sport, date_str):
         date_label = "🕐 Завтра"
     else:
         date_label = date_obj.strftime("%d.%m.%Y")
-    text = f"{sport_display} *Матчи на {date_label}:*\n\n"
+    text = f"{sport_display} <b>Матчи на {date_label}:</b>\n\n"
     for match in date_matches:
         text += f"• {match['team1']} vs {match['team2']} ({match['match_time']})\n"
-    text += "\n👇 *Выберите матч для просмотра анализа:*"
+    text += "\n👇 <b>Выберите матч для просмотра анализа:</b>"
     # Создаем клавиатуру с матчами
     keyboard = []
     for match in date_matches:
@@ -977,7 +977,7 @@ async def handle_check_topup(query, user_id, token, context):
         await safe_edit_message(
             query,
             f"✅ <b>Оплата уже зачтена!</b>\n\n"
-            f"💎 У вас: <b>{balance} {decline_almazy(balance)}</b>",
+            f"У вас: <b>{balance}</b> 💎",
             _build_post_topup_keyboard(context),
             parse_mode='HTML'
         )
@@ -1064,9 +1064,9 @@ async def handle_check_topup(query, user_id, token, context):
         await safe_edit_message(
             query,
             f"❌ <b>Недостаточная сумма</b>\n\n"
-            f"Получено: <b>{received_rub:.2f} {decline_almazy(received_rub)}</b>\n"
-            f"Требуется: <b>{amount_rub} {decline_almazy(amount_rub)}</b> "
-            f"(с учётом комиссии: от {min_acceptable / 100:.2f} {decline_almazy(min_acceptable / 100)})\n\n"
+            f"Получено: <b>{received_rub:.2f}</b> 💎\n"
+            f"Требуется: <b>{amount_rub}</b> 💎 "
+            f"(с учётом комиссии: от {min_acceptable / 100:.2f} 💎)\n\n"
             "Пожалуйста, отправьте донат на полную сумму с тем же кодом.",
             InlineKeyboardMarkup(keyboard),
             parse_mode='HTML'
@@ -1094,8 +1094,8 @@ async def handle_check_topup(query, user_id, token, context):
     await safe_edit_message(
         query,
         f"✅ <b>Баланс пополнен!</b>\n\n"
-        f"💰 Пополнено: <b>+{amount_rub} {decline_almazy(amount_rub)}</b> ({amount_rub} {analyses_word})\n"
-        f"💎 У вас: <b>{new_balance} {decline_almazy(new_balance)}</b>\n\n"
+        f"💰 Пополнено: <b>+{amount_rub}</b> 💎 ({amount_rub} {analyses_word})\n"
+        f"У вас: <b>{new_balance}</b> 💎\n\n"
         "Выберите матч для покупки анализа!",
         _build_post_topup_keyboard(context),
         parse_mode='HTML'
@@ -1130,7 +1130,7 @@ async def handle_find_topup_by_amount(query, user_id, token, context):
         await safe_edit_message(
             query,
             f"✅ <b>Оплата уже зачтена!</b>\n\n"
-            f"💎 У вас: <b>{balance} {decline_almazy(balance)}</b>",
+            f"У вас: <b>{balance}</b> 💎",
             _build_post_topup_keyboard(context),
             parse_mode='HTML'
         )
@@ -1284,8 +1284,8 @@ async def handle_find_topup_by_amount(query, user_id, token, context):
     await safe_edit_message(
         query,
         f"✅ <b>Баланс пополнен!</b>\n\n"
-        f"💰 Пополнено: <b>+{received_rub} {decline_almazy(received_rub)}</b> ({received_rub} {analyses_word})\n"
-        f"💎 У вас: <b>{new_balance} {decline_almazy(new_balance)}</b>\n\n"
+        f"💰 Пополнено: <b>+{received_rub}</b> 💎 ({received_rub} {analyses_word})\n"
+        f"У вас: <b>{new_balance}</b> 💎\n\n"
         "Донат найден и успешно засчитан!\n"
         "В следующий раз указывайте код в комментарии к донату.",
         _build_post_topup_keyboard(context),
@@ -1312,15 +1312,15 @@ async def _show_deposit_payment_screen(query, context, user_id, token):
     price = int(ANALYSIS_PRICE_RUB)
     text = (
         "💰 <b>ПОПОЛНЕНИЕ БАЛАНСА</b>\n\n"
-        f"💎 У вас: <b>{balance} {decline_almazy(balance)}</b>\n\n"
+        f"У вас: <b>{balance}</b> 💎\n\n"
         "📋 <b>Инструкция:</b>\n"
         f"1️⃣ Скопируйте код: <code>{token}</code>\n"
         "2️⃣ Нажмите «Перейти к оплате»\n"
         "3️⃣ Отправьте донат на любую сумму в рублях\n"
         "4️⃣ ‼️ Вставьте код в поле <b>«Комментарий»</b>\n"
         "5️⃣ Нажмите «Проверить баланс»\n\n"
-        f"✅ 1 анализ = {price} {decline_almazy(price)}\n"
-        "💱 1 руб. = 1 алмаз"
+        f"✅ 1 анализ = {price} 💎\n"
+        "💱 1 руб. = 1 💎"
     )
     keyboard = [
         [InlineKeyboardButton("✅ Перейти к оплате", url=DA_PROFILE_URL)],
@@ -1412,12 +1412,12 @@ async def handle_deposit_menu(query, context, user_id):
 
     text = (
         "💰 <b>ПОПОЛНЕНИЕ БАЛАНСА</b>\n\n"
-        f"💎 У вас: <b>{balance} {decline_almazy(balance)}</b>\n\n"
+        f"У вас: <b>{balance}</b> 💎\n\n"
         "━━━━━━━━━━━━━━━━━\n\n"
         "⚠️ <b>ШАГ 1: СКОПИРУЙТЕ ВАШ КОД</b>\n"
         "⚠️ <b>ШАГ 2: ВСТАВЬТЕ В КОММЕНТАРИИ К ДОНАТУ</b>\n\n"
         f"{top_pointer_line}\n{code_lines}\n{bottom_pointer_line}\n\n"
-        "<b>⚠️ НЕ СКОПИРОВАЛ КОД — АЛМАЗЫ НЕ ЗАЧИСЛЯТСЯ ⚠️</b>\n"
+        "<b>⚠️ НЕ СКОПИРОВАЛ КОД — 💎 НЕ ЗАЧИСЛЯТСЯ ⚠️</b>\n"
         "<i>Код действует 30 минут.</i>\n\n"
         "После копирования нажмите кнопку ниже."
     )
@@ -1458,10 +1458,10 @@ async def handle_how_it_works(query):
         "Время матчей указано по МСК.\n\n"
 
         "💎 <b>Оплата</b>\n"
-        f"1 анализ = {price} {decline_almazy(price)}\n"
-        "1 руб. = 1 алмаз\n"
+        f"1 анализ = {price} 💎\n"
+        "1 руб. = 1 💎\n"
         "Пополнение через DonationAlerts: "
-        "отправляешь донат с кодом в комментарии — алмазы зачисляются.\n\n"
+        "отправляешь донат с кодом в комментарии — 💎 зачисляются.\n\n"
 
         "📂 <b>Мои анализы</b>\n"
         "Купленные анализы хранятся в разделе «Мои анализы» "
@@ -1538,8 +1538,8 @@ async def handle_check_balance_status(query, user_id, token, context):
         await safe_edit_message(
             query,
             f"✅ <b>Баланс пополнен!</b>\n\n"
-            f"💰 Зачислено: <b>+{credited} {decline_almazy(credited)}</b> ({credited} {analyses_word})\n"
-            f"💎 У вас: <b>{balance} {decline_almazy(balance)}</b>\n\n"
+            f"💰 Зачислено: <b>+{credited}</b> 💎 ({credited} {analyses_word})\n"
+            f"У вас: <b>{balance}</b> 💎\n\n"
             "Выберите матч для приобретения анализа!",
             _build_post_topup_keyboard(context),
             parse_mode='HTML'

@@ -117,7 +117,7 @@ async def _process_topup(topup, amount_kopeks, donation_id):
                 await bot.send_message(
                     chat_id=user_id,
                     text=(
-                        f"❌ <b>Недостаточная сумма для зачисления алмазов</b>\n\n"
+                        f"❌ <b>Недостаточная сумма для зачисления 💎</b>\n\n"
                         f"Получено: <b>{received_rub:.2f} руб.</b>\n"
                         f"Требуется не менее: "
                         f"<b>{min_acceptable / 100:.2f} руб.</b>\n\n"

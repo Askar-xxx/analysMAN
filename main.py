@@ -47,11 +47,10 @@ async def post_init(application):
     # Настройка APScheduler для периодической синхронизации
     scheduler = AsyncIOScheduler()
 
-    # Периодическая синхронизация каждые 30 секунд (для теста)
-    # TODO: В продакшене изменить на hours=6
+    # Периодическая синхронизация каждые 3 часа
     scheduler.add_job(
         scheduled_sync_matches,
-        trigger=IntervalTrigger(seconds=30),
+        trigger=IntervalTrigger(hours=3),
         id='sync_matches',
         name='Синхронизация матчей TheSportsDB',
         replace_existing=True
@@ -66,7 +65,7 @@ async def post_init(application):
 
     scheduler.start()
     logger.info("=" * 60)
-    logger.info("APScheduler запущен: синхронизация каждые 30 СЕКУНД (тестовый режим)")
+    logger.info("APScheduler запущен: синхронизация каждые 3 часа")
     logger.info("=" * 60)
 
     # Сохраняем scheduler в bot_data для graceful shutdown

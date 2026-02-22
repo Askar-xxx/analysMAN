@@ -9,7 +9,7 @@ def main_menu_keyboard():
                               callback_data='category_sports')],
         [
             InlineKeyboardButton("📊 Мои анализы", callback_data='my_analysis'),
-            InlineKeyboardButton("💎 Приобрести алмазы", callback_data='deposit')
+            InlineKeyboardButton("Приобрести 💎", callback_data='deposit')
         ],
         [
             InlineKeyboardButton("⚙️ Как это работает", callback_data='how_it_works'),
@@ -101,7 +101,7 @@ def match_detail_keyboard(match_id, has_purchased, user_balance=0, price=1):
         ]
     else:
         keyboard = [
-            [InlineKeyboardButton("💎 Приобрести алмазы",
+            [InlineKeyboardButton("Приобрести 💎",
                                   callback_data='deposit')],
             [InlineKeyboardButton("◀️ Назад", callback_data='back')]
         ]

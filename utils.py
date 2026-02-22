@@ -8,19 +8,6 @@ import database
 logger = logging.getLogger(__name__)
 
 
-def decline_almazy(n):
-    """Склонение слова 'алмаз' по числу: 1 алмаз, 2 алмаза, 5 алмазов."""
-    n = int(abs(float(n)))
-    if 11 <= n % 100 <= 14:
-        return "алмазов"
-    rem = n % 10
-    if rem == 1:
-        return "алмаз"
-    elif 2 <= rem <= 4:
-        return "алмаза"
-    return "алмазов"
-
-
 # Запрещённые корни слов (регистронезависимо)
 BANNED_ROOTS = re.compile(
     r'\b\S*(?:коэффициент|ставк|прогноз)\S*\b',
@@ -268,7 +255,7 @@ async def safe_edit_message(query, text, reply_markup=None, parse_mode='HTML'):
 
 
 async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправка главного меню с количеством алмазов"""
+    """Отправка главного меню с балансом 💎"""
     from keyboards import main_menu_keyboard
     user_id = update.effective_user.id
     username = update.effective_user.username
@@ -279,19 +266,19 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
               and balance == int(ANALYSIS_PRICE_RUB))
     bonus_amount = int(ANALYSIS_PRICE_RUB)
     bonus_line = (
-        f"\n🎁 *Вам начислено {bonus_amount} {decline_almazy(bonus_amount)} — первый анализ бесплатно!*"
+        f"\n🎁 <b>Вам начислено {bonus_amount} 💎 — первый анализ бесплатно!</b>"
         if is_new else ""
     )
     welcome_text = f"""
-🎉 *Добро пожаловать в бот "Спортивная аналитика"!* 🎉
+🎉 <b>Добро пожаловать в бот "Спортивная аналитика"!</b> 🎉
 
 Приветствую, {update.effective_user.mention_html()}! 👋
 
-💎 *У вас:* {balance} {decline_almazy(balance)}{bonus_line}
+<b>У вас:</b> {balance} 💎{bonus_line}
 
 Я ваш персональный помощник в мире спортивной аналитики и мероприятий.
 
-👇 *Готовы начать? Выберите действие ниже:*
+👇 <b>Готовы начать? Выберите действие ниже:</b>
 """
     if hasattr(update, 'callback_query') and update.callback_query:
         # safe_edit_message теперь автоматически обрабатывает случай с фото
@@ -313,9 +300,9 @@ def format_match_info(match, include_analysis=False):
     sport_emoji = {'football': '⚽',
                    'basketball': '🏀',
                    'hockey': '🏒'}.get(match['sport'], '🎯')
-    text = f"{sport_emoji} *Матч:* {match['team1']} vs {match['team2']}\n"
-    text += f"📅 *Дата:* {match['match_date']}\n"
-    text += f"⏰ *Время:* {match['match_time']}\n"
+    text = f"{sport_emoji} <b>Матч:</b> {match['team1']} vs {match['team2']}\n"
+    text += f"📅 <b>Дата:</b> {match['match_date']}\n"
+    text += f"⏰ <b>Время:</b> {match['match_time']}\n"
     if include_analysis and match['analysis_text']:
-        text += f"\n📊 *Анализ:*\n{match['analysis_text']}\n"
+        text += f"\n📊 <b>Анализ:</b>\n{match['analysis_text']}\n"
     return text
