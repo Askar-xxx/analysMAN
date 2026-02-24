@@ -3,9 +3,25 @@
 для последующего рендеринга в PNG таблицу.
 """
 import logging
+import re
 from typing import List, Set
 
 logger = logging.getLogger(__name__)
+EMPTY_ROW_MARKERS = {
+    "нет данных",
+    "составы будут доступны после матча",
+    "недостаточно данных",
+    "недостаточно данных по составам",
+}
+CUP_NAME_MARKERS = (
+    "champions league",
+    "europa league",
+    "conference league",
+    "лига чемпионов",
+    "лига европы",
+    "лига конференций",
+)
+DATA_LIMITED_BADGE = "[Данные ограничены]"
 
 
 def extract_tournament_position(enriched_data: dict, team_name: str) -> str:
@@ -40,7 +56,7 @@ def extract_tournament_position(enriched_data: dict, team_name: str) -> str:
 
             return f"#{rank} место{zone}, {points} очков после {played} матчей"
 
-    return "Нет данных"
+    return ""
 
 
 def extract_current_form(enriched_data: dict, team_name: str, is_home: bool) -> str:
@@ -59,7 +75,7 @@ def extract_current_form(enriched_data: dict, team_name: str, is_home: bool) -> 
     form_matches = enriched_data.get(form_key, [])
 
     if not form_matches:
-        return "Нет данных"
+        return ""
 
     # Формируем строку формы W/D/L
     form_str = ''
@@ -95,13 +111,13 @@ def extract_home_away_form(enriched_data: dict, team_name: str, is_home: bool) -
     Извлекает форму дома/на выезде из enriched_data.
 
     Returns:
-        Строка формата "Сильная дома: 12 очков в 6 матчах (4В,0Н,2П)"
+        Строка формата "Сильная дома: 12 очков в 6 матчах (4W,0D,2L)"
     """
     form_key = 'team1_form' if is_home else 'team2_form'
     form_matches = enriched_data.get(form_key, [])
 
     if not form_matches:
-        return "Нет данных"
+        return ""
 
     # Фильтруем только домашние/выездные матчи
     filtered = []
@@ -112,7 +128,7 @@ def extract_home_away_form(enriched_data: dict, team_name: str, is_home: bool) -
             filtered.append(m)
 
     if not filtered:
-        return "Нет данных"
+        return ""
 
     # Считаем статистику
     wins = 0
@@ -152,7 +168,7 @@ def extract_home_away_form(enriched_data: dict, team_name: str, is_home: bool) -
 
     location = "дома" if is_home else "на выезде"
 
-    return f"{quality} {location}: {points} очков в {total} матчах ({wins}В,{draws}Н,{losses}П)"
+    return f"{quality} {location}: {points} очков в {total} матчах ({wins}W,{draws}D,{losses}L)"
 
 
 def extract_h2h_history(enriched_data: dict) -> List[str]:
@@ -166,14 +182,17 @@ def extract_h2h_history(enriched_data: dict) -> List[str]:
     h2h_matches = enriched_data.get('h2h', [])
 
     if not h2h_matches:
-        return ["Нет данных"]
+        return []
 
     result = []
 
     # Проверяем флаг: матчи из текущего сезона или fallback
     is_current_season = enriched_data.get('h2h_is_current_season', True)
 
-    if not is_current_season:
+    if is_current_season and len(h2h_matches) == 1:
+        result.append("В текущем сезоне пока только 1 очная встреча:")
+        result.append("")  # Пустая строка для отступа
+    elif not is_current_season:
         # Добавляем заголовок о прошлых сезонах
         result.append("В текущем сезоне команды не встречались")
         result.append("Последние встречи из прошлых сезонов:")
@@ -201,7 +220,7 @@ def extract_stats_trends(enriched_data: dict, team_name: str, is_home: bool) -> 
     form_matches = enriched_data.get(form_key, [])
 
     if not form_matches:
-        return "Нет данных"
+        return ""
 
     # Считаем статистику
     total = len(form_matches)
@@ -271,7 +290,7 @@ def _compare_lineups(lineup1: List[dict], lineup2: List[dict], team_name: str) -
 
     # Если составы идентичны
     if starters1 == starters2:
-        return "Изменений нет"
+        return "Состав без изменений"
 
     # Игроки которые выбыли
     removed = starters1 - starters2
@@ -282,22 +301,23 @@ def _compare_lineups(lineup1: List[dict], lineup2: List[dict], team_name: str) -
 
     # Показываем замены (максимум 2 для краткости)
     if removed and added:
-        removed_list = list(removed)[:2]
-        added_list = list(added)[:2]
+        removed_list = sorted(removed)[:2]
+        added_list = sorted(added)[:2]
         for i in range(min(len(removed_list), len(added_list))):
-            changes.append(f"Замена: {removed_list[i]} → {added_list[i]}")
+            changes.append(f"• {removed_list[i]} → {added_list[i]}")
 
     # Показываем выбывших (если нет добавленных)
     elif removed:
-        for player in list(removed)[:2]:
-            changes.append(f"Исключён: {player}")
+        for player in sorted(removed)[:2]:
+            changes.append(f"• Вне старта: {player}")
 
     # Показываем добавленных (если нет выбывших)
     elif added:
-        for player in list(added)[:2]:
-            changes.append(f"Добавлен: {player}")
-
-    return "; ".join(changes) if changes else "Изменений нет"
+        for player in sorted(added)[:2]:
+            changes.append(f"• В старте: {player}")
+    if not changes:
+        return "Состав без изменений"
+    return "Изменения в старте:\n" + "\n".join(changes)
 
 
 def extract_lineup_changes(enriched_data: dict, team_name: str, is_home: bool) -> str:
@@ -310,30 +330,126 @@ def extract_lineup_changes(enriched_data: dict, team_name: str, is_home: bool) -
         is_home: True для домашней команды
 
     Returns:
-        Строка с описанием изменений или "Составы будут доступны после матча"
+        Строка с описанием изменений стартового состава или пустая строка.
     """
     form_key = 'team1_form' if is_home else 'team2_form'
     form_matches = enriched_data.get(form_key, [])
 
     if len(form_matches) < 2:
-        return "Составы будут доступны после матча"
+        return ""
 
-    # Получаем event_id последних 2 матчей
-    event_id_1 = form_matches[0].get('event_id')  # Более новый матч
-    event_id_2 = form_matches[1].get('event_id')  # Более старый матч
+    # Берём первые 2 матча формы, для которых реально есть lineup,
+    # чтобы не падать в заглушку из-за одного пустого события.
+    lineup_event_ids = []
+    for form_match in form_matches:
+        event_id = form_match.get('event_id')
+        if not event_id:
+            continue
+        if enriched_data.get(f'lineup_{event_id}'):
+            lineup_event_ids.append(event_id)
+        if len(lineup_event_ids) >= 2:
+            break
 
-    if not event_id_1 or not event_id_2:
-        return "Составы будут доступны после матча"
+    if len(lineup_event_ids) < 2:
+        return ""
 
-    # Получаем составы для обоих матчей
+    event_id_1 = lineup_event_ids[0]  # Более новый матч
+    event_id_2 = lineup_event_ids[1]  # Более старый матч
     lineup_1 = enriched_data.get(f'lineup_{event_id_1}', [])
     lineup_2 = enriched_data.get(f'lineup_{event_id_2}', [])
 
-    if not lineup_1 or not lineup_2:
-        return "Составы будут доступны после матча"
-
     # Сравниваем составы (lineup_2 → lineup_1, от старого к новому)
     return _compare_lineups(lineup_2, lineup_1, team_name)
+
+
+def extract_last_match_events(enriched_data: dict, is_home: bool) -> str:
+    """
+    Извлекает события последнего матча (замены/карточки) по команде.
+
+    Returns:
+        Многострочная строка или пустая строка, если данных нет.
+    """
+    key = 'team1_last_match_events' if is_home else 'team2_last_match_events'
+    events = enriched_data.get(key) or {}
+    substitutions = events.get('subs') or []
+    cards = events.get('cards') or []
+
+    lines = []
+    if substitutions:
+        lines.append("Замены по ходу:")
+        lines.extend([f"• {item}" for item in substitutions[:3]])
+    if cards:
+        lines.append("Карточки:")
+        lines.extend([f"• {item}" for item in cards[:3]])
+
+    return "\n".join(lines) if lines else ""
+
+
+def extract_domestic_position(enriched_data: dict, is_home: bool) -> str:
+    """Возвращает позицию команды в домашней лиге (для кубков). Пустая строка если нет данных."""
+    key = 'team1_domestic_position' if is_home else 'team2_domestic_position'
+    return enriched_data.get(key, '') or ''
+
+
+def extract_cup_path(enriched_data: dict, is_home: bool) -> str:
+    """Возвращает краткий кубковый путь команды (для кубков). Пустая строка если нет данных."""
+    key = 'team1_cup_path' if is_home else 'team2_cup_path'
+    path_rows = enriched_data.get(key, []) or []
+    if not path_rows:
+        return ''
+    return "\n".join(path_rows[:3])
+
+
+def _is_cup_match(match: dict, enriched_data: dict) -> bool:
+    """Определить, является ли матч кубковым."""
+    if enriched_data.get('is_cup') is True:
+        return True
+    league_name = (match.get('league') or '').lower()
+    return any(marker in league_name for marker in CUP_NAME_MARKERS)
+
+
+def _format_cup_round_label(round_num: int) -> str:
+    round_map = {
+        64: "1/32 финала",
+        32: "1/16 финала",
+        16: "1/8 финала",
+        8: "1/4 финала",
+        4: "1/2 финала",
+        2: "Финал",
+        1: "Финал",
+    }
+    return round_map.get(round_num, f"Раунд {round_num}")
+
+
+def _normalize_league_display(league: str, is_cup: bool) -> str:
+    """
+    Нормализует подпись турнира в заголовке карточки.
+    Для еврокубков конвертирует паттерн "32 тур" -> "1/16 финала".
+    """
+    if not league:
+        return league
+    if not is_cup:
+        return league
+
+    match = re.match(r"^(?P<name>.+?)\.\s*(?P<round>\d+)\s*тур\s*$", league.strip(), flags=re.IGNORECASE)
+    if not match:
+        return league
+
+    league_name = match.group("name").strip()
+    round_num = int(match.group("round"))
+    return f"{league_name}. {_format_cup_round_label(round_num)}"
+
+
+def _normalize_lines(value: str) -> List[str]:
+    return [line.strip().lower() for line in str(value or '').split('\n') if line.strip()]
+
+
+def _has_meaningful_value(value: str) -> bool:
+    """Проверяет, что значение не является заглушкой."""
+    lines = _normalize_lines(value)
+    if not lines:
+        return False
+    return any(line not in EMPTY_ROW_MARKERS for line in lines)
 
 
 def build_table_data(match: dict, enriched_data: dict) -> dict:
@@ -366,10 +482,11 @@ def build_table_data(match: dict, enriched_data: dict) -> dict:
 
     # Форматируем заголовок
     title = f"{team1} — {team2}, {match_date}"
+    is_cup = _is_cup_match(match, enriched_data)
     if league:
-        title += f"\n{league}"
+        title += f"\n{_normalize_league_display(league, is_cup=is_cup)}"
 
-    # Извлекаем данные для таблицы
+    # Извлекаем данные для таблицы (базовые поля сохраняем для совместимости)
     data = {
         'title': title,
         'team_left': team1,
@@ -390,11 +507,137 @@ def build_table_data(match: dict, enriched_data: dict) -> dict:
             'left': extract_lineup_changes(enriched_data, team1, is_home=True),
             'right': extract_lineup_changes(enriched_data, team2, is_home=False)
         },
+        'last_match_events': {
+            'left': extract_last_match_events(enriched_data, is_home=True),
+            'right': extract_last_match_events(enriched_data, is_home=False)
+        },
         'history': extract_h2h_history(enriched_data),
         'stats_trends': {
             'left': extract_stats_trends(enriched_data, team1, is_home=True),
             'right': extract_stats_trends(enriched_data, team2, is_home=False)
-        }
+        },
+        'is_cup': is_cup
     }
+
+    rows = []
+
+    # Для кубков используем другой профиль строк: домашняя позиция + кубковый путь.
+    if is_cup:
+        rows.append({
+            'label': 'Лиговая позиция',
+            'left': extract_domestic_position(enriched_data, is_home=True),
+            'right': extract_domestic_position(enriched_data, is_home=False),
+            'colspan': False
+        })
+        rows.append({
+            'label': 'Кубковый путь',
+            'left': extract_cup_path(enriched_data, is_home=True),
+            'right': extract_cup_path(enriched_data, is_home=False),
+            'colspan': False
+        })
+    else:
+        rows.append({
+            'label': 'Турнирное положение',
+            'left': data['tournament_position']['left'],
+            'right': data['tournament_position']['right'],
+            'colspan': False
+        })
+
+    rows.extend([
+        {
+            'label': 'Текущая форма',
+            'left': data['current_form']['left'],
+            'right': data['current_form']['right'],
+            'colspan': False
+        },
+        {
+            'label': 'Форма дома/на выезде',
+            'left': data['home_away']['left'],
+            'right': data['home_away']['right'],
+            'colspan': False
+        },
+        {
+            'label': 'Составы',
+            'left': data['lineup_changes']['left'],
+            'right': data['lineup_changes']['right'],
+            'colspan': False
+        },
+        {
+            'label': 'События последнего матча',
+            'left': data['last_match_events']['left'],
+            'right': data['last_match_events']['right'],
+            'colspan': False
+        },
+        {
+            'label': 'История встреч',
+            'left': "\n".join(data['history']),
+            'right': '',
+            'colspan': True
+        },
+        {
+            'label': 'Статистические тренды',
+            'left': data['stats_trends']['left'],
+            'right': data['stats_trends']['right'],
+            'colspan': False
+        },
+    ])
+
+    # Предрасчет заполненности до UI-адаптации:
+    # эти метрики используются фильтром витрины и не зависят от подстановок.
+    row_states = []
+    for row in rows:
+        left_has_data = _has_meaningful_value(row.get('left', ''))
+        right_has_data = _has_meaningful_value(row.get('right', ''))
+        row_states.append((row, left_has_data, right_has_data))
+
+    raw_coverage_rows_count = 0
+    raw_missing_cells_count = 0
+    for row, left_has_data, right_has_data in row_states:
+        if row.get('colspan'):
+            if left_has_data:
+                raw_coverage_rows_count += 1
+            continue
+        if left_has_data or right_has_data:
+            raw_coverage_rows_count += 1
+            if not left_has_data:
+                raw_missing_cells_count += 1
+            if not right_has_data:
+                raw_missing_cells_count += 1
+
+    # Адаптивный рендер: убираем строки, где реально нет данных.
+    # Если данные есть только с одной стороны — явно помечаем пустую сторону.
+    adaptive_rows = []
+    for row, left_has_data, right_has_data in row_states:
+        if row.get('colspan'):
+            if left_has_data:
+                adaptive_rows.append(row)
+            continue
+        if left_has_data or right_has_data:
+            row = dict(row)  # копия чтобы не мутировать оригинал
+            if not left_has_data:
+                row['left'] = 'Недостаточно данных'
+            if not right_has_data:
+                row['right'] = 'Недостаточно данных'
+            adaptive_rows.append(row)
+
+    data['rows'] = adaptive_rows
+    data['coverage_rows_count'] = len(adaptive_rows)
+    data['raw_coverage_rows_count'] = raw_coverage_rows_count
+    data['raw_missing_cells_count'] = raw_missing_cells_count
+    expected_rows = len(rows) if rows else 1
+    coverage_ratio = len(adaptive_rows) / expected_rows
+    missing_cells = 0
+    for row in adaptive_rows:
+        if row.get('colspan'):
+            continue
+        for side in ('left', 'right'):
+            if str(row.get(side, '')).strip().lower() == 'недостаточно данных':
+                missing_cells += 1
+
+    # Бейдж показываем только в реально плохих кейсах, чтобы не шуметь.
+    is_data_limited = missing_cells >= 2 or coverage_ratio < 0.75
+    data['is_data_limited'] = is_data_limited
+    if is_data_limited and DATA_LIMITED_BADGE not in data['title']:
+        data['title'] += f"\n{DATA_LIMITED_BADGE}"
 
     return data

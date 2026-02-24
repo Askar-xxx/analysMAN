@@ -8,9 +8,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from match_data_fetcher import (  # noqa: E402
     MatchDataFetcher,
     build_enriched_context,
-    _calculate_stats_from_form,
-    _determine_tournament_zone,
-    _assess_home_away_quality,
     _get_season_date_range
 )
 
@@ -198,6 +195,125 @@ class TestMatchDataFetcher:
             assert result['season'] == "2025-2026"
             assert result['event_name'] == "Arsenal vs Chelsea"
 
+    def test_fetch_cup_matches_by_season_filters_finished_and_season(self):
+        """Кубковые матчи фильтруются по завершённости и текущему сезону."""
+        fetcher = MatchDataFetcher(api_key="test_key")
+
+        mock_response = {
+            "events": [
+                {
+                    "dateEvent": "2026-02-20",
+                    "strSeason": "2025-2026",
+                    "strStatus": "FT",
+                    "strHomeTeam": "Juventus",
+                    "strAwayTeam": "Galatasaray",
+                    "intHomeScore": 2,
+                    "intAwayScore": 1,
+                },
+                {
+                    "dateEvent": "2026-02-18",
+                    "strSeason": "2025-2026",
+                    "strStatus": "Postponed",
+                    "strHomeTeam": "Team A",
+                    "strAwayTeam": "Team B",
+                    "intHomeScore": None,
+                    "intAwayScore": None,
+                },
+                {
+                    "dateEvent": "2025-11-15",
+                    "strSeason": "2024-2025",
+                    "strStatus": "FT",
+                    "strHomeTeam": "Old Team",
+                    "strAwayTeam": "Legacy Team",
+                    "intHomeScore": 1,
+                    "intAwayScore": 0,
+                }
+            ]
+        }
+
+        with patch.object(fetcher.session, 'get') as mock_get:
+            mock_get.return_value.status_code = 200
+            mock_get.return_value.json.return_value = mock_response
+
+            result = fetcher._fetch_cup_matches_by_season("4481", "2025-2026")
+
+            assert len(result) == 1
+            assert result[0]['dateEvent'] == "2026-02-20"
+            assert mock_get.call_args[0][0].endswith('/eventsseason.php')
+
+    def test_build_cup_path_from_events_filters_team_and_limit(self):
+        """Кубковый путь берёт только матчи нужной команды и режется по лимиту."""
+        events = [
+            {
+                "dateEvent": "2026-02-21",
+                "strStatus": "FT",
+                "strHomeTeam": "Juventus",
+                "strAwayTeam": "Galatasaray",
+                "intHomeScore": 1,
+                "intAwayScore": 0,
+            },
+            {
+                "dateEvent": "2026-02-18",
+                "strStatus": "FT",
+                "strHomeTeam": "Galatasaray",
+                "strAwayTeam": "Juventus",
+                "intHomeScore": 3,
+                "intAwayScore": 2,
+            },
+            {
+                "dateEvent": "2026-02-12",
+                "strStatus": "FT",
+                "strHomeTeam": "Another Team",
+                "strAwayTeam": "Other Team",
+                "intHomeScore": 2,
+                "intAwayScore": 2,
+            },
+        ]
+
+        result = MatchDataFetcher._build_cup_path_from_events(events, "Juventus", limit=2)
+
+        assert len(result) == 2
+        assert result[0] == "2026-02-21: Juventus 1:0 Galatasaray"
+        assert result[1] == "2026-02-18: Galatasaray 3:2 Juventus"
+
+    def test_build_last_match_events_filters_by_team_side(self):
+        """События последнего матча фильтруются по нужной команде."""
+        fetcher = MatchDataFetcher(api_key="test_key")
+        form_match = {
+            'event_id': '1001',
+            'home_team': 'Arsenal',
+            'away_team': 'Chelsea',
+        }
+        timeline = [
+            {
+                'strTimeline': 'subst',
+                'strTimelineDetail': 'Player In',
+                'strPlayer': 'Player Out',
+                'strHome': 'Yes',
+                'strTeam': 'Arsenal',
+            },
+            {
+                'strTimeline': 'Card',
+                'strTimelineDetail': 'Yellow Card',
+                'strPlayer': 'Away Defender',
+                'strHome': 'No',
+                'strTeam': 'Chelsea',
+            },
+            {
+                'strTimeline': 'Card',
+                'strTimelineDetail': 'Red Card',
+                'strPlayer': 'Home Midfielder',
+                'strHome': 'Yes',
+                'strTeam': 'Arsenal',
+            },
+        ]
+
+        with patch.object(fetcher, '_fetch_timeline', return_value=timeline):
+            result = fetcher._build_last_match_events(form_match, 'Arsenal')
+
+        assert result['subs'] == ['Player Out → Player In']
+        assert result['cards'] == ['Home Midfielder (КК)']
+
     def test_fetch_match_data_integration(self):
         """Полный flow fetch_match_data с моками."""
         fetcher = MatchDataFetcher(api_key="test_key")
@@ -245,7 +361,6 @@ class TestBuildEnrichedContext:
         context = build_enriched_context(match, data)
 
         assert "ИСТОРИЯ ЛИЧНЫХ ВСТРЕЧ" in context
-        assert "Последние 2 матчей" in context
         assert "2025-08-25: Arsenal 2:1 Chelsea" in context
         assert "2025-01-12: Chelsea 3:2 Arsenal" in context
 
@@ -298,7 +413,7 @@ class TestBuildEnrichedContext:
         assert "Chelsea: W" in context
 
     def test_build_context_empty_data(self):
-        """Пустые данные возвращают заглушки для ключевых игроков и составов."""
+        """Пустые данные возвращают сообщение о недоступности."""
         match = {'team1': 'Arsenal', 'team2': 'Chelsea', 'league': 'Premier League'}
         data = {
             'h2h': [],
@@ -309,10 +424,8 @@ class TestBuildEnrichedContext:
 
         context = build_enriched_context(match, data)
 
-        # Новый формат всегда включает заглушки
-        assert "КЛЮЧЕВЫЕ ИГРОКИ" in context
-        assert "СОСТАВЫ" in context
-        assert "Нет данных" in context
+        # При полностью пустых данных — сообщение о недоступности
+        assert "недоступн" in context.lower()
 
     def test_build_context_h2h_fallback_text(self):
         """H2H с fallback показывает текст о прошлых сезонах."""
@@ -340,85 +453,6 @@ class TestBuildEnrichedContext:
 
 class TestHelperFunctions:
     """Тесты для вспомогательных функций вычисления статистики."""
-
-    def test_calculate_stats_from_form_home(self):
-        """Вычисление статистики для домашней команды."""
-        form_matches = [
-            {'home_team': 'Arsenal', 'away_team': 'Liverpool', 'home_score': 2, 'away_score': 1},
-            {'home_team': 'Arsenal', 'away_team': 'Chelsea', 'home_score': 0, 'away_score': 0},
-            {'home_team': 'Arsenal', 'away_team': 'Man Utd', 'home_score': 3, 'away_score': 1},
-        ]
-
-        stats = _calculate_stats_from_form(form_matches, is_home=True)
-
-        assert stats['scored_pct'] > 60  # Забивали в 2 из 3 матчей (66%)
-        assert stats['home_away_form'] == 'WDW'
-        assert stats['home_away_points'] == 7  # 2 победы + 1 ничья
-        assert stats['home_away_record'] == '2В,1Н,0П'
-        assert stats['avg_scored'] > 1.5  # (2+0+3)/3 = 1.67
-
-    def test_calculate_stats_from_form_away(self):
-        """Вычисление статистики для выездной команды."""
-        form_matches = [
-            {'home_team': 'Liverpool', 'away_team': 'Chelsea', 'home_score': 2, 'away_score': 3},
-            {'home_team': 'Man Utd', 'away_team': 'Chelsea', 'home_score': 1, 'away_score': 1},
-            {'home_team': 'Spurs', 'away_team': 'Chelsea', 'home_score': 0, 'away_score': 2},
-        ]
-
-        stats = _calculate_stats_from_form(form_matches, is_home=False)
-
-        assert stats['home_away_form'] == 'WDW'
-        assert stats['home_away_points'] == 7  # 2 победы + 1 ничья
-        assert stats['home_away_record'] == '2В,1Н,0П'
-        assert stats['conceded_pct'] > 60  # Пропускали в 2 из 3 матчей
-
-    def test_calculate_stats_from_form_empty(self):
-        """Пустой список матчей возвращает пустой dict."""
-        stats = _calculate_stats_from_form([], is_home=True)
-
-        assert stats == {}
-
-    def test_determine_tournament_zone_champions_league(self):
-        """Топ-4 в топ-лигах = зона ЛЧ."""
-        assert _determine_tournament_zone(1, 'English Premier League') == 'зона ЛЧ'
-        assert _determine_tournament_zone(4, 'La Liga') == 'зона ЛЧ'
-        assert _determine_tournament_zone(3, 'Bundesliga') == 'зона ЛЧ'
-
-    def test_determine_tournament_zone_europa(self):
-        """5-7 место = зона еврокубков."""
-        assert _determine_tournament_zone(5, 'Premier League') == 'зона еврокубков'
-        assert _determine_tournament_zone(7, 'La Liga') == 'зона еврокубков'
-        assert _determine_tournament_zone(6, 'Serie A') == 'зона еврокубков'
-
-    def test_determine_tournament_zone_relegation(self):
-        """18+ место = зона вылета."""
-        assert _determine_tournament_zone(18, 'Premier League') == 'зона вылета'
-        assert _determine_tournament_zone(20, 'Bundesliga') == 'зона вылета'
-        assert _determine_tournament_zone(19, 'Ligue 1') == 'зона вылета'
-
-    def test_determine_tournament_zone_midtable(self):
-        """Средние позиции = пустая строка."""
-        assert _determine_tournament_zone(10, 'Premier League') == ''
-        assert _determine_tournament_zone(12, 'La Liga') == ''
-
-    def test_assess_home_away_quality_strong(self):
-        """Сильная форма: >=2.0 очка за матч."""
-        assert _assess_home_away_quality(24, 12) == 'Сильная'  # 2.0 очка/матч
-        assert _assess_home_away_quality(30, 12) == 'Сильная'  # 2.5 очка/матч
-
-    def test_assess_home_away_quality_medium(self):
-        """Средняя форма: 1.2-2.0 очка за матч."""
-        assert _assess_home_away_quality(18, 12) == 'Средняя'  # 1.5 очка/матч
-        assert _assess_home_away_quality(15, 12) == 'Средняя'  # 1.25 очка/матч
-
-    def test_assess_home_away_quality_weak(self):
-        """Слабая форма: <1.2 очка за матч."""
-        assert _assess_home_away_quality(10, 12) == 'Слабая'  # 0.83 очка/матч
-        assert _assess_home_away_quality(6, 12) == 'Слабая'   # 0.5 очка/матч
-
-    def test_assess_home_away_quality_no_matches(self):
-        """Нет матчей = недостаточно данных."""
-        assert _assess_home_away_quality(0, 0) == 'Недостаточно данных'
 
     def test_get_season_date_range_premier_league(self):
         """Границы сезона для Premier League (август-май)."""

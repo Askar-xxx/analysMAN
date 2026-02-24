@@ -11,6 +11,8 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+# Подавляем шумные per-match логи, чтобы консоль не засорялась.
+logging.getLogger('match_data_fetcher').setLevel(logging.WARNING)
 
 
 async def scheduled_sync_matches():
@@ -21,9 +23,15 @@ async def scheduled_sync_matches():
     logger.info("=" * 60)
     try:
         from sync_matches import SportsDBSyncer
-        # Режим top3: берёт топ-15 матчей из топ-лиг (Premier League, La Liga, Bundesliga)
-        # и топ-кубков (Champions League, Europa League) на ближайшие 3 дня
-        syncer = SportsDBSyncer(mode='top3', limit=15)
+        # Режим top3: берёт топ-15 матчей из 3 топ-лиг
+        # (Premier League, La Liga, Bundesliga) и 3 топ-кубков
+        # (Champions League, Europa League, Europa Conference League)
+        # на ближайшие 3 дня + мягкий фильтр качества карточки
+        syncer = SportsDBSyncer(
+            mode='top3',
+            limit=15,
+            min_coverage_rows=3
+        )
         matches = syncer.sync()
         results = syncer.save_matches_to_db(matches)
         logger.info("=" * 60)

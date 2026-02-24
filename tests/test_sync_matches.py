@@ -256,3 +256,45 @@ class TestBulkMode:
             assert results['inserted'] + results['skipped'] == results['total']
         finally:
             os.unlink(db_path)
+
+
+class TestRoundFormatting:
+    """Тесты форматирования тура/раунда в строке лиги."""
+
+    def test_cup_round_is_human_readable(self):
+        syncer = SportsDBSyncer(mode="top3", limit=1)
+        event = {
+            "idEvent": "2001",
+            "strHomeTeam": "Team A",
+            "strAwayTeam": "Team B",
+            "dateEvent": _today.strftime('%Y-%m-%d'),
+            "strTime": "19:00:00",
+            "strLeague": "UEFA Champions League",
+            "idLeague": "4480",
+            "intRound": "32",
+            "idHomeTeam": "1",
+            "idAwayTeam": "2",
+        }
+
+        parsed = syncer._parse_event(event)
+        assert parsed is not None
+        assert parsed['league'] == "UEFA Champions League. 1/16 финала"
+
+    def test_league_round_keeps_tour_suffix(self):
+        syncer = SportsDBSyncer(mode="top3", limit=1)
+        event = {
+            "idEvent": "2002",
+            "strHomeTeam": "Team A",
+            "strAwayTeam": "Team B",
+            "dateEvent": _today.strftime('%Y-%m-%d'),
+            "strTime": "19:00:00",
+            "strLeague": "Premier League",
+            "idLeague": "4328",
+            "intRound": "30",
+            "idHomeTeam": "1",
+            "idAwayTeam": "2",
+        }
+
+        parsed = syncer._parse_event(event)
+        assert parsed is not None
+        assert parsed['league'] == "Premier League. 30 тур"

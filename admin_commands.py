@@ -50,14 +50,14 @@ async def clean_matches_command(update: Update, context: ContextTypes.DEFAULT_TY
             conn.close()
 
             for filename in os.listdir('analysis_cache'):
-                if filename.endswith('.png'):
+                if filename.endswith(('.webp', '.png')):
                     file_path = os.path.join('analysis_cache', filename)
                     if file_path not in db_png_paths:
                         try:
                             os.remove(file_path)
                             orphaned_png += 1
                         except Exception as e:
-                            logger.warning(f"Не удалось удалить осиротевший PNG {file_path}: {e}")
+                            logger.warning(f"Не удалось удалить осиротевший файл {file_path}: {e}")
 
         result_text = (
             "✅ Очистка завершена:\n\n"
@@ -210,7 +210,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 file_path = os.path.join('analysis_cache', filename)
                 if os.path.isfile(file_path):
                     cache_size += os.path.getsize(file_path)
-                    if filename.endswith('.png'):
+                    if filename.endswith(('.webp', '.png')):
                         png_count += 1
 
         cache_size_mb = cache_size / (1024 * 1024)

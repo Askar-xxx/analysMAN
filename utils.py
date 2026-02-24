@@ -70,16 +70,16 @@ def _truncate_sentences(text: str, target: int) -> str:
 
 def clean_and_truncate(text: str) -> str:
     """
-    Постобработка текста анализа:
+    Постобработка текста анализа (intro + conclusion):
     - Удаляет запрещённые слова (коэффициент, ставка, прогноз)
     - Ограничивает эмодзи (макс 1 на раздел, макс 4 всего)
-    - Soft cap 3000: сокращает предложения до целевой длины 2200-2800
-    - Hard cap 3800: обрезает по последнему \\n
+    - Soft cap 900: сокращает предложения до целевой длины 800
+    - Hard cap 1200: обрезает по последнему \\n
     - Логирует длину до/после и флаг truncated
     """
-    TARGET_MAX = 2800
-    SOFT_CAP = 3000
-    HARD_CAP = 3800
+    TARGET_MAX = 800
+    SOFT_CAP = 900
+    HARD_CAP = 1200
 
     original_length = len(text)
     truncated = False

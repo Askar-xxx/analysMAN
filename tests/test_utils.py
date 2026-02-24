@@ -16,17 +16,16 @@ class TestCleanAndTruncate:
         assert len(result) <= 2000
 
     def test_long_text_within_soft_cap(self):
-        """Длинный текст (>3000) сокращается до ≤3000."""
-        text = "Тестовое предложение. " * 200  # ~4200 символов
+        """Длинный текст (>900) сокращается до ≤900."""
+        text = "Тестовое предложение. " * 60  # ~1260 символов
         result = clean_and_truncate(text)
-        assert len(result) <= 3000
+        assert len(result) <= 900
 
     def test_very_long_text_within_hard_cap(self):
-        """Очень длинный текст без точек не превышает hard cap 3800."""
-        # Текст без точек — _truncate_sentences не сможет корректно разбить
-        text = "слово " * 1000  # ~6000 символов, без точек
+        """Очень длинный текст без точек не превышает hard cap 1200."""
+        text = "слово " * 300  # ~1800 символов, без точек
         result = clean_and_truncate(text)
-        assert len(result) <= 3800 + 4  # +4 на '\n...'
+        assert len(result) <= 1200 + 4  # +4 на '\n...'
 
     def test_banned_word_coefficient(self):
         """Слово 'коэффициент' и его формы удаляются."""
