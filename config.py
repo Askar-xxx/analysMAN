@@ -40,6 +40,7 @@ def _env_to_bool(name: str, default: bool = False) -> bool:
         return default
     return raw.strip().lower() in ('1', 'true', 'yes', 'on')
 
+
 # === Telegram ===
 TOKEN = os.environ.get('TELEGRAM_TOKEN', '')
 
