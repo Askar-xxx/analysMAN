@@ -735,7 +735,7 @@ def get_topup_by_token(token):
 
 
 def expire_pending_topups():
-    """Переводит истёкшие pending пополнения в статус expired."""
+    """Переводит истёкшие pending пополнения в expired и удаляет expired старше 12ч."""
     conn = get_db_connection()
     cursor = conn.cursor()
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -744,10 +744,21 @@ def expire_pending_topups():
         SET status = 'expired'
         WHERE status = 'pending' AND expires_at <= ?
     ''', (now,))
-    affected = cursor.rowcount
+    expired_count = cursor.rowcount
+
+    # Удаляем expired записи старше 12 часов
+    cutoff = (datetime.now() - timedelta(hours=12)).strftime('%Y-%m-%d %H:%M:%S')
+    cursor.execute('''
+        DELETE FROM balance_topups
+        WHERE status = 'expired' AND expires_at <= ?
+    ''', (cutoff,))
+    deleted_count = cursor.rowcount
+
     conn.commit()
     conn.close()
-    return affected
+    if deleted_count > 0:
+        logger.info(f"Удалено старых expired topups: {deleted_count}")
+    return expired_count
 
 
 def get_pending_topup_by_user(user_id):

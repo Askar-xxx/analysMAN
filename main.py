@@ -42,6 +42,22 @@ async def scheduled_sync_matches():
         logger.error("=" * 60, exc_info=True)
 
 
+async def scheduled_cleanup():
+    """Периодическая очистка старых покупок и матчей (1 день после матча)"""
+    from datetime import datetime
+    logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] APScheduler: ЗАПУСК очистки старых анализов...")
+    try:
+        expired_topups = database.expire_pending_topups()
+        deleted_purchases = database.cleanup_old_purchases()
+        deleted_matches = database.delete_finished_matches_without_purchases()
+        logger.info(
+            f"Очистка завершена: expired_topups={expired_topups}, "
+            f"покупок={deleted_purchases}, матчей={deleted_matches}"
+        )
+    except Exception as e:
+        logger.error(f"Ошибка очистки: {e}", exc_info=True)
+
+
 async def post_init(application):
     """Callback после инициализации бота (в контексте event loop)"""
     # Настройка APScheduler для периодической синхронизации
@@ -56,6 +72,15 @@ async def post_init(application):
         replace_existing=True
     )
 
+    # Очистка старых анализов каждые 6 часов
+    scheduler.add_job(
+        scheduled_cleanup,
+        trigger=IntervalTrigger(hours=6),
+        id='cleanup_old',
+        name='Очистка старых анализов',
+        replace_existing=True
+    )
+
     # Немедленная синхронизация при старте бота
     scheduler.add_job(
         scheduled_sync_matches,
@@ -63,9 +88,16 @@ async def post_init(application):
         name='Синхронизация при старте'
     )
 
+    # Немедленная очистка при старте
+    scheduler.add_job(
+        scheduled_cleanup,
+        id='cleanup_startup',
+        name='Очистка при старте'
+    )
+
     scheduler.start()
     logger.info("=" * 60)
-    logger.info("APScheduler запущен: синхронизация каждые 3 часа")
+    logger.info("APScheduler запущен: синхронизация каждые 3 часа, очистка каждые 6 часов")
     logger.info("=" * 60)
 
     # Сохраняем scheduler в bot_data для graceful shutdown
