@@ -107,9 +107,12 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
             logger.error(f"Ошибка сбора данных: {e}", exc_info=True)
             enriched_context = "Обогащённые данные недоступны."
 
-        # Этап 2: Генерация анализа
+        # Этап 2: Генерация анализа (intro + conclusion)
         logger.info(f"Генерация анализа для матча {match_id}...")
-        analysis_text = await generate_match_analysis_with_context(match_dict, enriched_context)
+        ai_result = await generate_match_analysis_with_context(match_dict, enriched_context)
+        intro = ai_result.get('intro', '')
+        conclusion = ai_result.get('conclusion', '')
+        analysis_text = f"{intro}\n\n{conclusion}".strip()
 
         # Этап 3: Рендеринг PNG таблицы
         logger.info("Рендеринг PNG таблицы...")
@@ -125,7 +128,7 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
             temp_png = render_analysis_table(match_dict, table_data)
 
             # Сохраняем в постоянную папку
-            target_path = f"analysis_cache/analysis_{match_id}.png"
+            target_path = f"analysis_cache/analysis_{match_id}.webp"
             os.makedirs("analysis_cache", exist_ok=True)
             shutil.copy(temp_png, target_path)
 
@@ -160,40 +163,32 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
         )
 
         if png_path:
-            # Отправляем PNG с caption
-            from datetime import datetime as dt
-            date_obj = dt.strptime(match_dict['match_date'], '%Y-%m-%d')
-            date_formatted = date_obj.strftime('%d %B %Y года').replace(
-                'January', 'января').replace('February', 'февраля').replace(
-                'March', 'марта').replace('April', 'апреля').replace(
-                'May', 'мая').replace('June', 'июня').replace(
-                'July', 'июля').replace('August', 'августа').replace(
-                'September', 'сентября').replace('October', 'октября').replace(
-                'November', 'ноября').replace('December', 'декабря')
-
-            intro_text = (
-                f"{match_dict['team1']} примет {match_dict['team2']}. "
-                f"Матч пройдёт {date_formatted} в {match_dict['match_time']} МСК "
-                f"в рамках турнира {match_dict.get('league', 'N/A')}."
-            )
-            caption = f"✅ Анализ матча: {intro_text}"
-
-            # Кнопки навигации
             from telegram import InlineKeyboardButton, InlineKeyboardMarkup
             keyboard = [
                 [InlineKeyboardButton("◀️ Назад", callback_data=back_callback_data)],
                 [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
             ]
 
-            with open(png_path, 'rb') as photo:
-                await bot.send_photo(
-                    chat_id=user_id,
-                    photo=photo,
-                    caption=caption,
-                    reply_markup=InlineKeyboardMarkup(keyboard)
+            # Отправляем intro как текст
+            if intro:
+                await bot.send_message(
+                    chat_id=user_id, text=intro, parse_mode='HTML'
                 )
 
-            logger.info(f"Анализ (PNG) отправлен пользователю {user_id}")
+            # Отправляем фото (таблица)
+            with open(png_path, 'rb') as photo:
+                await bot.send_photo(chat_id=user_id, photo=photo)
+
+            # Отправляем conclusion + кнопки
+            conclusion_text = conclusion if conclusion else "📊 Анализ завершён."
+            await bot.send_message(
+                chat_id=user_id,
+                text=conclusion_text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='HTML'
+            )
+
+            logger.info(f"Анализ отправлен пользователю {user_id}")
 
             # Удаляем сообщение с прогрессом после успешной отправки
             if instruction_message_id:

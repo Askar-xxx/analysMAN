@@ -38,6 +38,88 @@ async def _cleanup_topup_step_images(query, context):
             pass
 
 
+def _is_webhook_analysis_nav_message(query) -> bool:
+    """
+    Проверяет, что callback пришёл из сообщения-навигатора анализа webhook-сценария.
+
+    Для таких сообщений первая кнопка обычно `analysis_back_*`,
+    вторая — `back_to_menu`.
+    """
+    markup = getattr(query.message, 'reply_markup', None)
+    if not markup or not getattr(markup, 'inline_keyboard', None):
+        return False
+
+    callback_data_values = []
+    for row in markup.inline_keyboard:
+        for button in row:
+            cb = getattr(button, 'callback_data', None)
+            if cb:
+                callback_data_values.append(cb)
+
+    has_analysis_back = any(cb.startswith('analysis_back_') for cb in callback_data_values)
+    has_main_menu = 'back_to_menu' in callback_data_values
+    return has_analysis_back and has_main_menu
+
+
+def _remember_analysis_thread(context, conclusion_message_id: int, related_message_ids):
+    """Сохраняет связку сообщений анализа для последующей очистки при навигации."""
+    related = []
+    for mid in related_message_ids or []:
+        if isinstance(mid, int) and mid > 0:
+            related.append(mid)
+
+    context.user_data['analysis_thread'] = {
+        'conclusion_message_id': conclusion_message_id,
+        'related_message_ids': related
+    }
+
+
+async def _cleanup_analysis_thread_messages(query, context):
+    """
+    Удаляет intro/photo сообщения анализа, если пользователь уходит с экрана анализа.
+
+    Работает в двух режимах:
+    1) Точный: по сохранённым message_id (on-demand/show_analysis flow).
+    2) Fallback: для webhook-кнопки `analysis_back_*` удаляет 2 предыдущих сообщения.
+    """
+    data = query.data or ''
+    if (
+        data not in ('back', 'back_to_menu')
+        and not data.startswith('analysis_back_')
+    ):
+        return
+
+    bot = query.message.get_bot()
+    chat_id = query.message.chat_id
+    current_message_id = query.message.message_id
+
+    tracked = context.user_data.get('analysis_thread')
+    if (
+        tracked
+        and tracked.get('conclusion_message_id') == current_message_id
+    ):
+        for message_id in tracked.get('related_message_ids', []):
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception:
+                pass
+        context.user_data.pop('analysis_thread', None)
+        return
+
+    # Fallback: webhook-сообщение с analysis_back_ не имеет доступа к context.user_data.
+    if data.startswith('analysis_back_') or (
+        data == 'back_to_menu' and _is_webhook_analysis_nav_message(query)
+    ):
+        for delta in (1, 2):
+            target_id = current_message_id - delta
+            if target_id <= 0:
+                continue
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=target_id)
+            except Exception:
+                pass
+
+
 def _build_post_topup_keyboard(context):
     """Клавиатура после успешного пополнения с быстрым возвратом к матчу."""
     match_id = context.user_data.get('post_topup_match_id')
@@ -92,6 +174,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         and not query.data.startswith('check_balance_')
     ):
         await _cleanup_topup_step_images(query, context)
+    await _cleanup_analysis_thread_messages(query, context)
     # Обработка различных callback_data
     if query.data in ('back', 'go_back'):
         # Возвращаемся назад по истории
@@ -145,7 +228,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if match_source == 'purchased':
             context.user_data['menu_history'].append(MENU_PURCHASED_DATE)
             context.user_data['current_match_id'] = match_id
-            await handle_show_analysis(query, user_id, match_id)
+            await handle_show_analysis(query, context, user_id, match_id)
             return
         else:
             context.user_data['menu_history'].append(MENU_MATCHES_LIST)
@@ -158,7 +241,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_purchase(query, user_id)
     elif query.data.startswith('show_analysis_'):
         match_id = int(query.data.split('_')[2])
-        await handle_show_analysis(query, user_id, match_id)
+        await handle_show_analysis(query, context, user_id, match_id)
     elif query.data.startswith('purchased_sport_'):
         sport = query.data.split('_')[2]
         # Сохраняем предыдущее меню
@@ -547,8 +630,13 @@ async def handle_purchase(query, user_id):
     )
 
 
-async def handle_show_analysis(query, user_id, match_id):
+async def handle_show_analysis(query, context, user_id, match_id):
     """Отображение PNG анализа для уже купленного матча"""
+    # Сбрасываем старый трекинг сообщений анализа перед новым показом.
+    context.user_data.pop('analysis_thread', None)
+    intro = ''
+    conclusion = ''
+
     # Проверяем что анализ действительно куплен
     if not database.has_purchased_analysis(user_id, match_id):
         await safe_edit_message(
@@ -616,11 +704,16 @@ async def handle_show_analysis(query, user_id, match_id):
             except Exception as e:
                 logger.error(f"Ошибка построения контекста: {e}", exc_info=True)
 
+            intro = ''
+            conclusion = ''
             try:
                 from ai_generator import generate_match_analysis_with_context
-                analysis_text = await generate_match_analysis_with_context(
+                ai_result = await generate_match_analysis_with_context(
                     match_dict, enriched_context
                 )
+                intro = ai_result.get('intro', '')
+                conclusion = ai_result.get('conclusion', '')
+                analysis_text = f"{intro}\n\n{conclusion}".strip()
                 match_dict['analysis_text'] = analysis_text
                 logger.info(f"Анализ сгенерирован on-demand для матча {match_id}")
             except Exception as e:
@@ -637,7 +730,7 @@ async def handle_show_analysis(query, user_id, match_id):
             temp_png = render_analysis_table(match_dict, table_data)
 
             # Копируем в постоянную папку
-            target_path = f"analysis_cache/analysis_{match_id}.png"
+            target_path = f"analysis_cache/analysis_{match_id}.webp"
             os.makedirs("analysis_cache", exist_ok=True)
             import shutil
             shutil.copy(temp_png, target_path)
@@ -684,36 +777,35 @@ async def handle_show_analysis(query, user_id, match_id):
 
     # Отправляем PNG с краткой сводкой и кнопками
     try:
-        # Формируем краткое введение на основе данных матча
-        from datetime import datetime
+        chat_id = query.message.chat_id
+        bot = query.message.get_bot()
+        related_message_ids = []
 
-        # Форматируем дату
-        date_obj = datetime.strptime(match_dict['match_date'], '%Y-%m-%d')
-        date_formatted = date_obj.strftime('%d %B %Y года').replace(
-            'January', 'января').replace('February', 'февраля').replace(
-            'March', 'марта').replace('April', 'апреля').replace(
-            'May', 'мая').replace('June', 'июня').replace(
-            'July', 'июля').replace('August', 'августа').replace(
-            'September', 'сентября').replace('October', 'октября').replace(
-            'November', 'ноября').replace('December', 'декабря')
-
-        # Формируем краткое введение
-        intro_text = (
-            f"{match_dict['team1']} примет {match_dict['team2']}. "
-            f"Матч пройдёт {date_formatted} в {match_dict['match_time']} МСК "
-            f"в рамках турнира {match_dict.get('league', 'N/A')}."
-        )
-
-        # Caption с заголовком и краткой сводкой (через двоеточие)
-        caption = f"✅ Анализ матча: {intro_text}"
-
-        # Отправляем фото с caption и кнопками в одном сообщении
-        with open(png_path, 'rb') as photo:
-            await query.message.reply_photo(
-                photo=photo,
-                caption=caption,
-                reply_markup=keyboards.analysis_view_keyboard()
+        # Отправляем intro как текстовое сообщение (если есть)
+        if intro:
+            sent_intro = await bot.send_message(
+                chat_id=chat_id, text=intro, parse_mode='HTML'
             )
+            related_message_ids.append(sent_intro.message_id)
+
+        # Отправляем фото (таблица)
+        with open(png_path, 'rb') as photo:
+            sent_photo = await bot.send_photo(chat_id=chat_id, photo=photo)
+            related_message_ids.append(sent_photo.message_id)
+
+        # Отправляем conclusion + кнопки навигации
+        conclusion_text = conclusion if conclusion else "📊 Анализ завершён."
+        sent_conclusion = await bot.send_message(
+            chat_id=chat_id,
+            text=conclusion_text,
+            reply_markup=keyboards.analysis_view_keyboard(),
+            parse_mode='HTML'
+        )
+        _remember_analysis_thread(
+            context,
+            conclusion_message_id=sent_conclusion.message_id,
+            related_message_ids=related_message_ids
+        )
 
         # Удаляем сообщение с прогрессом
         try:

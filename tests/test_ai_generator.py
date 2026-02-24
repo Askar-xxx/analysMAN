@@ -11,17 +11,15 @@ class TestAnalysisPostprocessing:
     """Тесты постобработки анализа (clean_and_truncate используется в ai_generator)."""
 
     def test_long_analysis_truncated(self):
-        """Длинный текст анализа сокращается до ≤3000 символов (soft cap)."""
+        """Длинный текст анализа сокращается до ≤900 символов (soft cap)."""
         analysis = (
             "1. Краткое введение о матче\n"
             "Важный матч чемпионата. " * 50 + "\n\n"
             "2. Обзор команды А\n"
             "Команда А показывает хорошую форму. " * 50 + "\n\n"
-            "3. Обзор команды Б\n"
-            "Команда Б борется за выживание. " * 50 + "\n\n"
         )
         result = clean_and_truncate(analysis)
-        assert len(result) <= 3000
+        assert len(result) <= 900
 
     def test_banned_words_removed_from_analysis(self):
         """Запрещённые слова удаляются из текста анализа."""
@@ -58,11 +56,10 @@ class TestAnalysisPostprocessing:
         prompt_path = os.path.join(project_root, "ANALYSIS_PROMPT.md")
         with open(prompt_path, "r", encoding="utf-8") as f:
             content = f.read()
-        assert "СВОДНАЯ ТАБЛИЦА АНАЛИЗА" in content
-        assert "Турнирное положение" in content
-        assert "Ключевой игрок" in content
-        assert "История встреч" in content
-        assert "Статистические тренды" in content
+        assert "intro" in content
+        assert "conclusion" in content
+        assert "JSON" in content
+        assert "venue" in content.lower() or "стадион" in content.lower()
 
     def test_normal_length_text_not_truncated(self):
         """Текст в целевом диапазоне (1400-1900) не обрезается."""

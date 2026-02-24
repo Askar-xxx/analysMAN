@@ -32,6 +32,14 @@ try:
 except ImportError:
     _load_env_fallback(ENV_PATH)
 
+
+def _env_to_bool(name: str, default: bool = False) -> bool:
+    """Парсинг bool-переменной окружения."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ('1', 'true', 'yes', 'on')
+
 # === Telegram ===
 TOKEN = os.environ.get('TELEGRAM_TOKEN', '')
 
@@ -40,6 +48,7 @@ DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', '')
 
 # === TheSportsDB Premium API ===
 THESPORTSDB_KEY = os.environ.get('THESPORTSDB_KEY', '')
+THESPORTSDB_VERIFY_TLS = _env_to_bool('THESPORTSDB_VERIFY_TLS', True)
 
 # === DonationAlerts OAuth ===
 DA_CLIENT_ID = os.environ.get('DA_CLIENT_ID', '')

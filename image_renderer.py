@@ -1,5 +1,5 @@
 """
-Модуль для рендеринга аналитических таблиц в PNG через Pillow.
+Модуль для рендеринга аналитических таблиц в WebP через Pillow.
 """
 import logging
 import os
@@ -9,20 +9,22 @@ from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Цветовая схема (тёмная тема как в Telegram)
-BG_COLOR = '#0f1720'  # Фон основной
-CARD_BG = '#0b1220'  # Фон карточки
-TEXT_COLOR = '#e6eef6'  # Основной текст
-HEADER_BG = '#112233'  # Фон заголовков
-BORDER_COLOR = '#3b4750'  # Границы таблицы
-TITLE_COLOR = '#bfe2ff'  # Цвет заголовка
+# Цветовая схема (светлая тема как в Telegram)
+BG_COLOR = '#f0f0f0'  # Фон основной (светло-серый)
+CARD_BG = '#ffffff'  # Фон карточки (белый)
+TEXT_COLOR = '#1a1a1a'  # Основной текст (почти чёрный)
+HEADER_BG = '#e8f0fe'  # Фон заголовков (светло-голубой)
+BORDER_COLOR = '#d0d5dd'  # Границы таблицы (серые)
+TITLE_COLOR = '#1a73e8'  # Цвет заголовка (синий)
 
-# Размеры
-CARD_WIDTH = 900  # Ширина карточки
-CARD_PADDING = 20  # Отступы внутри карточки
-CELL_PADDING = 12  # Отступы внутри ячеек
-HEADER_HEIGHT = 50  # Высота заголовка таблицы
-ROW_MIN_HEIGHT = 45  # Минимальная высота строки
+# Размеры (увеличены x2 для высокого разрешения)
+SCALE = 2
+CARD_WIDTH = 900 * SCALE  # Ширина карточки
+CARD_MARGIN = 10 * SCALE  # Внешний отступ карточки от краёв изображения
+CARD_PADDING = 20 * SCALE  # Отступы внутри карточки
+CELL_PADDING = 12 * SCALE  # Отступы внутри ячеек
+HEADER_HEIGHT = 50 * SCALE  # Высота заголовка таблицы
+ROW_MIN_HEIGHT = 45 * SCALE  # Минимальная высота строки
 
 # Ширина колонок (в процентах от общей ширины таблицы)
 COL1_WIDTH_PCT = 0.28  # Аспект анализа
@@ -207,70 +209,105 @@ def _draw_cell(draw: ImageDraw.Draw, x: int, y: int, width: int, height: int,
 
 def render_analysis_table(match: dict, table_data: dict) -> str:
     """
-    Рендерит аналитическую таблицу в PNG файл.
+    Рендерит аналитическую таблицу в WebP файл.
 
     Args:
         match: dict матча (для генерации имени файла)
         table_data: dict с данными для таблицы (из analysis_formatter.build_table_data)
 
     Returns:
-        Путь к созданному PNG файлу
+        Путь к созданному WebP файлу
     """
     try:
-        # Загружаем шрифты
-        title_font = _load_font('bold', 16)
-        header_font = _load_font('bold', 13)
-        cell_font = _load_font('regular', 12)
+        # Загружаем шрифты (размеры масштабированы)
+        title_font = _load_font('bold', 16 * SCALE)
+        header_font = _load_font('bold', 13 * SCALE)
+        cell_font = _load_font('regular', 12 * SCALE)
+
+        card_left = CARD_MARGIN
+        card_right = CARD_WIDTH - CARD_MARGIN
 
         # Вычисляем ширины колонок
-        table_width = CARD_WIDTH - (CARD_PADDING * 2)
+        table_width = (card_right - card_left) - (CARD_PADDING * 2)
         col1_width = int(table_width * COL1_WIDTH_PCT)
         col2_width = int(table_width * COL2_WIDTH_PCT)
         col3_width = table_width - col1_width - col2_width  # Остаток
         col_widths = [col1_width, col2_width, col3_width]
 
-        # Подготавливаем строки таблицы
-        rows = [
-            ("Турнирное положение",
-             table_data['tournament_position']['left'],
-             table_data['tournament_position']['right']),
-            ("Текущая форма",
-             table_data['current_form']['left'],
-             table_data['current_form']['right']),
-            ("Форма дома/на выезде",
-             table_data['home_away']['left'],
-             table_data['home_away']['right']),
-            ("Составы",
-             table_data['lineup_changes']['left'],
-             table_data['lineup_changes']['right']),
-            ("История встреч",
-             "\n".join(table_data['history']),
-             ""),  # H2H занимает 2 колонки
-            ("Статистические тренды",
-             table_data['stats_trends']['left'],
-             table_data['stats_trends']['right'])
-        ]
+        # Подготавливаем строки таблицы.
+        # Новый формат: адаптивный список rows, старый формат — fallback.
+        rows = table_data.get('rows', [])
+        if not rows:
+            rows = [
+                {
+                    'label': "Турнирное положение",
+                    'left': table_data['tournament_position']['left'],
+                    'right': table_data['tournament_position']['right'],
+                    'colspan': False
+                },
+                {
+                    'label': "Текущая форма",
+                    'left': table_data['current_form']['left'],
+                    'right': table_data['current_form']['right'],
+                    'colspan': False
+                },
+                {
+                    'label': "Форма дома/на выезде",
+                    'left': table_data['home_away']['left'],
+                    'right': table_data['home_away']['right'],
+                    'colspan': False
+                },
+                {
+                    'label': "Составы",
+                    'left': table_data['lineup_changes']['left'],
+                    'right': table_data['lineup_changes']['right'],
+                    'colspan': False
+                },
+                {
+                    'label': "История встреч",
+                    'left': "\n".join(table_data['history']),
+                    'right': "",
+                    'colspan': True
+                },
+                {
+                    'label': "Статистические тренды",
+                    'left': table_data['stats_trends']['left'],
+                    'right': table_data['stats_trends']['right'],
+                    'colspan': False
+                }
+            ]
 
         # Вычисляем высоты строк
         row_heights = []
         for row in rows:
-            row_height = _calculate_row_height(list(row), cell_font, col_widths)
+            if row.get('colspan'):
+                row_height = _calculate_row_height(
+                    [row.get('label', ''), row.get('left', '')],
+                    cell_font,
+                    [col1_width, col2_width + col3_width]
+                )
+            else:
+                row_height = _calculate_row_height(
+                    [row.get('label', ''), row.get('left', ''), row.get('right', '')],
+                    cell_font,
+                    col_widths
+                )
             row_heights.append(row_height)
 
         # Вычисляем общую высоту изображения
-        title_height = 60  # Заголовок + отступ
+        title_height = 60 * SCALE  # Заголовок + отступ
         total_table_height = HEADER_HEIGHT + sum(row_heights)
-        total_height = title_height + total_table_height + (CARD_PADDING * 2) + 20
+        total_height = title_height + total_table_height + (CARD_PADDING * 2) + 20 * SCALE
 
         # Создаём изображение
         img = Image.new('RGB', (CARD_WIDTH, total_height), _hex_to_rgb(BG_COLOR))
         draw = ImageDraw.Draw(img)
 
         # Рисуем карточку фон
-        card_y = 10
+        card_y = CARD_MARGIN
         draw.rounded_rectangle(
-            [10, card_y, CARD_WIDTH - 10, total_height - 10],
-            radius=8,
+            [card_left, card_y, card_right, total_height - CARD_MARGIN],
+            radius=8 * SCALE,
             fill=_hex_to_rgb(CARD_BG)
         )
 
@@ -278,15 +315,15 @@ def render_analysis_table(match: dict, table_data: dict) -> str:
         title_lines = table_data['title'].split('\n')
         title_y = card_y + CARD_PADDING
         for line in title_lines:
-            draw.text((CARD_PADDING + 10, title_y), line,
+            draw.text((card_left + CARD_PADDING, title_y), line,
                       fill=_hex_to_rgb(TITLE_COLOR), font=title_font)
-            title_y += 20
+            title_y += 20 * SCALE
 
         # Начало таблицы
-        table_y = title_y + 10
+        table_y = title_y + 10 * SCALE
 
         # Рисуем заголовок таблицы
-        header_x = CARD_PADDING + 10
+        header_x = card_left + CARD_PADDING
         _draw_cell(draw, header_x, table_y, col1_width, HEADER_HEIGHT,
                    "Аспект анализа", header_font, is_header=True)
         _draw_cell(draw, header_x + col1_width, table_y, col2_width,
@@ -301,22 +338,25 @@ def render_analysis_table(match: dict, table_data: dict) -> str:
         # Рисуем строки данных
         for i, row in enumerate(rows):
             row_height = row_heights[i]
+            label = row.get('label', '')
+            left = row.get('left', '')
+            right = row.get('right', '')
 
-            # Специальная обработка для "История встреч" (colspan=2)
-            if row[0] == "История встреч":
+            # Строка с объединёнными правыми колонками
+            if row.get('colspan'):
                 _draw_cell(draw, header_x, table_y, col1_width, row_height,
-                           row[0], cell_font)
+                           label, cell_font)
                 _draw_cell(draw, header_x + col1_width, table_y,
-                           col2_width + col3_width, row_height, row[1],
+                           col2_width + col3_width, row_height, left,
                            cell_font)
             else:
                 # Обычная строка с 3 колонками
                 _draw_cell(draw, header_x, table_y, col1_width, row_height,
-                           row[0], cell_font)
+                           label, cell_font)
                 _draw_cell(draw, header_x + col1_width, table_y, col2_width,
-                           row_height, row[1], cell_font)
+                           row_height, left, cell_font)
                 _draw_cell(draw, header_x + col1_width + col2_width, table_y,
-                           col3_width, row_height, row[2], cell_font)
+                           col3_width, row_height, right, cell_font)
 
             table_y += row_height
 
@@ -325,12 +365,12 @@ def render_analysis_table(match: dict, table_data: dict) -> str:
         output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp')
         os.makedirs(output_dir, exist_ok=True)
 
-        output_path = os.path.join(output_dir, f'analysis_{match_id}.png')
-        img.save(output_path, 'PNG', dpi=(150, 150))
+        output_path = os.path.join(output_dir, f'analysis_{match_id}.webp')
+        img.save(output_path, 'WEBP', quality=90)
 
-        logger.info(f"PNG таблица сохранена: {output_path}")
+        logger.info(f"WebP таблица сохранена: {output_path}")
         return output_path
 
     except Exception as e:
-        logger.error(f"Ошибка рендеринга PNG: {e}", exc_info=True)
+        logger.error(f"Ошибка рендеринга WebP: {e}", exc_info=True)
         raise
