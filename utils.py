@@ -23,10 +23,10 @@ def markdown_to_html(text: str) -> str:
         return text
     # Экранируем HTML-спецсимволы
     text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    # **bold**
-    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    # **bold** (re.DOTALL чтобы работало и для многострочного текста)
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
     # _italic_ (одиночные подчёркивания)
-    text = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'<i>\1</i>', text)
+    text = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'<i>\1</i>', text, flags=re.DOTALL)
     return text
 
 
@@ -434,6 +434,21 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             welcome_text,
             reply_markup=main_menu_keyboard()
         )
+
+
+def extract_token_from_message(message: str) -> str | None:
+    """
+    Извлекает 12-символьный токен покупки из комментария к донату.
+
+    Обрезает сообщение до 500 символов перед обработкой,
+    чтобы защититься от DoS через огромные строки.
+    """
+    if not message:
+        return None
+    # Ограничиваем длину перед regex чтобы не нагружать CPU
+    truncated = message[:500].upper()
+    match = re.search(r'\b([A-Z0-9]{12})\b', truncated)
+    return match.group(1) if match else None
 
 
 def format_match_info(match, include_analysis=False):

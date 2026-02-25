@@ -280,6 +280,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
     elif query.data.startswith('sport_'):
         sport = query.data.split('_')[1]
+        if sport not in ('football', 'basketball', 'hockey'):
+            logger.warning(f"Неизвестный вид спорта в callback: {sport!r}")
+            await query.answer()
+            return
         # Сохраняем предыдущее меню
         context.user_data['menu_history'].append(MENU_CATEGORY_SPORTS)
         logger.info(f"Добавлено MENU_CATEGORY_SPORTS в history. Текущий history: {context.user_data['menu_history']}")

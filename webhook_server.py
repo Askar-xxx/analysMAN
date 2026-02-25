@@ -11,7 +11,6 @@ Webhook сервер для приёма уведомлений от DonationAle
 6. Отправляет пользователю через Telegram
 """
 import logging
-import re
 import hmac
 import hashlib
 import time
@@ -20,6 +19,7 @@ from flask import Flask, request, jsonify
 import asyncio
 import database
 from config import DA_CLIENT_SECRET, TOKEN
+from utils import extract_token_from_message
 
 # Настройка логирования
 logging.basicConfig(
@@ -237,8 +237,8 @@ def verify_signature(payload_body, signature_header):
         bool: True если подпись валидна
     """
     if not DA_CLIENT_SECRET:
-        logger.warning("DA_CLIENT_SECRET не настроен, пропускаем проверку подписи")
-        return True
+        logger.error("DA_CLIENT_SECRET не настроен — проверка подписи невозможна")
+        return False
 
     expected_signature = hmac.new(
         DA_CLIENT_SECRET.encode('utf-8'),
@@ -248,25 +248,6 @@ def verify_signature(payload_body, signature_header):
 
     return hmac.compare_digest(expected_signature, signature_header)
 
-
-def extract_token_from_message(message):
-    """
-    Извлекает token из комментария к донату.
-
-    Token - это 12-символьный код в uppercase (например: ABC123XYZ456)
-
-    Args:
-        message: Комментарий к донату
-
-    Returns:
-        str or None: Извлечённый token или None
-    """
-    if not message:
-        return None
-
-    # Ищем 12-символьный код (буквы и цифры, uppercase)
-    match = re.search(r'\b([A-Z0-9]{12})\b', message.upper())
-    return match.group(1) if match else None
 
 
 async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_message_id=None):
@@ -336,6 +317,8 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
             )
 
         async with match_lock:
+            # Чистим lock из словаря сразу после захвата — он уже не нужен другим
+            _MATCH_GENERATION_LOCKS.pop(match_id, None)
             # Double-check: пока ждали lock, анализ могли уже сгенерировать.
             match_dict, cached_analysis_text = _load_match_with_cache(match_id, match_dict)
             if cached_analysis_text:
@@ -628,7 +611,12 @@ def donationalerts_webhook():
             logger.error("Пустой JSON в запросе")
             return jsonify({'error': 'Empty JSON'}), 400
 
-        logger.info(f"Данные webhook: {data}")
+        # Логируем без токена — он конфиденциальный
+        safe_log = {k: v for k, v in data.items() if k != 'message'}
+        if 'message' in data:
+            msg = str(data['message'] or '')
+            safe_log['message'] = msg[:6] + '***' if len(msg) > 6 else '***'
+        logger.info(f"Данные webhook: {safe_log}")
 
         # Извлекаем данные
         donation_id = data.get('id')
@@ -657,29 +645,30 @@ def donationalerts_webhook():
 
         logger.info(f"Извлечён token: {token}")
 
-        # Ищем pending purchase по token
+        # Сначала читаем purchase для проверки суммы и идемпотентности
         conn = database.get_db_connection()
         cursor = conn.cursor()
         cursor.execute('''
             SELECT id, user_id, match_id, amount, status, donation_event_id
             FROM purchases
-            WHERE token = ? AND status = 'pending'
+            WHERE token = ?
         ''', (token,))
         purchase = cursor.fetchone()
 
         if not purchase:
-            # Проверяем, может быть уже обработан (идемпотентность)
-            cursor.execute('''
-                SELECT donation_event_id, status FROM purchases WHERE token = ?
-            ''', (token,))
-            existing = cursor.fetchone()
             conn.close()
+            logger.warning(f"Purchase с token {token} не найден")
+            return jsonify({'error': 'Purchase not found'}), 404
 
-            if existing and existing['donation_event_id'] == donation_id:
-                logger.info(f"Donation {donation_id} уже обработан (идемпотентность)")
-                return jsonify({'status': 'ok', 'message': 'Already processed'}), 200
+        # Идемпотентность: этот донат уже обрабатывали
+        if purchase['donation_event_id'] == donation_id:
+            conn.close()
+            logger.info(f"Donation {donation_id} уже обработан (идемпотентность)")
+            return jsonify({'status': 'ok', 'message': 'Already processed'}), 200
 
-            logger.warning(f"Pending purchase с token {token} не найден")
+        if purchase['status'] != 'pending':
+            conn.close()
+            logger.warning(f"Purchase с token {token} уже в статусе {purchase['status']}")
             return jsonify({'error': 'Purchase not found or already paid'}), 404
 
         purchase_id = purchase['id']
@@ -700,14 +689,20 @@ def donationalerts_webhook():
 
         logger.info(f"Сумма совпадает: {amount_kopeks} копеек")
 
-        # Обновляем purchase: status='paid', donation_event_id
+        # Атомарно забираем purchase: UPDATE только если status ещё 'pending'
+        # Это защищает от двух одновременных вебхуков на один токен
         cursor.execute('''
             UPDATE purchases
             SET status = 'paid', donation_event_id = ?
-            WHERE id = ?
+            WHERE id = ? AND status = 'pending'
         ''', (donation_id, purchase_id))
+        rows_updated = cursor.rowcount
         conn.commit()
         conn.close()
+
+        if rows_updated == 0:
+            logger.warning(f"Purchase {purchase_id} уже был обработан другим процессом (race condition защита)")
+            return jsonify({'status': 'ok', 'message': 'Already processed'}), 200
 
         logger.info(f"Purchase {purchase_id} обновлён: status='paid', donation_event_id={donation_id}")
 

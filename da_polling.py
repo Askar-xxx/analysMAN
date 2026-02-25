@@ -7,10 +7,10 @@ Polling listener для DonationAlerts (вместо WebSocket).
 """
 import asyncio
 import logging
-import re
 import requests
 import database
 from config import DA_ACCESS_TOKEN
+from utils import extract_token_from_message
 
 logging.basicConfig(
     level=logging.INFO,
@@ -68,12 +68,10 @@ async def process_donation(donation_data):
         amount_kopeks = int(amount_rub * 100)
 
         # Извлекаем token из комментария
-        token_match = re.search(r'\b([A-Z0-9]{12})\b', message.upper())
-        if not token_match:
+        token = extract_token_from_message(message)
+        if not token:
             logger.warning(f"Token не найден в сообщении: '{message}'")
             return False
-
-        token = token_match.group(1)
         logger.info(f"🔑 Извлечён token: {token}")
 
         # === 1. Ищем pending purchase (прямая покупка анализа) ===

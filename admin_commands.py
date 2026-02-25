@@ -368,32 +368,31 @@ async def clear_purchases_command(update: Update, context: ContextTypes.DEFAULT_
 
     conn = database.get_db_connection()
     cursor = conn.cursor()
+    try:
+        if args[0].lower() == 'all':
+            cursor.execute('SELECT COUNT(*) FROM purchases')
+            count = cursor.fetchone()[0]
+            cursor.execute('DELETE FROM purchases')
+            conn.commit()
+            await update.message.reply_text(f"✅ Удалено всех покупок: {count}")
+            logger.warning(f"Admin {admin_id} удалил ВСЕ покупки ({count} шт.)")
+        else:
+            try:
+                target_user_id = int(args[0])
+            except ValueError:
+                await update.message.reply_text("❌ Укажите 'all' или корректный user_id.")
+                return
 
-    if args[0].lower() == 'all':
-        cursor.execute('SELECT COUNT(*) FROM purchases')
-        count = cursor.fetchone()[0]
-        cursor.execute('DELETE FROM purchases')
-        conn.commit()
+            cursor.execute('SELECT COUNT(*) FROM purchases WHERE user_id = ?', (target_user_id,))
+            count = cursor.fetchone()[0]
+            cursor.execute('DELETE FROM purchases WHERE user_id = ?', (target_user_id,))
+            conn.commit()
+            await update.message.reply_text(
+                f"✅ Удалено покупок пользователя {target_user_id}: {count}"
+            )
+            logger.info(f"Admin {admin_id} удалил {count} покупок user={target_user_id}")
+    finally:
         conn.close()
-        await update.message.reply_text(f"✅ Удалено всех покупок: {count}")
-        logger.warning(f"Admin {admin_id} удалил ВСЕ покупки ({count} шт.)")
-    else:
-        try:
-            target_user_id = int(args[0])
-        except ValueError:
-            conn.close()
-            await update.message.reply_text("❌ Укажите 'all' или корректный user_id.")
-            return
-
-        cursor.execute('SELECT COUNT(*) FROM purchases WHERE user_id = ?', (target_user_id,))
-        count = cursor.fetchone()[0]
-        cursor.execute('DELETE FROM purchases WHERE user_id = ?', (target_user_id,))
-        conn.commit()
-        conn.close()
-        await update.message.reply_text(
-            f"✅ Удалено покупок пользователя {target_user_id}: {count}"
-        )
-        logger.info(f"Admin {admin_id} удалил {count} покупок user={target_user_id}")
 
 
 async def clear_topups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -423,40 +422,38 @@ async def clear_topups_command(update: Update, context: ContextTypes.DEFAULT_TYP
     conn = database.get_db_connection()
     cursor = conn.cursor()
     mode = args[0].lower()
+    try:
+        if mode == 'all':
+            cursor.execute('SELECT COUNT(*) FROM balance_topups')
+            count = cursor.fetchone()[0]
+            cursor.execute('DELETE FROM balance_topups')
+            conn.commit()
+            await update.message.reply_text(f"✅ Удалено всех топапов: {count}")
+            logger.warning(f"Admin {admin_id} удалил ВСЕ balance_topups ({count} шт.)")
+        elif mode == 'pending':
+            cursor.execute("SELECT COUNT(*) FROM balance_topups WHERE status = 'pending'")
+            count = cursor.fetchone()[0]
+            cursor.execute("DELETE FROM balance_topups WHERE status = 'pending'")
+            conn.commit()
+            await update.message.reply_text(f"✅ Удалено pending топапов: {count}")
+            logger.info(f"Admin {admin_id} удалил {count} pending топапов")
+        else:
+            try:
+                target_user_id = int(args[0])
+            except ValueError:
+                await update.message.reply_text("❌ Укажите 'all', 'pending' или корректный user_id.")
+                return
 
-    if mode == 'all':
-        cursor.execute('SELECT COUNT(*) FROM balance_topups')
-        count = cursor.fetchone()[0]
-        cursor.execute('DELETE FROM balance_topups')
-        conn.commit()
+            cursor.execute('SELECT COUNT(*) FROM balance_topups WHERE user_id = ?', (target_user_id,))
+            count = cursor.fetchone()[0]
+            cursor.execute('DELETE FROM balance_topups WHERE user_id = ?', (target_user_id,))
+            conn.commit()
+            await update.message.reply_text(
+                f"✅ Удалено топапов пользователя {target_user_id}: {count}"
+            )
+            logger.info(f"Admin {admin_id} удалил {count} топапов user={target_user_id}")
+    finally:
         conn.close()
-        await update.message.reply_text(f"✅ Удалено всех топапов: {count}")
-        logger.warning(f"Admin {admin_id} удалил ВСЕ balance_topups ({count} шт.)")
-    elif mode == 'pending':
-        cursor.execute("SELECT COUNT(*) FROM balance_topups WHERE status = 'pending'")
-        count = cursor.fetchone()[0]
-        cursor.execute("DELETE FROM balance_topups WHERE status = 'pending'")
-        conn.commit()
-        conn.close()
-        await update.message.reply_text(f"✅ Удалено pending топапов: {count}")
-        logger.info(f"Admin {admin_id} удалил {count} pending топапов")
-    else:
-        try:
-            target_user_id = int(args[0])
-        except ValueError:
-            conn.close()
-            await update.message.reply_text("❌ Укажите 'all', 'pending' или корректный user_id.")
-            return
-
-        cursor.execute('SELECT COUNT(*) FROM balance_topups WHERE user_id = ?', (target_user_id,))
-        count = cursor.fetchone()[0]
-        cursor.execute('DELETE FROM balance_topups WHERE user_id = ?', (target_user_id,))
-        conn.commit()
-        conn.close()
-        await update.message.reply_text(
-            f"✅ Удалено топапов пользователя {target_user_id}: {count}"
-        )
-        logger.info(f"Admin {admin_id} удалил {count} топапов user={target_user_id}")
 
 
 async def admin_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
