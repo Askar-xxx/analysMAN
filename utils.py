@@ -1,11 +1,33 @@
 import logging
 import re
 import unicodedata
+from telegram.error import BadRequest
 from telegram import Update
 from telegram.ext import ContextTypes
 import database
 
 logger = logging.getLogger(__name__)
+
+
+def markdown_to_html(text: str) -> str:
+    """
+    Конвертирует базовый Markdown в HTML для отправки через Telegram parse_mode='HTML'.
+
+    Поддерживает:
+    - **bold** → <b>bold</b>
+    - _italic_ → <i>italic</i>
+
+    Экранирует HTML-спецсимволы (&, <, >) перед конвертацией.
+    """
+    if not text:
+        return text
+    # Экранируем HTML-спецсимволы
+    text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    # **bold**
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    # _italic_ (одиночные подчёркивания)
+    text = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'<i>\1</i>', text)
+    return text
 
 
 # Запрещённые корни слов (регистронезависимо)
@@ -17,8 +39,8 @@ BANNED_ROOTS = re.compile(
 # Разрешённые эмодзи (спорт, аналитика)
 ALLOWED_EMOJI = {'⚽', '🏀', '🏒', '📊', '📈', '📅', '⏰', '🔥', '⭐', '🎯',
                  '🏆', '💪', '👀', '📝', '🔑', '⚡', '🛡️', '⚔️', '🥅', '🎾'}
-MAX_EMOJI_TOTAL = 4
-MAX_EMOJI_PER_SECTION = 1
+MAX_EMOJI_TOTAL = 8
+MAX_EMOJI_PER_SECTION = 2
 
 
 def _is_emoji(char: str) -> bool:
@@ -26,61 +48,129 @@ def _is_emoji(char: str) -> bool:
     return unicodedata.category(char) in ('So', 'Sk') or char in ALLOWED_EMOJI
 
 
+def _is_section_heading(line: str) -> bool:
+    """
+    Определяет заголовок раздела для лимита эмодзи.
+    Поддерживает numbered, markdown heading, markdown bold.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if re.match(r'^\d+\.\s+', stripped):
+        return True
+    if re.match(r'^#{1,3}\s+', stripped):
+        return True
+    if re.match(r'^(?:[^\w\s]+\s*)?\*\*[^*\n]{2,80}\*\*$', stripped):
+        return True
+    if re.match(r'^[^:\n]{2,48}:$', stripped):
+        return True
+    return False
+
+
 def _limit_emoji(text: str) -> str:
-    """Ограничивает эмодзи: макс 1 на раздел, макс 4 всего."""
-    # Разбиваем по разделам (нумерованные заголовки 1. 2. ... 6.)
-    section_pattern = re.compile(r'(?=^\d+\.)', re.MULTILINE)
-    sections = section_pattern.split(text)
-
+    """Ограничивает эмодзи: макс N на раздел, макс M всего."""
     total_emoji_count = 0
-    result_sections = []
+    section_emoji_count = 0
+    result_lines = []
 
-    for section in sections:
-        section_emoji_count = 0
+    for line in text.splitlines(keepends=True):
+        if _is_section_heading(line):
+            section_emoji_count = 0
         chars = []
-        for char in section:
+        for char in line:
             if _is_emoji(char):
-                if section_emoji_count < MAX_EMOJI_PER_SECTION and total_emoji_count < MAX_EMOJI_TOTAL:
+                if (
+                    section_emoji_count < MAX_EMOJI_PER_SECTION
+                    and total_emoji_count < MAX_EMOJI_TOTAL
+                ):
                     chars.append(char)
                     section_emoji_count += 1
                     total_emoji_count += 1
                 # Иначе пропускаем эмодзи
             else:
                 chars.append(char)
-        result_sections.append(''.join(chars))
+        result_lines.append(''.join(chars))
 
-    return ''.join(result_sections)
+    return ''.join(result_lines)
 
 
 def _truncate_sentences(text: str, target: int) -> str:
-    """Сокращает текст до целевой длины, убирая предложения с конца."""
+    """Сокращает текст до целевой длины, сохраняя блок «Вывод»."""
     if len(text) <= target:
         return text
-    # Разбиваем на предложения
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    result = []
-    current_len = 0
-    for sentence in sentences:
-        if current_len + len(sentence) + 1 > target and result:
-            break
-        result.append(sentence)
-        current_len += len(sentence) + 1
-    return ' '.join(result)
+
+    def _truncate_with_structure(source: str, limit: int) -> str:
+        """Сокращает текст, сохраняя исходные переносы и разделители."""
+        if len(source) <= limit:
+            return source
+
+        if limit <= 0:
+            return ""
+
+        chunks = re.split(r'(?<=[.!?…])(\s+)', source)
+        if len(chunks) == 1:
+            return source[:limit].rstrip()
+
+        result = []
+        current_len = 0
+        idx = 0
+        while idx < len(chunks):
+            sentence = chunks[idx]
+            separator = chunks[idx + 1] if idx + 1 < len(chunks) else ''
+            segment = sentence + separator
+            if current_len + len(segment) > limit and result:
+                break
+            if current_len + len(sentence) > limit and result:
+                break
+            if current_len + len(segment) <= limit:
+                result.append(segment)
+                current_len += len(segment)
+            else:
+                result.append(sentence)
+                current_len += len(sentence)
+                break
+            idx += 2
+
+        compact = ''.join(result).rstrip()
+        if compact:
+            return compact
+        return source[:limit].rstrip()
+
+    # Ищем последний блок «Вывод» (с эмодзи или без)
+    conclusion_match = re.search(
+        r'(\n\s*(?:🔑\s*)?\*{0,2}(?:Вывод|вывод)\*{0,2}.*)',
+        text, re.DOTALL
+    )
+
+    if conclusion_match:
+        body = text[:conclusion_match.start()].rstrip()
+        conclusion = text[conclusion_match.start():].lstrip('\n')
+        # Сокращаем только тело, оставляя место для вывода
+        body_target = target - len(conclusion) - 2  # \n\n между блоками
+        if body_target > 0:
+            truncated_body = _truncate_with_structure(body, body_target)
+            if truncated_body:
+                return f"{truncated_body}\n\n{conclusion}".strip()
+            return conclusion.strip()
+        return text
+    # Fallback: без блока вывода — режем как раньше
+    return _truncate_with_structure(text, target)
 
 
-def clean_and_truncate(text: str) -> str:
+def clean_and_truncate(
+    text: str,
+    target_max: int = 2800,
+    soft_cap: int = 3400,
+    hard_cap: int = 3600
+) -> str:
     """
-    Постобработка текста анализа (intro + conclusion):
+    Постобработка текста анализа:
     - Удаляет запрещённые слова (коэффициент, ставка, прогноз)
-    - Ограничивает эмодзи (макс 1 на раздел, макс 4 всего)
-    - Soft cap 900: сокращает предложения до целевой длины 800
-    - Hard cap 1200: обрезает по последнему \\n
+    - Ограничивает эмодзи (макс 1 на раздел, макс 5 всего)
+    - Soft cap: сокращает предложения до целевой длины target_max
+    - Hard cap: обрезает по последнему \\n
     - Логирует длину до/после и флаг truncated
     """
-    TARGET_MAX = 800
-    SOFT_CAP = 900
-    HARD_CAP = 1200
-
     original_length = len(text)
     truncated = False
 
@@ -94,16 +184,16 @@ def clean_and_truncate(text: str) -> str:
     # 2. Ограничиваем эмодзи
     text = _limit_emoji(text)
 
-    # 3. Soft cap: если > 3000, сокращаем предложения до целевой длины
-    if len(text) > SOFT_CAP:
-        text = _truncate_sentences(text, TARGET_MAX)
+    # 3. Soft cap: если текст слишком длинный, сокращаем по предложениям.
+    if len(text) > soft_cap:
+        text = _truncate_sentences(text, target_max)
         truncated = True
 
-    # 4. Hard cap: если всё ещё > 3800, обрезаем по последнему \n
-    if len(text) > HARD_CAP:
-        cut = text[:HARD_CAP]
+    # 4. Hard cap: если всё ещё слишком длинный, обрезаем аккуратно.
+    if len(text) > hard_cap:
+        cut = text[:hard_cap]
         last_newline = cut.rfind('\n')
-        if last_newline > HARD_CAP // 2:
+        if last_newline > hard_cap // 2:
             text = cut[:last_newline] + '\n...'
         else:
             text = cut + '\n...'
@@ -164,6 +254,41 @@ def split_for_telegram(text: str, limit: int = 3800) -> list[str]:
         parts.append(remaining.strip())
 
     return parts
+
+
+async def safe_answer_callback(query, text=None, show_alert=False, cache_time=None):
+    """
+    Безопасный ответ на callback query.
+    Не роняет обработчик на устаревшем query id.
+    """
+    try:
+        if query is None or not hasattr(query, 'answer'):
+            return False
+
+        kwargs = {}
+        if text is not None:
+            kwargs['text'] = text
+        if show_alert:
+            kwargs['show_alert'] = show_alert
+        if cache_time is not None:
+            kwargs['cache_time'] = cache_time
+
+        await query.answer(**kwargs)
+        return True
+    except BadRequest as e:
+        err = str(e).lower()
+        if (
+            "query is too old" in err
+            or "response timeout expired" in err
+            or "query id is invalid" in err
+        ):
+            logger.warning("Игнорируем устаревший callback query: %s", e)
+            return False
+        logger.error("Ошибка ответа на callback query: %s", e)
+        return False
+    except Exception as e:
+        logger.error("Неожиданная ошибка query.answer: %s", e)
+        return False
 
 
 async def safe_edit_message(query, text, reply_markup=None, parse_mode='HTML'):

@@ -18,13 +18,23 @@ class TestCleanAndTruncate:
     def test_long_text_within_soft_cap(self):
         """Длинный текст (>900) сокращается до ≤900."""
         text = "Тестовое предложение. " * 60  # ~1260 символов
-        result = clean_and_truncate(text)
+        result = clean_and_truncate(
+            text,
+            target_max=800,
+            soft_cap=900,
+            hard_cap=1200
+        )
         assert len(result) <= 900
 
     def test_very_long_text_within_hard_cap(self):
         """Очень длинный текст без точек не превышает hard cap 1200."""
         text = "слово " * 300  # ~1800 символов, без точек
-        result = clean_and_truncate(text)
+        result = clean_and_truncate(
+            text,
+            target_max=800,
+            soft_cap=900,
+            hard_cap=1200
+        )
         assert len(result) <= 1200 + 4  # +4 на '\n...'
 
     def test_banned_word_coefficient(self):
@@ -55,16 +65,51 @@ class TestCleanAndTruncate:
         assert "команда" in result.lower()
 
     def test_emoji_limit_total(self):
-        """В тексте не более 4 эмодзи после обработки."""
+        """В тексте не более 8 эмодзи после обработки."""
         text = "⚽ Раздел 1\n🏀 Раздел 2\n🏒 Раздел 3\n🔥 Раздел 4\n⭐ Раздел 5\n📊 Раздел 6"
         result = clean_and_truncate(text)
         emoji_count = sum(1 for ch in result if ord(ch) > 0x2600)
-        assert emoji_count <= 4
+        assert emoji_count <= 8
+
+    def test_emoji_headings_are_preserved(self):
+        """Эмодзи в markdown-заголовках не срезаются до одного символа на весь текст."""
+        text = (
+            "⚽ **Контекст матча**\nТекст блока.\n\n"
+            "📈 **Форма и турнирная ситуация**\nТекст блока.\n\n"
+            "📊 **Статистика и игровые паттерны**\nТекст блока.\n\n"
+            "🧠 **Психологические факторы**\nТекст блока.\n\n"
+            "🔑 **Вывод**\nТекст блока."
+        )
+        result = clean_and_truncate(text)
+        emoji_count = sum(1 for ch in result if ord(ch) > 0x2600)
+        assert emoji_count >= 5
 
     def test_returns_string(self):
         """Функция возвращает строку."""
         result = clean_and_truncate("Тест")
         assert isinstance(result, str)
+
+    def test_truncation_preserves_section_breaks(self):
+        """При сокращении сохраняются абзацы и заголовки секций."""
+        text = (
+            "⚽ **Контекст матча**\n"
+            + ("Команда А проводит отрезок стабильно. " * 45)
+            + "\n\n"
+            "📈 **Форма и турнирная ситуация**\n"
+            + ("Команда Б набрала ход на дистанции. " * 45)
+            + "\n\n"
+            "🔑 **Вывод**\n"
+            "Финальный блок с цифрами: 12 очков и 58% владения."
+        )
+        result = clean_and_truncate(
+            text,
+            target_max=900,
+            soft_cap=1000,
+            hard_cap=1300
+        )
+        # Секция может не влезть по лимиту, но вывод не должен прилипать к телу.
+        assert "\n\n" in result
+        assert "\n\n🔑 **Вывод**" in result
 
 
 class TestSplitForTelegram:
