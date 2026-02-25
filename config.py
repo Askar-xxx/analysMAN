@@ -41,11 +41,24 @@ def _env_to_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in ('1', 'true', 'yes', 'on')
 
 
+def _env_to_int(name: str, default: int) -> int:
+    """Парсинг int-переменной окружения с безопасным fallback."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw.strip())
+    except Exception:
+        return default
+
+
 # === Telegram ===
 TOKEN = os.environ.get('TELEGRAM_TOKEN', '')
 
 # === AI (DeepSeek) ===
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', '')
+# Количество дополнительных LLM-переписываний после quality-check (0 = без повторных API-вызовов).
+AI_QUALITY_REWRITE_ATTEMPTS = max(0, min(_env_to_int('AI_QUALITY_REWRITE_ATTEMPTS', 0), 3))
 
 # === TheSportsDB Premium API ===
 THESPORTSDB_KEY = os.environ.get('THESPORTSDB_KEY', '')

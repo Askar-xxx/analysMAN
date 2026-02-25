@@ -14,6 +14,7 @@ import logging
 import re
 import hmac
 import hashlib
+import time
 from datetime import datetime
 from flask import Flask, request, jsonify
 import asyncio
@@ -28,6 +29,99 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
+
+def _stage_icon(status: str) -> str:
+    """Иконка состояния шага прогресса."""
+    if status == 'done':
+        return "✅"
+    if status == 'run':
+        return "⏳"
+    if status == 'error':
+        return "❌"
+    return "▫️"
+
+
+def _build_generation_progress_text(match_dict: dict, statuses: dict) -> str:
+    """Формирует текст прогресса генерации для пользователя."""
+    team1 = match_dict.get('team1', 'Команда 1')
+    team2 = match_dict.get('team2', 'Команда 2')
+    match_date = match_dict.get('match_date', '')
+    match_time = match_dict.get('match_time', '')
+
+    return (
+        "⏳ <b>Генерируем анализ...</b>\n\n"
+        f"🏆 {team1} vs {team2}\n"
+        f"📅 {match_date} {match_time} МСК\n\n"
+        "<b>Текстовый анализ</b>\n"
+        f"{_stage_icon(statuses.get('text_data'))} 1/2 Сбор и обогащение данных\n"
+        f"{_stage_icon(statuses.get('text_generate'))} 2/2 Генерация текста\n\n"
+        "<b>Таблица</b>\n"
+        f"{_stage_icon(statuses.get('table_prepare'))} 1/2 Подготовка таблицы\n"
+        f"{_stage_icon(statuses.get('table_render'))} 2/2 Рендер изображения\n\n"
+        "<b>Финал</b>\n"
+        f"{_stage_icon(statuses.get('send'))} Отправка результата"
+    )
+
+
+async def _update_generation_progress(
+    bot,
+    user_id: int,
+    instruction_message_id: int,
+    match_dict: dict,
+    statuses: dict
+) -> None:
+    """Безопасно обновляет сообщение прогресса генерации."""
+    if not instruction_message_id:
+        return
+
+    text = _build_generation_progress_text(match_dict, statuses)
+    try:
+        await bot.edit_message_text(
+            chat_id=user_id,
+            message_id=instruction_message_id,
+            text=text,
+            parse_mode='HTML'
+        )
+    except Exception as e:
+        err = str(e).lower()
+        if "message is not modified" in err:
+            return
+        logger.warning(
+            "Не удалось обновить сообщение прогресса (message_id=%s): %s",
+            instruction_message_id,
+            e
+        )
+
+
+def _build_enriched_data_summary(data: dict) -> dict:
+    """Краткая сводка по собранным enriched-данным для логов."""
+    if not isinstance(data, dict):
+        return {'type': str(type(data))}
+
+    standings = data.get('standings') or {}
+    table = standings.get('table') or []
+    team1_events = data.get('team1_last_match_events') or {}
+    team2_events = data.get('team2_last_match_events') or {}
+
+    return {
+        'h2h': len(data.get('h2h') or []),
+        'standings_rows': len(table),
+        'team1_form': len(data.get('team1_form') or []),
+        'team2_form': len(data.get('team2_form') or []),
+        'team1_lineup': len(data.get('team1_last_match_lineup') or []),
+        'team2_lineup': len(data.get('team2_last_match_lineup') or []),
+        'team1_events': len(team1_events.get('subs', [])) + len(team1_events.get('cards', [])),
+        'team2_events': len(team2_events.get('subs', [])) + len(team2_events.get('cards', [])),
+        'current_event_stats': len(data.get('current_event_stats') or {}),
+        'h2h_recent_stats': len(data.get('h2h_recent_stats') or []),
+        'errors': len(data.get('errors') or []),
+    }
+
+
+def _count_context_blocks(enriched_context: str) -> int:
+    """Считает количество секций в текстовом контексте."""
+    return sum(1 for line in (enriched_context or '').splitlines() if line.strip().startswith("==="))
 
 
 def verify_signature(payload_body, signature_header):
@@ -87,37 +181,83 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
     Returns:
         bool: True если успешно
     """
+    total_started_at = time.monotonic()
     try:
         # Импортируем здесь, чтобы избежать циклических зависимостей
         from match_data_fetcher import MatchDataFetcher, build_enriched_context
-        from ai_generator import generate_match_analysis_with_context
+        from ai_generator import generate_match_text_analysis
         from telegram import Bot
 
         bot = Bot(token=TOKEN)
+        progress_statuses = {
+            'text_data': 'run',
+            'text_generate': 'pending',
+            'table_prepare': 'pending',
+            'table_render': 'pending',
+            'send': 'pending',
+        }
+        await _update_generation_progress(
+            bot, user_id, instruction_message_id, match_dict, progress_statuses
+        )
 
         # Этап 1: Сбор обогащённых данных
         logger.info(f"Сбор данных для матча {match_id}...")
         enriched_data = {}
+        enriched_context = "Обогащённые данные недоступны."
+        data_started_at = time.monotonic()
         try:
             fetcher = MatchDataFetcher()
             enriched_data = fetcher.fetch_match_data(match_dict)
             enriched_context = build_enriched_context(match_dict, enriched_data)
-            logger.info(f"Данные собраны. Ошибки: {enriched_data.get('errors', [])}")
+            data_elapsed = time.monotonic() - data_started_at
+            data_summary = _build_enriched_data_summary(enriched_data)
+            context_chars = len(enriched_context or "")
+            context_blocks = _count_context_blocks(enriched_context)
+            logger.info(
+                "Данные собраны за %.1fs. summary=%s, context_chars=%s, context_blocks=%s",
+                data_elapsed,
+                data_summary,
+                context_chars,
+                context_blocks,
+            )
+            if enriched_data.get('errors'):
+                logger.warning("Ошибки enriched_data: %s", enriched_data.get('errors'))
         except Exception as e:
+            data_elapsed = time.monotonic() - data_started_at
             logger.error(f"Ошибка сбора данных: {e}", exc_info=True)
-            enriched_context = "Обогащённые данные недоступны."
+            logger.error("Этап сбора данных завершился с ошибкой за %.1fs", data_elapsed)
+            progress_statuses['text_data'] = 'error'
+            await _update_generation_progress(
+                bot, user_id, instruction_message_id, match_dict, progress_statuses
+            )
+            raise
 
-        # Этап 2: Генерация анализа (intro + conclusion)
+        progress_statuses['text_data'] = 'done'
+        progress_statuses['text_generate'] = 'run'
+        await _update_generation_progress(
+            bot, user_id, instruction_message_id, match_dict, progress_statuses
+        )
+
+        # Этап 2: Генерация текстового анализа
         logger.info(f"Генерация анализа для матча {match_id}...")
-        ai_result = await generate_match_analysis_with_context(match_dict, enriched_context)
-        intro = ai_result.get('intro', '')
-        conclusion = ai_result.get('conclusion', '')
-        analysis_text = f"{intro}\n\n{conclusion}".strip()
+        text_started_at = time.monotonic()
+        analysis_text = await generate_match_text_analysis(match_dict, enriched_context)
+        text_elapsed = time.monotonic() - text_started_at
+        logger.info(
+            "Текстовый анализ сгенерирован за %.1fs (%s символов)",
+            text_elapsed,
+            len(analysis_text or "")
+        )
+        progress_statuses['text_generate'] = 'done'
+        progress_statuses['table_prepare'] = 'run'
+        await _update_generation_progress(
+            bot, user_id, instruction_message_id, match_dict, progress_statuses
+        )
 
         # Этап 3: Рендеринг PNG таблицы
         logger.info("Рендеринг PNG таблицы...")
-        png_path = None
         cached_png_path = None
+        render_started_at = time.monotonic()
         try:
             from analysis_formatter import build_table_data
             from image_renderer import render_analysis_table
@@ -125,6 +265,23 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
             import shutil
 
             table_data = build_table_data(match_dict, enriched_data)
+            rows_count = int(
+                table_data.get(
+                    'raw_coverage_rows_count',
+                    table_data.get('coverage_rows_count', 0)
+                )
+            )
+            missing_cells = int(table_data.get('raw_missing_cells_count', 0))
+            logger.info(
+                "Таблица данных собрана: coverage_rows=%s, missing_cells=%s",
+                rows_count,
+                missing_cells
+            )
+            progress_statuses['table_prepare'] = 'done'
+            progress_statuses['table_render'] = 'run'
+            await _update_generation_progress(
+                bot, user_id, instruction_message_id, match_dict, progress_statuses
+            )
             temp_png = render_analysis_table(match_dict, table_data)
 
             # Сохраняем в постоянную папку
@@ -135,7 +292,6 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
             # Проверяем, что файл действительно скопирован
             if os.path.exists(target_path):
                 cached_png_path = target_path
-                png_path = cached_png_path
                 logger.info(f"PNG таблица сохранена: {cached_png_path}")
             else:
                 logger.error(f"Файл не был скопирован: {target_path}")
@@ -148,12 +304,35 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
         except Exception as e:
             logger.error(f"Ошибка рендеринга PNG: {e}", exc_info=True)
             cached_png_path = None  # Обнуляем путь при ошибке
+            progress_statuses['table_render'] = 'error'
+            await _update_generation_progress(
+                bot, user_id, instruction_message_id, match_dict, progress_statuses
+            )
+        finally:
+            render_elapsed = time.monotonic() - render_started_at
+            logger.info(
+                "Этап рендеринга PNG завершён за %.1fs (cached=%s)",
+                render_elapsed,
+                bool(cached_png_path)
+            )
+        if progress_statuses.get('table_render') != 'error':
+            progress_statuses['table_render'] = 'done'
+        progress_statuses['send'] = 'run'
+        await _update_generation_progress(
+            bot, user_id, instruction_message_id, match_dict, progress_statuses
+        )
 
-        # Сохраняем анализ и путь к PNG в БД
-        database.update_match_analysis(match_id, analysis_text, cached_png_path)
-        logger.info("Анализ и PNG путь сохранены в БД")
+        # Сохраняем результаты в БД
+        db_started_at = time.monotonic()
+        if cached_png_path:
+            database.update_match_analysis(match_id, analysis_text, cached_png_path)
+        else:
+            database.update_match_analysis(match_id, analysis_text)
+        db_elapsed = time.monotonic() - db_started_at
+        logger.info("Анализ и PNG путь сохранены в БД за %.1fs", db_elapsed)
 
-        # Этап 4: Отправка пользователю
+        # Этап 4: Отправка пользователю (выбор формата просмотра)
+        send_started_at = time.monotonic()
         sport = match_dict.get('sport')
         match_date = match_dict.get('match_date')
         back_callback_data = (
@@ -161,70 +340,57 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
             if sport and match_date
             else 'back'
         )
+        callback_suffix = f"_{sport}_{match_date}" if sport and match_date else ""
 
-        if png_path:
-            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-            keyboard = [
-                [InlineKeyboardButton("◀️ Назад", callback_data=back_callback_data)],
-                [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
-            ]
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    "📋 Таблица",
+                    callback_data=f"show_table_{match_id}{callback_suffix}"
+                ),
+                InlineKeyboardButton(
+                    "📝 Текст",
+                    callback_data=f"show_text_{match_id}{callback_suffix}"
+                ),
+            ],
+            [InlineKeyboardButton("◀️ Назад", callback_data=back_callback_data)],
+            [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
+        ]
 
-            # Отправляем intro как текст
-            if intro:
-                await bot.send_message(
-                    chat_id=user_id, text=intro, parse_mode='HTML'
-                )
+        ready_text = (
+            "✅ <b>Анализ готов</b>\n\n"
+            f"🏆 {match_dict['team1']} vs {match_dict['team2']}\n"
+            f"📅 {match_dict['match_date']} в {match_dict['match_time']} МСК\n\n"
+            "Выберите формат просмотра:"
+        )
+        await bot.send_message(
+            chat_id=user_id,
+            text=ready_text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
 
-            # Отправляем фото (таблица)
-            with open(png_path, 'rb') as photo:
-                await bot.send_photo(chat_id=user_id, photo=photo)
+        send_elapsed = time.monotonic() - send_started_at
+        total_elapsed = time.monotonic() - total_started_at
+        logger.info(
+            "Экран выбора формата отправлен пользователю %s за %.1fs (полный pipeline %.1fs)",
+            user_id,
+            send_elapsed,
+            total_elapsed
+        )
+        progress_statuses['send'] = 'done'
+        await _update_generation_progress(
+            bot, user_id, instruction_message_id, match_dict, progress_statuses
+        )
 
-            # Отправляем conclusion + кнопки
-            conclusion_text = conclusion if conclusion else "📊 Анализ завершён."
-            await bot.send_message(
-                chat_id=user_id,
-                text=conclusion_text,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode='HTML'
-            )
-
-            logger.info(f"Анализ отправлен пользователю {user_id}")
-
-            # Удаляем сообщение с прогрессом после успешной отправки
-            if instruction_message_id:
-                try:
-                    await bot.delete_message(chat_id=user_id, message_id=instruction_message_id)
-                    logger.info(f"Удалено сообщение с прогрессом (message_id={instruction_message_id})")
-                except Exception as e:
-                    logger.warning(f"Не удалось удалить сообщение с прогрессом: {e}")
-        else:
-            # Fallback: отправляем текстовый анализ
-            text = "✅ Ваш анализ готов!\n\n"
-            text += f"🏆 {match_dict['team1']} vs {match_dict['team2']}\n"
-            text += f"📅 {match_dict['match_date']} в {match_dict['match_time']} МСК\n\n"
-            text += f"📊 Анализ:\n{analysis_text}"
-
-            # Кнопки навигации
-            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-            keyboard = [
-                [InlineKeyboardButton("◀️ Назад", callback_data=back_callback_data)],
-                [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
-            ]
-
-            await bot.send_message(
-                chat_id=user_id,
-                text=text,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            logger.info(f"Анализ (текст) отправлен пользователю {user_id}")
-
-            # Удаляем сообщение с прогрессом после успешной отправки
-            if instruction_message_id:
-                try:
-                    await bot.delete_message(chat_id=user_id, message_id=instruction_message_id)
-                    logger.info(f"Удалено сообщение с прогрессом (message_id={instruction_message_id})")
-                except Exception as e:
-                    logger.warning(f"Не удалось удалить сообщение с прогрессом: {e}")
+        # Удаляем сообщение с прогрессом после успешной отправки
+        if instruction_message_id:
+            try:
+                await bot.delete_message(chat_id=user_id, message_id=instruction_message_id)
+                logger.info(f"Удалено сообщение с прогрессом (message_id={instruction_message_id})")
+            except Exception as e:
+                logger.warning(f"Не удалось удалить сообщение с прогрессом: {e}")
 
         return True
 

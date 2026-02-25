@@ -3,7 +3,7 @@ import argparse
 import logging
 from datetime import datetime, timedelta
 import sqlite3
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from threading import Lock
 import requests
 import time
@@ -19,6 +19,40 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def _extract_coverage_metrics(table_data: Dict) -> Tuple[int, int]:
+    """Возвращает (кол-во заполненных строк, кол-во пустых ячеек)."""
+    rows_count = int(
+        table_data.get(
+            'raw_coverage_rows_count',
+            table_data.get('coverage_rows_count', 0)
+        )
+    )
+    if 'raw_missing_cells_count' in table_data:
+        missing_cells = int(table_data.get('raw_missing_cells_count', 0))
+    else:
+        missing_cells = 0
+        for row in table_data.get('rows', []):
+            if row.get('colspan'):
+                continue
+            for side in ('left', 'right'):
+                value = str(row.get(side, '')).strip().lower()
+                if value == 'недостаточно данных':
+                    missing_cells += 1
+    return rows_count, missing_cells
+
+
+def _ensure_coverage_columns(cursor) -> None:
+    """Гарантирует наличие колонок coverage в таблице matches."""
+    try:
+        cursor.execute("ALTER TABLE matches ADD COLUMN coverage_ok INTEGER DEFAULT NULL")
+    except Exception:
+        pass
+    try:
+        cursor.execute("ALTER TABLE matches ADD COLUMN coverage_checked_at TEXT DEFAULT NULL")
+    except Exception:
+        pass
 
 
 class RateLimitedAPI:
@@ -234,27 +268,12 @@ class SportsDBSyncer:
                     include_lineups=True,
                     include_domestic_positions=False,
                     include_last_match_events=True,
+                    include_event_stats=False,
                     include_cup_context=False,
                     lineup_scan_limit=2
                 )
                 table_data = build_table_data(match, enriched_data)
-                rows_count = int(
-                    table_data.get(
-                        'raw_coverage_rows_count',
-                        table_data.get('coverage_rows_count', 0)
-                    )
-                )
-                if 'raw_missing_cells_count' in table_data:
-                    missing_cells = int(table_data.get('raw_missing_cells_count', 0))
-                else:
-                    missing_cells = 0
-                    for row in table_data.get('rows', []):
-                        if row.get('colspan'):
-                            continue
-                        for side in ('left', 'right'):
-                            value = str(row.get(side, '')).strip().lower()
-                            if value == 'недостаточно данных':
-                                missing_cells += 1
+                rows_count, missing_cells = _extract_coverage_metrics(table_data)
 
                 if rows_count >= min_rows and missing_cells <= max_missing_cells:
                     filtered.append(match)
@@ -642,6 +661,128 @@ class SportsDBSyncer:
             return None
 
 
+def run_coverage_check(
+    db_path: str = "sports_bot.db",
+    min_rows: int = 3,
+    max_missing_cells: int = 1,
+    sleep_seconds: float = 0.8
+) -> Dict[str, int]:
+    """
+    Проверяет coverage для матчей с coverage_ok IS NULL.
+    Обновляет coverage_ok и coverage_checked_at для каждого матча.
+    """
+    from match_data_fetcher import MatchDataFetcher
+    from analysis_formatter import build_table_data
+
+    started_at = time.monotonic()
+    results = {
+        'checked': 0,
+        'ok': 0,
+        'hidden': 0,
+        'errors': 0,
+    }
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    _ensure_coverage_columns(cursor)
+    conn.commit()
+
+    cursor.execute('''
+        SELECT *
+        FROM matches
+        WHERE coverage_ok IS NULL
+        ORDER BY match_date, match_time
+    ''')
+    matches = cursor.fetchall()
+
+    if not matches:
+        conn.close()
+        logger.info("[COVERAGE] Нет матчей для проверки")
+        return results
+
+    logger.info(
+        "[COVERAGE] Старт проверки: %s матчей (rows >= %s, missing <= %s)",
+        len(matches), min_rows, max_missing_cells
+    )
+
+    fetcher = MatchDataFetcher()
+    for idx, row in enumerate(matches, start=1):
+        match = dict(row)
+        checked_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        team1 = match.get('team1', '?')
+        team2 = match.get('team2', '?')
+
+        try:
+            enriched_data = fetcher.fetch_match_data(
+                match,
+                include_h2h=False,
+                include_standings=False,
+                include_lineups=True,
+                include_domestic_positions=False,
+                include_last_match_events=True,
+                include_event_stats=False,
+                include_cup_context=False,
+                lineup_scan_limit=2
+            )
+            table_data = build_table_data(match, enriched_data)
+            rows_count, missing_cells = _extract_coverage_metrics(table_data)
+            is_ok = int(rows_count >= min_rows and missing_cells <= max_missing_cells)
+
+            cursor.execute(
+                '''
+                UPDATE matches
+                SET coverage_ok = ?, coverage_checked_at = ?
+                WHERE id = ?
+                ''',
+                (is_ok, checked_at, match['id'])
+            )
+            conn.commit()
+
+            results['checked'] += 1
+            if is_ok:
+                results['ok'] += 1
+                logger.info(
+                    "[COVERAGE] ✓ %s vs %s — rows=%s, missing=%s",
+                    team1, team2, rows_count, missing_cells
+                )
+            else:
+                results['hidden'] += 1
+                logger.info(
+                    "[COVERAGE] ✗ %s vs %s — rows=%s, missing=%s → скрыт",
+                    team1, team2, rows_count, missing_cells
+                )
+        except Exception as e:
+            results['checked'] += 1
+            results['errors'] += 1
+            results['hidden'] += 1
+            cursor.execute(
+                '''
+                UPDATE matches
+                SET coverage_ok = 0, coverage_checked_at = ?
+                WHERE id = ?
+                ''',
+                (checked_at, match['id'])
+            )
+            conn.commit()
+            logger.warning(
+                "[COVERAGE] ✗ %s vs %s — ошибка: %s → скрыт",
+                team1, team2, e
+            )
+
+        if idx < len(matches) and sleep_seconds > 0:
+            time.sleep(sleep_seconds)
+
+    conn.close()
+    elapsed = time.monotonic() - started_at
+    logger.info(
+        "[COVERAGE] Проверка завершена за %.1fс: %s ОК, %s скрыты",
+        elapsed, results['ok'], results['hidden']
+    )
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Синхронизация матчей из TheSportsDB API'
@@ -697,11 +838,30 @@ def main():
         default=1,
         help='Мягкий фильтр качества: максимум ячеек "Недостаточно данных" в карточке'
     )
+    parser.add_argument(
+        '--check-coverage',
+        action='store_true',
+        help='Запустить проверку покрытия'
+    )
     args = parser.parse_args()
     if args.verbose:
         logger.setLevel(logging.DEBUG)
     if args.debug:
         logger.setLevel(logging.DEBUG)
+
+    if args.check_coverage:
+        print(f"Проверка покрытия (БД: {args.db})")
+        print("=" * 60)
+        results = run_coverage_check(
+            db_path=args.db,
+            min_rows=args.min_coverage_rows if args.min_coverage_rows > 0 else 3,
+            max_missing_cells=args.max_missing_cells
+        )
+        print(f"Проверено: {results['checked']}")
+        print(f"ОК: {results['ok']}")
+        print(f"Скрыто: {results['hidden']}")
+        print(f"Ошибок: {results['errors']}")
+        return 0
 
     print(f"Синхронизация матчей (режим: {args.mode})")
     print("=" * 60)

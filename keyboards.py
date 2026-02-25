@@ -27,12 +27,20 @@ def back_to_main_keyboard():
     ])
 
 
-def analysis_view_keyboard():
-    """Клавиатура для просмотра анализа"""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("◀️ Назад", callback_data='back')],
-        [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
-    ])
+def analysis_view_keyboard(match_id=None, back_callback_data='back', callback_suffix=''):
+    """Клавиатура для просмотра таблицы/текстового анализа."""
+    keyboard = []
+
+    if match_id is not None:
+        suffix = f"_{callback_suffix}" if callback_suffix else ""
+        keyboard.append([
+            InlineKeyboardButton("📋 Таблица", callback_data=f"show_table_{match_id}{suffix}"),
+            InlineKeyboardButton("📝 Текст", callback_data=f"show_text_{match_id}{suffix}")
+        ])
+
+    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data=back_callback_data)])
+    keyboard.append([InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')])
+    return InlineKeyboardMarkup(keyboard)
 
 
 def sports_keyboard():
@@ -89,21 +97,28 @@ def match_detail_keyboard(match_id, has_purchased, user_balance=0, price=1):
     """Клавиатура для детальной страницы матча."""
     if has_purchased:
         keyboard = [
-            [InlineKeyboardButton("📊 Показать анализ",
-                                  callback_data=f'show_analysis_{match_id}')],
-            [InlineKeyboardButton("◀️ Назад", callback_data='back')]
+            [
+                InlineKeyboardButton("📋 Таблица",
+                                     callback_data=f'show_table_{match_id}'),
+                InlineKeyboardButton("📝 Текст",
+                                     callback_data=f'show_text_{match_id}'),
+            ],
+            [InlineKeyboardButton("◀️ Назад", callback_data='back')],
+            [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
         ]
     elif user_balance >= price:
         keyboard = [
             [InlineKeyboardButton("✅ Приобрести анализ",
                                   callback_data=f'buy_{match_id}')],
-            [InlineKeyboardButton("◀️ Назад", callback_data='back')]
+            [InlineKeyboardButton("◀️ Назад", callback_data='back')],
+            [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
         ]
     else:
         keyboard = [
             [InlineKeyboardButton("Приобрести 💎",
                                   callback_data='deposit')],
-            [InlineKeyboardButton("◀️ Назад", callback_data='back')]
+            [InlineKeyboardButton("◀️ Назад", callback_data='back')],
+            [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
         ]
     return InlineKeyboardMarkup(keyboard)
 

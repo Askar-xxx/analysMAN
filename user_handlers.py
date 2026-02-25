@@ -4,8 +4,15 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
 import database
 import keyboards
-from utils import safe_edit_message, send_main_menu, format_match_info
+from utils import (
+    safe_edit_message,
+    safe_answer_callback,
+    send_main_menu,
+    format_match_info,
+    markdown_to_html
+)
 from datetime import datetime, timedelta
+import time
 
 
 MENU_MAIN = 'main'
@@ -74,6 +81,37 @@ def _remember_analysis_thread(context, conclusion_message_id: int, related_messa
     }
 
 
+def _parse_analysis_callback_data(data: str, prefix: str):
+    """
+    Парсит callback формата:
+      <prefix><match_id>
+      <prefix><match_id>_<sport>_<date>
+    Возвращает (match_id, callback_suffix, back_callback_data).
+    """
+    raw = str(data or '')
+    if not raw.startswith(prefix):
+        return None, '', 'back'
+
+    payload = raw[len(prefix):]
+    parts = payload.split('_')
+    if not parts or not parts[0].isdigit():
+        return None, '', 'back'
+
+    match_id = int(parts[0])
+    callback_suffix = ''
+    # По умолчанию «Назад» ведёт к странице матча (а не к списку)
+    back_callback_data = f"match_{match_id}"
+
+    if len(parts) >= 3:
+        sport = parts[1]
+        date_str = '_'.join(parts[2:])
+        if sport and date_str:
+            callback_suffix = f"{sport}_{date_str}"
+            back_callback_data = f"analysis_back_{sport}_{date_str}"
+
+    return match_id, callback_suffix, back_callback_data
+
+
 async def _cleanup_analysis_thread_messages(query, context):
     """
     Удаляет intro/photo сообщения анализа, если пользователь уходит с экрана анализа.
@@ -86,6 +124,7 @@ async def _cleanup_analysis_thread_messages(query, context):
     if (
         data not in ('back', 'back_to_menu')
         and not data.startswith('analysis_back_')
+        and not data.startswith('match_')
     ):
         return
 
@@ -160,7 +199,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Основной обработчик кнопок"""
     query = update.callback_query
-    await query.answer()
+    await safe_answer_callback(query)
     user_id = update.effective_user.id
     username = update.effective_user.username
     database.get_or_create_user(user_id, username)
@@ -225,13 +264,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         match_id = int(query.data.split('_')[1])
         # Сохраняем предыдущее меню и текущий матч с учетом источника
         match_source = context.user_data.get('match_source', 'browse')
-        if match_source == 'purchased':
-            context.user_data['menu_history'].append(MENU_PURCHASED_DATE)
-            context.user_data['current_match_id'] = match_id
-            await handle_show_analysis(query, context, user_id, match_id)
-            return
-        else:
-            context.user_data['menu_history'].append(MENU_MATCHES_LIST)
+        # Не дублируем запись если возвращаемся из анализа к тому же матчу
+        history = context.user_data.get('menu_history', [])
+        already_on_match = (
+            context.user_data.get('current_match_id') == match_id
+            and history and history[-1] in (MENU_MATCHES_LIST, MENU_PURCHASED_DATE)
+        )
+        if not already_on_match:
+            if match_source == 'purchased':
+                history.append(MENU_PURCHASED_DATE)
+            else:
+                history.append(MENU_MATCHES_LIST)
         context.user_data['current_match_id'] = match_id
         await handle_match_detail(query, user_id, match_id, match_source=match_source)
     elif query.data.startswith('buy_'):
@@ -239,9 +282,46 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Сохраняем текущее меню (детали матча) в историю
         context.user_data['menu_history'].append(MENU_MATCH_DETAIL)
         await handle_purchase(query, user_id)
+    elif query.data.startswith('show_table_'):
+        match_id, callback_suffix, back_callback_data = _parse_analysis_callback_data(
+            query.data, 'show_table_'
+        )
+        if match_id is not None:
+            await handle_show_table(
+                query, context, user_id, match_id,
+                callback_suffix=callback_suffix,
+                back_callback_data=back_callback_data
+            )
+        else:
+            await safe_edit_message(
+                query,
+                "❌ Не удалось открыть таблицу анализа.",
+                keyboards.main_menu_keyboard()
+            )
+    elif query.data.startswith('show_text_'):
+        match_id, callback_suffix, back_callback_data = _parse_analysis_callback_data(
+            query.data, 'show_text_'
+        )
+        if match_id is not None:
+            await handle_show_text_analysis(
+                query, context, user_id, match_id,
+                callback_suffix=callback_suffix,
+                back_callback_data=back_callback_data
+            )
+        else:
+            await safe_edit_message(
+                query,
+                "❌ Не удалось открыть текстовый анализ.",
+                keyboards.main_menu_keyboard()
+            )
     elif query.data.startswith('show_analysis_'):
+        # Обратная совместимость со старым callback.
         match_id = int(query.data.split('_')[2])
-        await handle_show_analysis(query, context, user_id, match_id)
+        await handle_show_table(
+            query, context, user_id, match_id,
+            callback_suffix='',
+            back_callback_data='back'
+        )
     elif query.data.startswith('purchased_sport_'):
         sport = query.data.split('_')[2]
         # Сохраняем предыдущее меню
@@ -531,8 +611,17 @@ async def handle_match_detail(query, user_id, match_id, match_source='browse'):
     price = ANALYSIS_PRICE_RUB
     text = format_match_info(match)
 
-    if has_purchased and match_source != 'purchased':
-        text += "\n\n✅ Вы уже приобрели этот анализ"
+    if has_purchased:
+        if match_source == 'purchased':
+            text += (
+                "\n\n🎛️ Выберите формат просмотра:\n"
+                "«Таблица» или «Текст»."
+            )
+        else:
+            text += (
+                "\n\n✅ Вы уже приобрели этот анализ.\n"
+                "Выберите формат просмотра: «Таблица» или «Текст»."
+            )
     elif user_balance >= price:
         text += (
             f"\n\nУ вас: <b>{user_balance}</b> 💎 | "
@@ -556,7 +645,7 @@ async def handle_purchase(query, user_id):
     """Покупка анализа с баланса (мгновенная оплата)."""
     from config import ANALYSIS_PRICE_RUB
 
-    await query.answer()
+    await safe_answer_callback(query)
 
     match_id = int(query.data.split('_')[1])
     match = database.get_match_by_id(match_id)
@@ -617,8 +706,15 @@ async def handle_purchase(query, user_id):
         query,
         f"⏳ <b>Генерируем анализ...</b>\n\n"
         f"🏆 {match_dict['team1']} vs {match_dict['team2']}\n\n"
-        "🤖 Собираем данные и создаём анализ...\n"
-        "⏱ Это займёт <b>30-60 секунд</b>.",
+        "<b>Текстовый анализ</b>\n"
+        "⏳ 1/2 Сбор и обогащение данных\n"
+        "▫️ 2/2 Генерация текста\n\n"
+        "<b>Таблица</b>\n"
+        "▫️ 1/2 Подготовка таблицы\n"
+        "▫️ 2/2 Рендер изображения\n\n"
+        "<b>Финал</b>\n"
+        "▫️ Отправка результата\n\n"
+        "⏱ Обычно это занимает <b>30-60 секунд</b>.",
         None,
         parse_mode='HTML'
     )
@@ -630,21 +726,15 @@ async def handle_purchase(query, user_id):
     )
 
 
-async def handle_show_analysis(query, context, user_id, match_id):
-    """Отображение PNG анализа для уже купленного матча"""
-    # Сбрасываем старый трекинг сообщений анализа перед новым показом.
-    context.user_data.pop('analysis_thread', None)
-    intro = ''
-    conclusion = ''
-
-    # Проверяем что анализ действительно куплен
+async def _load_match_for_analysis(query, user_id, match_id):
+    """Проверяет доступ к анализу и возвращает match_dict."""
     if not database.has_purchased_analysis(user_id, match_id):
         await safe_edit_message(
             query,
             "❌ Вы не приобретали анализ для этого матча.",
             keyboards.main_menu_keyboard()
         )
-        return
+        return None
 
     match = database.get_match_by_id(match_id)
     if not match:
@@ -653,184 +743,278 @@ async def handle_show_analysis(query, context, user_id, match_id):
             "❌ Матч не найден.",
             keyboards.main_menu_keyboard()
         )
-        return
+        return None
 
-    # Конвертируем в dict
-    match_dict = dict(match) if not isinstance(match, dict) else match
+    return dict(match) if not isinstance(match, dict) else match
 
-    # Проверяем есть ли сохранённый PNG
+
+def _build_analysis_context(match_dict: dict, enriched_data: dict) -> str:
+    """Строит текстовый контекст для генерации анализа."""
+    from match_data_fetcher import build_enriched_context
+    return build_enriched_context(match_dict, enriched_data)
+
+
+def _fetch_enriched_data(match_dict: dict) -> dict:
+    """Собирает обогащённые данные по матчу."""
+    from match_data_fetcher import MatchDataFetcher
+    team1 = match_dict.get('team1', '?')
+    team2 = match_dict.get('team2', '?')
+    logger.info(f"[DATA] Начинаем сбор enriched данных для {team1} vs {team2}")
+    t0 = time.time()
+    fetcher = MatchDataFetcher()
+    data = fetcher.fetch_match_data(match_dict)
+    elapsed = time.time() - t0
+    errors = data.get('errors', [])
+    keys = [k for k in data if k != 'errors']
+    logger.info(
+        f"[DATA] Enriched данные собраны за {elapsed:.1f}с — "
+        f"ключей: {len(keys)}, ошибок: {len(errors)}"
+    )
+    if errors:
+        for err in errors:
+            logger.warning(f"[DATA]   ошибка: {err}")
+    return data
+
+
+async def _ensure_analysis_text(match_id: int, match_dict: dict, enriched_data: dict = None) -> tuple:
+    """
+    Гарантирует, что analysis_text существует.
+
+    Returns:
+        (analysis_text, enriched_data)
+    """
+    team1 = match_dict.get('team1', '?')
+    team2 = match_dict.get('team2', '?')
+    analysis_text = (match_dict.get('analysis_text') or '').strip()
+    if analysis_text:
+        logger.info(
+            f"[TEXT] Текст анализа для {team1} vs {team2} "
+            f"загружен из БД ({len(analysis_text)} символов)"
+        )
+        return analysis_text, (enriched_data or {})
+
+    logger.info(f"[TEXT] Текст анализа для {team1} vs {team2} отсутствует — генерируем")
+
+    if enriched_data is None:
+        enriched_data = _fetch_enriched_data(match_dict)
+
+    enriched_context = _build_analysis_context(match_dict, enriched_data)
+    logger.info(f"[TEXT] Контекст для LLM собран ({len(enriched_context)} символов)")
+
+    from ai_generator import generate_match_text_analysis
+    t0 = time.time()
+    analysis_text = await generate_match_text_analysis(match_dict, enriched_context)
+    elapsed = time.time() - t0
+    logger.info(
+        f"[TEXT] Генерация завершена за {elapsed:.1f}с — "
+        f"результат: {len(analysis_text)} символов"
+    )
+
+    match_dict['analysis_text'] = analysis_text
+    database.update_match_analysis(match_id, analysis_text)
+    return analysis_text, enriched_data
+
+
+def _ensure_analysis_table_png(match_id: int, match_dict: dict, enriched_data: dict = None) -> tuple:
+    """
+    Гарантирует, что таблица анализа существует в кэше.
+
+    Returns:
+        (png_path, enriched_data)
+    """
     import os
+
     cached_png_path = match_dict.get('analysis_png_path')
     if cached_png_path and os.path.exists(cached_png_path):
-        # PNG уже есть — используем готовый, без API запросов
-        logger.info(f"Используем сохранённый PNG: {cached_png_path}")
-        png_path = cached_png_path
-    else:
-        # PNG нет — генерируем (первый раз или файл удалён)
-        logger.info("PNG не найден, генерируем...")
-        await safe_edit_message(
-            query,
-            "⏳ Подготовка анализа для матча\n"
-            f"{match_dict['team1']} vs {match_dict['team2']}...",
-            None
+        return cached_png_path, (enriched_data or {})
+
+    if enriched_data is None:
+        enriched_data = _fetch_enriched_data(match_dict)
+
+    from analysis_formatter import build_table_data
+    from image_renderer import render_analysis_table
+    import shutil
+
+    table_data = build_table_data(match_dict, enriched_data)
+    temp_png = render_analysis_table(match_dict, table_data)
+
+    target_path = f"analysis_cache/analysis_{match_id}.webp"
+    os.makedirs("analysis_cache", exist_ok=True)
+    shutil.copy(temp_png, target_path)
+
+    try:
+        os.remove(temp_png)
+    except Exception:
+        pass
+
+    if not os.path.exists(target_path):
+        raise RuntimeError(f"Файл таблицы не создан: {target_path}")
+
+    match_dict['analysis_png_path'] = target_path
+    database.update_match_analysis(
+        match_id,
+        match_dict.get('analysis_text', ''),
+        target_path
+    )
+    return target_path, enriched_data
+
+
+async def handle_show_table(
+    query, context, user_id, match_id,
+    callback_suffix: str = '', back_callback_data: str = 'back'
+):
+    """Показывает таблицу анализа отдельным экраном."""
+    # Удаляем сообщения предыдущего треда (на случай повторного нажатия «Таблица»)
+    thread = context.user_data.pop('analysis_thread', None)
+    if thread:
+        bot = query.message.get_bot()
+        chat_id = query.message.chat_id
+        for mid in thread.get('related_message_ids', []):
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=mid)
+            except Exception:
+                pass
+
+    match_dict = await _load_match_for_analysis(query, user_id, match_id)
+    if not match_dict:
+        return
+
+    team1 = match_dict.get('team1', '?')
+    team2 = match_dict.get('team2', '?')
+    logger.info(f"[TABLE] Запрос таблицы для {team1} vs {team2} (match_id={match_id})")
+
+    await safe_edit_message(
+        query,
+        "⏳ Подготавливаем таблицу анализа...",
+        None
+    )
+
+    try:
+        t0 = time.time()
+        png_path, _ = _ensure_analysis_table_png(match_id, match_dict)
+        elapsed = time.time() - t0
+        logger.info(f"[TABLE] Таблица готова за {elapsed:.1f}с — {png_path}")
+    except Exception as e:
+        logger.error(f"[TABLE] Ошибка подготовки таблицы: {e}", exc_info=True)
+        await handle_show_text_analysis(
+            query, context, user_id, match_id,
+            callback_suffix=callback_suffix,
+            back_callback_data=back_callback_data
         )
+        return
 
-        # Получаем обогащённые данные для PNG таблицы
-        enriched_data = {}
-        try:
-            from match_data_fetcher import MatchDataFetcher
-            fetcher = MatchDataFetcher()
-            enriched_data = fetcher.fetch_match_data(match_dict)
-            logger.info(f"Data fetched for PNG generation. Errors: {enriched_data.get('errors', [])}")
-        except Exception as e:
-            logger.error(f"Ошибка получения данных для PNG: {e}", exc_info=True)
-
-        # Если анализ ещё не сгенерирован (listener отметил paid, но не сгенерировал)
-        if not match_dict.get('analysis_text'):
-            logger.info(f"analysis_text пуст для матча {match_id}, генерируем on-demand...")
-            await safe_edit_message(
-                query,
-                "⏳ Генерация анализа для матча\n"
-                f"{match_dict['team1']} vs {match_dict['team2']}...\n\n"
-                "Это может занять 30-60 секунд.",
-                None
-            )
-
-            # Формируем enriched_context для генерации
-            enriched_context = "Обогащённые данные недоступны."
-            try:
-                from match_data_fetcher import build_enriched_context
-                enriched_context = build_enriched_context(match_dict, enriched_data)
-            except Exception as e:
-                logger.error(f"Ошибка построения контекста: {e}", exc_info=True)
-
-            intro = ''
-            conclusion = ''
-            try:
-                from ai_generator import generate_match_analysis_with_context
-                ai_result = await generate_match_analysis_with_context(
-                    match_dict, enriched_context
-                )
-                intro = ai_result.get('intro', '')
-                conclusion = ai_result.get('conclusion', '')
-                analysis_text = f"{intro}\n\n{conclusion}".strip()
-                match_dict['analysis_text'] = analysis_text
-                logger.info(f"Анализ сгенерирован on-demand для матча {match_id}")
-            except Exception as e:
-                logger.error(f"Ошибка on-demand генерации: {e}", exc_info=True)
-
-        # Рендерим PNG и сохраняем в постоянную папку
-        png_path = None
-        cached_png_path = None
-        try:
-            from analysis_formatter import build_table_data
-            from image_renderer import render_analysis_table
-
-            table_data = build_table_data(match_dict, enriched_data)
-            temp_png = render_analysis_table(match_dict, table_data)
-
-            # Копируем в постоянную папку
-            target_path = f"analysis_cache/analysis_{match_id}.webp"
-            os.makedirs("analysis_cache", exist_ok=True)
-            import shutil
-            shutil.copy(temp_png, target_path)
-
-            # Проверяем, что файл действительно скопирован
-            if os.path.exists(target_path):
-                cached_png_path = target_path
-                png_path = cached_png_path
-                logger.info(f"PNG сохранён: {cached_png_path}")
-
-                # Сохраняем путь в БД только если файл существует
-                database.update_match_analysis(
-                    match_id,
-                    match_dict.get('analysis_text'),
-                    cached_png_path
-                )
-
-                # Удаляем временный файл после успешного копирования
-                try:
-                    os.remove(temp_png)
-                    logger.info(f"Временный файл удалён: {temp_png}")
-                except Exception as e:
-                    logger.warning(f"Не удалось удалить временный файл: {e}")
-            else:
-                logger.error(f"Файл не был скопирован: {target_path}")
-
-        except Exception as e:
-            logger.error(f"Ошибка рендеринга PNG для отображения: {e}", exc_info=True)
-            # Fallback на текстовый анализ
-            text = "📊 Анализ матча\n\n"
-            text += f"{match_dict['team1']} vs {match_dict['team2']}\n"
-            text += f"{match_dict['match_date']} в {match_dict['match_time']}\n\n"
-            analysis_text = match_dict.get('analysis_text', '')
-            if analysis_text:
-                text += f"📊 Анализ:\n\n{analysis_text}"
-            else:
-                text += "Анализ недоступен"
-            await safe_edit_message(
-                query,
-                text,
-                keyboards.analysis_view_keyboard()
-            )
-            return
-
-    # Отправляем PNG с краткой сводкой и кнопками
     try:
         chat_id = query.message.chat_id
         bot = query.message.get_bot()
         related_message_ids = []
 
-        # Отправляем intro как текстовое сообщение (если есть)
-        if intro:
-            sent_intro = await bot.send_message(
-                chat_id=chat_id, text=intro, parse_mode='HTML'
-            )
-            related_message_ids.append(sent_intro.message_id)
-
-        # Отправляем фото (таблица)
         with open(png_path, 'rb') as photo:
             sent_photo = await bot.send_photo(chat_id=chat_id, photo=photo)
             related_message_ids.append(sent_photo.message_id)
 
-        # Отправляем conclusion + кнопки навигации
-        conclusion_text = conclusion if conclusion else "📊 Анализ завершён."
-        sent_conclusion = await bot.send_message(
+        sent_nav = await bot.send_message(
             chat_id=chat_id,
-            text=conclusion_text,
-            reply_markup=keyboards.analysis_view_keyboard(),
-            parse_mode='HTML'
+            text="📋 Таблица анализа готова. Можно переключиться на текстовый разбор.",
+            reply_markup=keyboards.analysis_view_keyboard(
+                match_id=match_id,
+                back_callback_data=back_callback_data,
+                callback_suffix=callback_suffix
+            )
         )
         _remember_analysis_thread(
             context,
-            conclusion_message_id=sent_conclusion.message_id,
+            conclusion_message_id=sent_nav.message_id,
             related_message_ids=related_message_ids
         )
 
-        # Удаляем сообщение с прогрессом
         try:
             await query.message.delete()
         except Exception:
             pass
 
-        # НЕ удаляем кэшированный PNG — он должен сохраняться для последующих просмотров
-
     except Exception as e:
-        logger.error(f"Ошибка отправки PNG: {e}", exc_info=True)
-        # Fallback
-        text = "📊 Анализ матча\n\n"
-        text += f"{match_dict['team1']} vs {match_dict['team2']}\n"
-        text += f"{match_dict['match_date']} в {match_dict['match_time']}\n\n"
-        analysis_text = match_dict.get('analysis_text', '')
-        if analysis_text:
-            text += f"📊 Анализ:\n\n{analysis_text}"
-        else:
-            text += "Анализ недоступен"
+        logger.error(f"Ошибка отправки таблицы: {e}", exc_info=True)
         await safe_edit_message(
             query,
-            text,
-            keyboards.analysis_view_keyboard()
+            "❌ Не удалось показать таблицу. Попробуйте снова.",
+            keyboards.analysis_view_keyboard(
+                match_id=match_id,
+                back_callback_data=back_callback_data,
+                callback_suffix=callback_suffix
+            )
         )
+
+
+async def handle_show_text_analysis(
+    query, context, user_id, match_id,
+    callback_suffix: str = '', back_callback_data: str = 'back'
+):
+    """Показывает текстовый анализ отдельным экраном."""
+    # Удаляем фото от предыдущего просмотра таблицы (если было переключение)
+    thread = context.user_data.pop('analysis_thread', None)
+    if thread:
+        bot = query.message.get_bot()
+        chat_id = query.message.chat_id
+        for mid in thread.get('related_message_ids', []):
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=mid)
+            except Exception:
+                pass
+
+    match_dict = await _load_match_for_analysis(query, user_id, match_id)
+    if not match_dict:
+        return
+
+    team1 = match_dict.get('team1', 'Команда 1')
+    team2 = match_dict.get('team2', 'Команда 2')
+    logger.info(f"[TEXT] Запрос текстового анализа для {team1} vs {team2} (match_id={match_id})")
+
+    analysis_text = (match_dict.get('analysis_text') or '').strip()
+    enriched_data = None
+    if not analysis_text:
+        logger.info("[TEXT] Текст в БД отсутствует, запускаем генерацию...")
+        await safe_edit_message(
+            query,
+            "⏳ Генерируем текстовый анализ...\n\nЭто может занять 30-60 секунд.",
+            None
+        )
+        try:
+            enriched_data = _fetch_enriched_data(match_dict)
+            analysis_text, _ = await _ensure_analysis_text(
+                match_id, match_dict, enriched_data=enriched_data
+            )
+        except Exception as e:
+            logger.error(f"[TEXT] Ошибка генерации текстового анализа: {e}", exc_info=True)
+            analysis_text = "❌ Текстовый анализ временно недоступен. Попробуйте позже."
+    else:
+        logger.info(
+            f"[TEXT] Текст загружен из БД ({len(analysis_text)} символов)"
+        )
+    date_str = match_dict.get('match_date', '')
+    time_str = match_dict.get('match_time', '')
+
+    header = (
+        f"<b>📝 Текстовый анализ</b>\n\n"
+        f"<b>{team1} vs {team2}</b>\n"
+        f"{date_str} {time_str} МСК\n\n"
+    )
+    text = (header + markdown_to_html(analysis_text)).strip()
+
+    await safe_edit_message(
+        query,
+        text,
+        keyboards.analysis_view_keyboard(
+            match_id=match_id,
+            back_callback_data=back_callback_data,
+            callback_suffix=callback_suffix
+        ),
+        parse_mode='HTML'
+    )
+
+
+async def handle_show_analysis(query, context, user_id, match_id):
+    """Back compatibility: старый сценарий ведём на экран таблицы."""
+    await handle_show_table(query, context, user_id, match_id)
 
 
 async def handle_my_analysis(update: Update, query, user_id):

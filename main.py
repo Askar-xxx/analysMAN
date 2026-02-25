@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from telegram.ext import Application
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -15,6 +16,28 @@ logger = logging.getLogger(__name__)
 logging.getLogger('match_data_fetcher').setLevel(logging.WARNING)
 
 
+def _sync_matches_job():
+    """Синхронный job для запуска в отдельном потоке."""
+    from sync_matches import SportsDBSyncer, run_coverage_check
+
+    syncer = SportsDBSyncer(
+        mode='top3',
+        limit=15
+    )
+    matches = syncer.sync()
+    results = syncer.save_matches_to_db(matches)
+    coverage_results = run_coverage_check()
+    return results, coverage_results
+
+
+def _cleanup_job():
+    """Синхронный job очистки для запуска в отдельном потоке."""
+    expired_topups = database.expire_pending_topups()
+    deleted_purchases = database.cleanup_old_purchases()
+    deleted_matches = database.delete_finished_matches_without_purchases()
+    return expired_topups, deleted_purchases, deleted_matches
+
+
 async def scheduled_sync_matches():
     """Периодическая синхронизация матчей из TheSportsDB"""
     from datetime import datetime
@@ -22,18 +45,7 @@ async def scheduled_sync_matches():
     logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] APScheduler: ЗАПУСК синхронизации матчей...")
     logger.info("=" * 60)
     try:
-        from sync_matches import SportsDBSyncer
-        # Режим top3: берёт топ-15 матчей из 3 топ-лиг
-        # (Premier League, La Liga, Bundesliga) и 3 топ-кубков
-        # (Champions League, Europa League, Europa Conference League)
-        # на ближайшие 3 дня + мягкий фильтр качества карточки
-        syncer = SportsDBSyncer(
-            mode='top3',
-            limit=15,
-            min_coverage_rows=3
-        )
-        matches = syncer.sync()
-        results = syncer.save_matches_to_db(matches)
+        results, coverage_results = await asyncio.to_thread(_sync_matches_job)
         logger.info("=" * 60)
         logger.info(
             f"[{datetime.now().strftime('%H:%M:%S')}] APScheduler: синхронизация ЗАВЕРШЕНА"
@@ -42,6 +54,11 @@ async def scheduled_sync_matches():
             f"Найдено: {results['total']}, "
             f"Добавлено: {results['inserted']}, "
             f"Пропущено: {results['skipped']}"
+        )
+        logger.info(
+            f"Покрытие: проверено={coverage_results['checked']}, "
+            f"ok={coverage_results['ok']}, "
+            f"скрыто={coverage_results['hidden']}"
         )
         logger.info("=" * 60)
     except Exception as e:
@@ -55,9 +72,7 @@ async def scheduled_cleanup():
     from datetime import datetime
     logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] APScheduler: ЗАПУСК очистки старых анализов...")
     try:
-        expired_topups = database.expire_pending_topups()
-        deleted_purchases = database.cleanup_old_purchases()
-        deleted_matches = database.delete_finished_matches_without_purchases()
+        expired_topups, deleted_purchases, deleted_matches = await asyncio.to_thread(_cleanup_job)
         logger.info(
             f"Очистка завершена: expired_topups={expired_topups}, "
             f"покупок={deleted_purchases}, матчей={deleted_matches}"

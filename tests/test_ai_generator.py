@@ -4,7 +4,12 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils import clean_and_truncate  # noqa: E402
-from ai_generator import _build_match_context  # noqa: E402
+from ai_generator import (  # noqa: E402
+    _build_match_context,
+    _collect_quality_issues,
+    _extract_missing_required_sections,
+    _inject_section_before_conclusion,
+)
 
 
 class TestAnalysisPostprocessing:
@@ -18,7 +23,12 @@ class TestAnalysisPostprocessing:
             "2. Обзор команды А\n"
             "Команда А показывает хорошую форму. " * 50 + "\n\n"
         )
-        result = clean_and_truncate(analysis)
+        result = clean_and_truncate(
+            analysis,
+            target_max=800,
+            soft_cap=900,
+            hard_cap=1200
+        )
         assert len(result) <= 900
 
     def test_banned_words_removed_from_analysis(self):
@@ -56,10 +66,98 @@ class TestAnalysisPostprocessing:
         prompt_path = os.path.join(project_root, "ANALYSIS_PROMPT.md")
         with open(prompt_path, "r", encoding="utf-8") as f:
             content = f.read()
-        assert "intro" in content
-        assert "conclusion" in content
-        assert "JSON" in content
+        assert "⚽ **Контекст матча**" in content
+        assert "🧠 **Психологические факторы**" in content
+        assert "2800" in content
+        assert "мск" in content.lower()
         assert "venue" in content.lower() or "стадион" in content.lower()
+
+    def test_quality_check_accepts_emoji_headings(self):
+        """Эмодзи в заголовках не ломают проверку обязательных секций."""
+        text = (
+            "⚽ **Контекст матча**\n"
+            "Матч 1 проходит 02.03.2026, команды имеют 45 очков и 41 очко.\n\n"
+            "📈 **Форма и турнирная ситуация**\n"
+            "За 5 туров: 3 победы, 1 ничья, 1 поражение, в таблице 4 и 6 место.\n\n"
+            "📊 **Статистика и игровые паттерны**\n"
+            "xG 1.8 против 1.2, владение 58%, 14 ударов, 6 в створ, 5 угловых.\n\n"
+            "🧠 **Психологические факторы**\n"
+            "Есть серия из 7 матчей без поражений и фактор реванша после 1:2.\n\n"
+            "🔑 **Вывод**\n"
+            "Команды подходят с плотной формой: 10 и 12 очков в последних 5 турах."
+        )
+        issues = _collect_quality_issues(text)
+        missing_sections = [i for i in issues if "обязательный блок" in i]
+        assert missing_sections == []
+
+    def test_quality_check_flags_local_time_phrase(self):
+        """Фраза про местное время должна считаться ошибкой качества."""
+        text = (
+            "⚽ **Контекст матча**\n"
+            "Матч начнется в 20:00 по местному времени.\n\n"
+            "📈 **Форма и турнирная ситуация**\nТекст.\n\n"
+            "📊 **Статистика и игровые паттерны**\nТекст.\n\n"
+            "🧠 **Психологические факторы**\nТекст.\n\n"
+            "🔑 **Вывод**\nТекст с 2 фактами: 10 очков и 58% владения."
+        )
+        issues = _collect_quality_issues(text, match_time_msk="23:00")
+        assert any("местное время" in issue.lower() for issue in issues)
+
+    def test_quality_check_flags_missing_emoji_heading(self):
+        """Если заголовок без эмодзи, quality-check должен это отметить."""
+        text = (
+            "**Контекст матча**\nТекст.\n\n"
+            "📈 **Форма и турнирная ситуация**\nТекст.\n\n"
+            "📊 **Статистика и игровые паттерны**\nТекст.\n\n"
+            "🧠 **Психологические факторы**\nТекст.\n\n"
+            "🔑 **Вывод**\nТекст с фактами: 2 гола, 14 ударов."
+        )
+        issues = _collect_quality_issues(text)
+        assert any("должен содержать эмодзи" in issue.lower() for issue in issues)
+
+    def test_quality_check_accepts_psychological_background_heading(self):
+        """Синоним «Психологический фон» не должен считаться пропавшим блоком."""
+        text = (
+            "⚽ **Контекст матча**\n"
+            "Матч 1 проходит 02.03.2026, команды имеют 45 и 41 очко.\n\n"
+            "📈 **Форма и турнирная ситуация**\n"
+            "За 5 туров: 3 победы, 1 ничья, 1 поражение.\n\n"
+            "📊 **Статистика и игровые паттерны**\n"
+            "xG 1.8 против 1.2, владение 58%, 14 ударов, 6 в створ.\n\n"
+            "🧠 **Психологический фон матча**\n"
+            "После поражения 1:2 у гостей есть фактор реванша.\n\n"
+            "🔑 **Вывод**\n"
+            "По цифрам: 58% владения и 14 ударов создают базу для плотного матча."
+        )
+        issues = _collect_quality_issues(text)
+        assert not any("психологические факторы" in issue.lower() for issue in issues)
+
+    def test_extract_missing_required_sections_from_issues(self):
+        """Парсер missing-секций корректно выделяет названия блоков."""
+        issues = [
+            "отсутствует обязательный блок «психологические факторы»",
+            "отсутствует обязательный блок «вывод»",
+            "заголовок «контекст матча» должен содержать эмодзи",
+        ]
+        missing = _extract_missing_required_sections(issues)
+        assert "психологические факторы" in missing
+        assert "вывод" in missing
+        assert "контекст матча" not in missing
+
+    def test_inject_section_before_conclusion(self):
+        """Fallback-блок вставляется перед «Выводом», а не в самый конец."""
+        source = (
+            "⚽ **Контекст матча**\n"
+            "Контекст.\n\n"
+            "🔑 **Вывод**\n"
+            "Финал."
+        )
+        block = (
+            "🧠 **Психологические факторы**\n"
+            "Психологический фон."
+        )
+        result = _inject_section_before_conclusion(source, block)
+        assert result.index("🧠 **Психологические факторы**") < result.index("🔑 **Вывод**")
 
     def test_normal_length_text_not_truncated(self):
         """Текст в целевом диапазоне (1400-1900) не обрезается."""

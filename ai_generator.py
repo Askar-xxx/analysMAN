@@ -1,9 +1,11 @@
 import logging
 import os
 import json
+import re
+import unicodedata
 from datetime import datetime
 from openai import AsyncOpenAI
-from config import DEEPSEEK_API_KEY
+from config import DEEPSEEK_API_KEY, AI_QUALITY_REWRITE_ATTEMPTS
 from utils import clean_and_truncate
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,395 @@ SPORT_NAMES = {
     'basketball': 'баскетбол',
     'hockey': 'хоккей'
 }
+
+REQUIRED_ANALYSIS_SECTIONS = [
+    "контекст матча",
+    "форма и турнирная ситуация",
+    "статистика и игровые паттерны",
+    "психологические факторы",
+    "вывод",
+]
+
+REQUIRED_EMOJI_HEADINGS = {
+    "контекст матча": "⚽",
+    "форма и турнирная ситуация": "📈",
+    "статистика и игровые паттерны": "📊",
+    "психологические факторы": "🧠",
+    "вывод": "🔑",
+}
+
+SECTION_ROOT_VARIANTS = {
+    "контекст матча": [("контекст", "матч")],
+    "форма и турнирная ситуация": [("форм", "турнир"), ("форм", "таблиц")],
+    "статистика и игровые паттерны": [("статист", "игр"), ("статист", "паттерн"), ("статист", "тенденц")],
+    "психологические факторы": [("психолог", "фактор"), ("психолог", "фон"), ("ментал", "фактор")],
+    "вывод": [("вывод",), ("итог",)],
+}
+
+METRIC_HINTS = [
+    "xg",
+    "владен",
+    "удар",
+    "карточ",
+    "фол",
+    "углов",
+    "офсайд",
+    "передач",
+    "очки",
+    "форма",
+]
+
+ABSTRACT_PATTERNS = [
+    "по совокупности факторов",
+    "выглядит содержательным",
+    "тактическим весом",
+    "без просадок по дисциплине",
+    "высоким уровнем напряжения",
+]
+
+
+def _normalize_for_checks(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", (text or "")).casefold()
+    return "".join(ch for ch in normalized if unicodedata.category(ch)[0] != "C")
+
+
+def _extract_headings(text: str) -> list[str]:
+    """
+    Извлекает заголовки из текста:
+    - **Заголовок**
+    - Заголовок:
+    """
+    headings = []
+    for line in (text or '').splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        bold_match = re.match(r'^\*{1,2}\s*([^*]+?)\s*\*{1,2}$', stripped)
+        if bold_match:
+            headings.append(_normalize_for_checks(bold_match.group(1).strip()))
+            continue
+
+        plain_match = re.match(r'^([А-Яа-яA-Za-z0-9\s\-]+):\s*$', stripped)
+        if plain_match:
+            headings.append(_normalize_for_checks(plain_match.group(1).strip()))
+    return headings
+
+
+def _line_has_emoji(text: str) -> bool:
+    """Проверяет наличие эмодзи в строке."""
+    for ch in text or "":
+        if unicodedata.category(ch) in ("So", "Sk"):
+            return True
+    return False
+
+
+def _line_matches_section(normalized_line: str, section: str) -> bool:
+    """Проверяет, соответствует ли строка секции по набору корневых вариантов."""
+    normalized_section = _normalize_for_checks(section)
+    variants = SECTION_ROOT_VARIANTS.get(section, [(normalized_section,)])
+    for variant in variants:
+        if all(root in normalized_line for root in variant):
+            return True
+    return False
+
+
+def _has_emoji_heading_for_section(text: str, section: str) -> bool:
+    """Проверяет, что заголовок секции содержит эмодзи."""
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        normalized_line = _normalize_for_checks(stripped)
+        if _line_matches_section(normalized_line, section) and "**" in stripped:
+            if _line_has_emoji(stripped):
+                return True
+    return False
+
+
+def _normalize_kickoff_time_mentions(text: str, match_time_msk: str = "") -> str:
+    """Нормализует формулировки про локальное время к формату МСК."""
+    if not text:
+        return text
+    normalized = text
+    if match_time_msk:
+        normalized = re.sub(
+            r'\b\d{1,2}:\d{2}\s+по\s+местному\s+времени\b',
+            f'{match_time_msk} МСК',
+            normalized,
+            flags=re.IGNORECASE
+        )
+    normalized = re.sub(
+        r'\bпо\s+местному\s+времени\b',
+        'по московскому времени (МСК)',
+        normalized,
+        flags=re.IGNORECASE
+    )
+    return normalized
+
+
+def _get_conclusion_block(text: str) -> str:
+    """
+    Возвращает текст блока «Вывод» (или пустую строку).
+    Ищет заголовок в жирном и обычном формате.
+    """
+    if not text:
+        return ""
+
+    lines = text.splitlines()
+    start_idx = None
+    for idx, line in enumerate(lines):
+        clean = _normalize_for_checks(line)
+        has_heading_mark = "**" in line or line.strip().endswith(":")
+        starts_with_heading = line.strip().lower().startswith("вывод")
+        if "вывод" in clean and (has_heading_mark or starts_with_heading):
+            start_idx = idx + 1
+            break
+
+    if start_idx is None:
+        return ""
+
+    chunk = []
+    for line in lines[start_idx:]:
+        if line.strip().startswith("**") and chunk:
+            break
+        chunk.append(line)
+    return "\n".join(chunk).strip()
+
+
+def _count_numeric_tokens(text: str) -> int:
+    return len(re.findall(r'\d+(?:[.,]\d+)?%?', text or ""))
+
+
+def _count_metric_variety(text: str) -> int:
+    normalized = _normalize_for_checks(text)
+    return sum(1 for hint in METRIC_HINTS if hint in normalized)
+
+
+def _collect_quality_issues(text: str, match_time_msk: str = "") -> list[str]:
+    """Проверяет базовые требования качества к анализу."""
+    issues = []
+    normalized_text = _normalize_for_checks(text or "")
+
+    found_headings = _extract_headings(text)
+    for section in REQUIRED_ANALYSIS_SECTIONS:
+        has_in_headings = any(_line_matches_section(h, section) for h in found_headings)
+        has_inline = _line_matches_section(normalized_text, section)
+        if not (has_in_headings or has_inline):
+            issues.append(f"отсутствует обязательный блок «{section}»")
+        elif not _has_emoji_heading_for_section(text, section):
+            issues.append(f"заголовок «{section}» должен содержать эмодзи")
+
+    if "местному времени" in normalized_text:
+        issues.append("указано местное время, используй только московское время (МСК)")
+
+    if match_time_msk and match_time_msk not in (text or ""):
+        issues.append(f"нет точного времени матча {match_time_msk} МСК")
+
+    if len(text or '') < 1900:
+        issues.append("текст слишком короткий, нужен более плотный разбор")
+
+    if not re.search(r'[.!?…]\s*$', (text or '').strip()):
+        issues.append("текст обрывается без нормального финала")
+
+    numeric_tokens = _count_numeric_tokens(text)
+    if numeric_tokens < 10:
+        issues.append("слишком мало конкретных числовых фактов")
+
+    metric_variety = _count_metric_variety(text)
+    if metric_variety < 5:
+        issues.append("мало разнообразия метрик, нужно шире использовать данные API")
+
+    conclusion_block = _get_conclusion_block(text)
+    if conclusion_block:
+        if _count_numeric_tokens(conclusion_block) < 2:
+            issues.append("блок «Вывод» слишком абстрактный, добавь 2+ опоры на цифры")
+        lowered_conclusion = _normalize_for_checks(conclusion_block)
+        for bad_phrase in ABSTRACT_PATTERNS:
+            if _normalize_for_checks(bad_phrase) in lowered_conclusion:
+                issues.append("блок «Вывод» содержит абстрактные штампы")
+                break
+
+    return issues
+
+
+async def _rewrite_with_quality_feedback(
+    prompt: str, original_text: str, issues: list[str]
+) -> str:
+    """Просит модель переписать анализ с учётом найденных проблем."""
+    issues_text = "\n".join(f"- {i}" for i in issues)
+    rewrite_prompt = f"""{prompt}
+
+ПРЕДЫДУЩИЙ ОТВЕТ НЕ ПРОШЁЛ КОНТРОЛЬ КАЧЕСТВА.
+
+Проблемы:
+{issues_text}
+
+Предыдущий текст:
+{original_text}
+
+Перепиши полностью. Сохрани факты из данных и обязательно соблюди 5 блоков.
+Заголовки сделай в точном формате:
+⚽ **Контекст матча**
+📈 **Форма и турнирная ситуация**
+📊 **Статистика и игровые паттерны**
+🧠 **Психологические факторы**
+🔑 **Вывод**
+
+Требования к качеству:
+- в тексте минимум 8 конкретных фактов;
+- минимум 6 разных типов метрик (если они есть в данных);
+- в блоке «Вывод» минимум 2 числовые опоры;
+- избегай абстрактных штампов и общих формулировок без цифр;
+- указывай время матча только в МСК, без формулировки «по местному времени».
+"""
+
+    system_message = (
+        "Ты — строгий редактор спортивной аналитики. "
+        "Исправляешь структуру и полноту текста без выдумывания новых фактов. "
+        "Обязателен финальный блок «Вывод»."
+    )
+
+    response = await client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": rewrite_prompt}
+        ],
+        max_tokens=1800,
+        temperature=0.35
+    )
+    return response.choices[0].message.content.strip()
+
+
+async def _generate_conclusion_block(prompt: str, partial_text: str) -> str:
+    """Генерирует только отсутствующий блок «Вывод»."""
+    user_prompt = f"""{prompt}
+
+Текст анализа (без финала):
+{partial_text}
+
+Добавь только финальный блок в формате:
+**Вывод**
+<3-5 связных предложений>
+
+Без повторения остальных блоков.
+В выводе обязательно:
+- минимум 2 числовых факта из данных;
+- упоминание обеих команд;
+- без абстрактных штампов.
+"""
+    system_message = (
+        "Ты спортивный аналитик-редактор. "
+        "Пишешь только финальный блок «Вывод», без прогнозов и ставок."
+    )
+    response = await client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": user_prompt}
+        ],
+        max_tokens=420,
+        temperature=0.45
+    )
+    return response.choices[0].message.content.strip()
+
+
+def _extract_context_fact_lines(enriched_context: str, limit: int = 3) -> list[str]:
+    """Вытаскивает короткие фактические строки с цифрами из контекста."""
+    facts = []
+    for raw in (enriched_context or '').splitlines():
+        line = raw.strip().lstrip('-').strip()
+        if not line or line.startswith('==='):
+            continue
+        if len(line) > 120:
+            continue
+        if re.search(r'\d', line):
+            if line not in facts:
+                facts.append(line)
+        if len(facts) >= limit:
+            break
+    return facts
+
+
+def _fallback_conclusion(match_data: dict, enriched_context: str = "") -> str:
+    """Резервный вывод без обращения к LLM, но с привязкой к фактам."""
+    team1 = match_data.get('team1', 'Хозяева')
+    team2 = match_data.get('team2', 'Гости')
+    facts = _extract_context_fact_lines(enriched_context, limit=3)
+    fact_sentence = ""
+    if facts:
+        fact_sentence = (
+            " По данным контекста: "
+            + "; ".join(facts[:2])
+            + "."
+        )
+
+    base = (
+        f"Матч {team1} — {team2} проходит в условиях, когда обе команды "
+        "располагают схожим набором данных по результативности и дисциплине."
+    )
+    return f"**Вывод**\n{base}{fact_sentence}"
+
+
+def _extract_missing_required_sections(issues: list[str]) -> list[str]:
+    """Возвращает список отсутствующих обязательных секций из quality-issues."""
+    missing = []
+    pattern = re.compile(r'отсутствует обязательный блок «(.+?)»', re.IGNORECASE)
+    for issue in issues or []:
+        match = pattern.search(issue or "")
+        if not match:
+            continue
+        section = _normalize_for_checks(match.group(1).strip())
+        if section and section not in missing:
+            missing.append(section)
+    return missing
+
+
+def _build_missing_section_block(section: str, match_data: dict, enriched_context: str) -> str:
+    """Генерирует локальный fallback-блок для отсутствующей секции без LLM."""
+    normalized_section = _normalize_for_checks(section)
+    team1 = match_data.get('team1', 'Хозяева')
+    team2 = match_data.get('team2', 'Гости')
+    section_title = section[:1].upper() + section[1:]
+    section_emoji = REQUIRED_EMOJI_HEADINGS.get(normalized_section, "📌")
+    heading = f"{section_emoji} **{section_title}**"
+    facts = _extract_context_fact_lines(enriched_context, limit=2)
+
+    if normalized_section == _normalize_for_checks("психологические факторы"):
+        base = (
+            f"Психологический фон в паре {team1} — {team2} формируется ценой каждой ошибки "
+            "на стадии плей-офф. Ключевыми станут дисциплина в единоборствах и контроль темпа "
+            "в стартовые 15–20 минут."
+        )
+    else:
+        base = (
+            f"По блоку «{section_title}» в данных {team1} — {team2} зафиксированы ключевые опорные "
+            "факты, которые нужно учитывать в общей картине матча."
+        )
+
+    if facts:
+        base += " Факт-поддержка: " + "; ".join(facts[:2]) + "."
+
+    return f"{heading}\n{base}"
+
+
+def _inject_section_before_conclusion(text: str, block: str) -> str:
+    """Вставляет блок перед «Вывод», если он есть, иначе дописывает в конец."""
+    lines = (text or "").splitlines()
+    conclusion_idx = None
+    for idx, line in enumerate(lines):
+        normalized_line = _normalize_for_checks(line)
+        if _line_matches_section(normalized_line, "вывод"):
+            conclusion_idx = idx
+            break
+
+    if conclusion_idx is None:
+        return f"{(text or '').rstrip()}\n\n{block}".strip()
+
+    before = "\n".join(lines[:conclusion_idx]).rstrip()
+    after = "\n".join(lines[conclusion_idx:]).lstrip()
+    return f"{before}\n\n{block}\n\n{after}".strip()
 
 # Маппинг полей БД → читаемые метки для контекста.
 # Для добавления нового поля — просто добавить строку сюда.
@@ -347,23 +738,28 @@ async def generate_match_analysis(match_data: dict) -> str:
     analysis_text = response.choices[0].message.content.strip()
 
     # ПОСТ-ОБРАБОТКА: очистка, фильтрация, сокращение
-    analysis_text = clean_and_truncate(analysis_text)
+    analysis_text = clean_and_truncate(
+        analysis_text,
+        target_max=800,
+        soft_cap=900,
+        hard_cap=1200
+    )
 
     return analysis_text
 
 
-async def generate_match_analysis_with_context(
+async def generate_match_text_analysis(
     match_data: dict, enriched_context: str
-) -> dict:
+) -> str:
     """
-    Генерирует intro и conclusion для анализа матча через DeepSeek API.
+    Генерирует связный текстовый анализ матча (единый текст).
 
     Args:
         match_data: dict с базовыми данными матча
-        enriched_context: Готовый текстовый контекст с H2H/standings/form
+        enriched_context: Готовый текстовый контекст с обогащёнными данными
 
     Returns:
-        dict с ключами 'intro' и 'conclusion' (строки)
+        str: текст анализа в целевом диапазоне длины
     """
     if not isinstance(match_data, dict):
         match_data = dict(match_data)
@@ -390,6 +786,13 @@ async def generate_match_analysis_with_context(
         basic_info.append(f"- Тур: {match_data['round']}")
 
     basic_info_str = '\n'.join(basic_info)
+    match_time_msk = str(match_data.get('match_time', '')).strip()
+    time_rule_line = ""
+    if match_time_msk:
+        time_rule_line = (
+            f"\nВремя матча указывай только как {match_time_msk} МСК. "
+            "Не используй локальное время и не пересчитывай часовые пояса."
+        )
 
     prompt = f"""Данные матча:
 {basic_info_str}
@@ -399,14 +802,24 @@ async def generate_match_analysis_with_context(
 
 {ANALYSIS_PROMPT_TEMPLATE}
 
-Команда A = {team1}, Команда B = {team2}."""
+Команда A = {team1}, Команда B = {team2}.{time_rule_line}"""
 
     system_message = (
         "Ты — профессиональный спортивный аналитик. "
-        "Пишешь объективные обзоры матчей на русском языке. "
-        "Отвечаешь СТРОГО в формате JSON: {\"intro\": \"...\", \"conclusion\": \"...\"}. "
-        "Никогда не даёшь прогнозы на результат, не упоминаешь букмекерские "
-        "коэффициенты и не советуешь ставки. Без эмодзи."
+        "Пишешь объёмные, связные и фактурные обзоры матчей на русском языке. "
+        "Целевой объём: 1900–2400 символов. Абсолютный максимум: 2800 символов. "
+        "Если текст длиннее — сокращай, сохраняя ключевые факты. "
+        "Формат ответа: только готовый текст анализа с заголовками разделов в точном порядке. "
+        "Обязательно используй все 5 заголовков:\n"
+        "⚽ **Контекст матча**\n"
+        "📈 **Форма и турнирная ситуация**\n"
+        "📊 **Статистика и игровые паттерны**\n"
+        "🧠 **Психологические факторы**\n"
+        "🔑 **Вывод**\n"
+        "Не даёшь прогноз исхода, не упоминаешь букмекерские коэффициенты и не советуешь ставки. "
+        "Обязательно используй 3-5 эмодзи для визуального акцента (⚽📊🔥📈💪). "
+        "Каждый заголовок раздела должен содержать эмодзи. "
+        "Указывай время матча только в МСК и не используй формулировку «по местному времени»."
     )
 
     response = await client.chat.completions.create(
@@ -415,25 +828,139 @@ async def generate_match_analysis_with_context(
             {"role": "system", "content": system_message},
             {"role": "user", "content": prompt}
         ],
-        max_tokens=800,
+        max_tokens=1400,
         temperature=0.7
     )
 
-    raw = response.choices[0].message.content.strip()
+    raw_text = response.choices[0].message.content.strip()
+    analysis_text = clean_and_truncate(
+        raw_text,
+        target_max=2400,
+        soft_cap=2600,
+        hard_cap=2800
+    )
+    analysis_text = _normalize_kickoff_time_mentions(analysis_text, match_time_msk)
 
-    # Парсим JSON ответ
-    try:
-        # Убираем маркеры ```json если есть
-        if raw.startswith('```'):
-            raw = raw.split('\n', 1)[1]
-            raw = raw.rsplit('```', 1)[0]
-        result = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.error(f"DeepSeek вернул не-JSON: {raw[:200]}")
-        # Fallback: используем весь текст как intro
-        result = {'intro': raw, 'conclusion': ''}
+    for attempt in range(1, AI_QUALITY_REWRITE_ATTEMPTS + 1):
+        issues = _collect_quality_issues(analysis_text, match_time_msk)
+        if not issues:
+            break
+        logger.warning(
+            "Проход quality-check #%s не пройден: %s",
+            attempt, "; ".join(issues)
+        )
+        try:
+            rewritten = await _rewrite_with_quality_feedback(
+                prompt=prompt,
+                original_text=analysis_text,
+                issues=issues
+            )
+            analysis_text = clean_and_truncate(
+                rewritten,
+                target_max=2800,
+                soft_cap=3400,
+                hard_cap=3600
+            )
+            analysis_text = _normalize_kickoff_time_mentions(analysis_text, match_time_msk)
+        except Exception as e:
+            logger.error("Ошибка переписывания по quality feedback: %s", e)
+            break
 
-    intro = clean_and_truncate(result.get('intro', ''))
-    conclusion = clean_and_truncate(result.get('conclusion', ''))
+    if AI_QUALITY_REWRITE_ATTEMPTS == 0:
+        skipped_issues = _collect_quality_issues(analysis_text, match_time_msk)
+        if skipped_issues:
+            logger.info(
+                "quality-check: найдены проблемы, но переписывание отключено (AI_QUALITY_REWRITE_ATTEMPTS=0): %s",
+                "; ".join(skipped_issues)
+            )
+
+    final_issues = _collect_quality_issues(analysis_text, match_time_msk)
+    missing_sections = _extract_missing_required_sections(final_issues)
+    if missing_sections:
+        injected = []
+        for section in missing_sections:
+            if section == _normalize_for_checks("вывод"):
+                continue
+            block = _build_missing_section_block(section, match_data, enriched_context)
+            analysis_text = _inject_section_before_conclusion(analysis_text, block)
+            injected.append(section)
+        if injected:
+            logger.info(
+                "Добавлены fallback-блоки без доп. API-вызовов: %s",
+                ", ".join(injected)
+            )
+            analysis_text = clean_and_truncate(
+                analysis_text,
+                target_max=2800,
+                soft_cap=3400,
+                hard_cap=3600
+            )
+            analysis_text = _normalize_kickoff_time_mentions(analysis_text, match_time_msk)
+            final_issues = _collect_quality_issues(analysis_text, match_time_msk)
+
+    needs_conclusion = any("блок «вывод»" in issue.lower() for issue in final_issues)
+    if needs_conclusion:
+        if AI_QUALITY_REWRITE_ATTEMPTS > 0:
+            try:
+                conclusion_block = await _generate_conclusion_block(prompt, analysis_text)
+                if "**вывод**" not in conclusion_block.lower():
+                    conclusion_block = f"**Вывод**\n{conclusion_block.strip()}"
+                analysis_text = f"{analysis_text.rstrip()}\n\n{conclusion_block.strip()}"
+            except Exception as e:
+                logger.error("Не удалось достроить вывод через LLM: %s", e)
+                analysis_text = f"{analysis_text.rstrip()}\n\n{_fallback_conclusion(match_data, enriched_context)}"
+        else:
+            analysis_text = f"{analysis_text.rstrip()}\n\n{_fallback_conclusion(match_data, enriched_context)}"
+
+        analysis_text = clean_and_truncate(
+            analysis_text,
+            target_max=2800,
+            soft_cap=3400,
+            hard_cap=3600
+        )
+
+    # Гарантийный fallback: если даже после всех шагов вывода нет — вставляем шаблон.
+    if "вывод" not in _normalize_for_checks(analysis_text):
+        analysis_text = f"{analysis_text.rstrip()}\n\n{_fallback_conclusion(match_data, enriched_context)}"
+        analysis_text = clean_and_truncate(
+            analysis_text,
+            target_max=2800,
+            soft_cap=3400,
+            hard_cap=3600
+        )
+
+    return analysis_text
+
+
+async def generate_match_analysis_with_context(
+    match_data: dict, enriched_context: str
+) -> dict:
+    """
+    Backward compatibility wrapper.
+
+    Возвращает dict {'intro': ..., 'conclusion': ...} на основе нового
+    единого текстового анализа.
+    """
+    full_text = await generate_match_text_analysis(match_data, enriched_context)
+    if not full_text:
+        return {'intro': '', 'conclusion': ''}
+
+    paragraphs = [p.strip() for p in full_text.split('\n\n') if p.strip()]
+
+    # Ищем первый параграф, который содержит реальный текст (не только заголовок)
+    intro_idx = 0
+    for i, p in enumerate(paragraphs):
+        lines = [line_text.strip() for line_text in p.splitlines() if line_text.strip()]
+        is_only_heading = len(lines) == 1 and lines[0].startswith('**')
+        if not is_only_heading:
+            intro_idx = i
+            break
+
+    if len(paragraphs) > intro_idx + 1:
+        intro = '\n\n'.join(paragraphs[:intro_idx + 1])
+        conclusion = '\n\n'.join(paragraphs[intro_idx + 1:])
+    else:
+        intro = full_text
+        conclusion = ''
 
     return {'intro': intro, 'conclusion': conclusion}
