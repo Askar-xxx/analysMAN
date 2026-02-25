@@ -15,6 +15,28 @@ from config import THESPORTSDB_KEY, THESPORTSDB_VERIFY_TLS
 logger = logging.getLogger(__name__)
 CUP_LEAGUE_IDS = {'4480', '4481', '4482'}
 
+EVENT_STAT_ALIASES = {
+    'ball possession': 'Владение мячом',
+    'shots total': 'Удары всего',
+    'shots on goal': 'Удары в створ',
+    'shots off goal': 'Удары мимо',
+    'shots off target': 'Удары мимо',
+    'blocked shots': 'Заблокированные удары',
+    'corner kicks': 'Угловые',
+    'fouls': 'Фолы',
+    'fouls committed': 'Фолы',
+    'offsides': 'Офсайды',
+    'yellow cards': 'Жёлтые карточки',
+    'red cards': 'Красные карточки',
+    'goalkeeper saves': 'Сейвы вратаря',
+    'passes total': 'Передачи',
+    'passes %': 'Точность передач',
+    'passes percentage': 'Точность передач',
+    'pass accuracy': 'Точность передач',
+    'expected goals': 'xG',
+    'xg': 'xG',
+}
+
 
 class MatchDataFetcher:
     """Класс для получения обогащённых данных матча из TheSportsDB Premium API"""
@@ -94,6 +116,7 @@ class MatchDataFetcher:
         include_lineups: bool = True,
         include_domestic_positions: bool = True,
         include_last_match_events: bool = True,
+        include_event_stats: bool = True,
         include_cup_context: bool = True,
         lineup_scan_limit: Optional[int] = None
     ) -> dict:
@@ -112,6 +135,8 @@ class MatchDataFetcher:
                                         (используется для кубковых матчей)
             include_last_match_events: получать ли события последнего матча
                                        (замены/карточки по timeline)
+            include_event_stats: получать ли расширенную матчевую статистику
+                                 (владение, удары, xG, карточки и т.д.)
 
         Returns:
             {
@@ -125,6 +150,10 @@ class MatchDataFetcher:
                 'team2_cup_path': [...],   # Кубковый путь (для кубков)
                 'team1_last_match_events': {...},  # События последнего матча team1
                 'team2_last_match_events': {...},  # События последнего матча team2
+                'current_event_stats': {...},      # Расширенная статистика текущего матча
+                'team1_last_match_stats': {...},   # Расширенная статистика последнего матча team1
+                'team2_last_match_stats': {...},   # Расширенная статистика последнего матча team2
+                'h2h_recent_stats': [...],         # Расширенная статистика последних H2H
                 'errors': []               # Список ошибок если были
             }
         """
@@ -139,6 +168,12 @@ class MatchDataFetcher:
             'team2_cup_path': [],
             'team1_last_match_events': {},
             'team2_last_match_events': {},
+            'team1_meta': {},
+            'team2_meta': {},
+            'current_event_stats': {},
+            'team1_last_match_stats': {},
+            'team2_last_match_stats': {},
+            'h2h_recent_stats': [],
             'league_id': None,
             'season': None,
             'is_cup': False,
@@ -227,7 +262,22 @@ class MatchDataFetcher:
             logger.error(error_msg)
             result['errors'].append(error_msg)
 
-        # 5. События последних матчей (замены/карточки) — по timeline
+        # 5. Метаданные команд (страна/локация)
+        try:
+            if home_team_id:
+                team1_meta = self._fetch_team_details(str(home_team_id))
+                if team1_meta:
+                    result['team1_meta'] = team1_meta
+            if away_team_id:
+                team2_meta = self._fetch_team_details(str(away_team_id))
+                if team2_meta:
+                    result['team2_meta'] = team2_meta
+        except Exception as e:
+            error_msg = f"Ошибка получения метаданных команд: {e}"
+            logger.error(error_msg)
+            result['errors'].append(error_msg)
+
+        # 6. События последних матчей (замены/карточки) — по timeline
         if include_last_match_events:
             try:
                 if result.get('team1_form'):
@@ -243,7 +293,44 @@ class MatchDataFetcher:
                 logger.error(error_msg)
                 result['errors'].append(error_msg)
 
-        # 6. Lineups (составы) — для последних 2 матчей каждой команды
+        # 7. Расширенная статистика матчей (владение, удары, xG и т.д.)
+        if include_event_stats:
+            try:
+                if api_event_id:
+                    result['current_event_stats'] = self._fetch_event_stats(api_event_id)
+
+                if result.get('team1_form'):
+                    last_event_id = result['team1_form'][0].get('event_id')
+                    if last_event_id:
+                        result['team1_last_match_stats'] = self._fetch_event_stats(last_event_id)
+
+                if result.get('team2_form'):
+                    last_event_id = result['team2_form'][0].get('event_id')
+                    if last_event_id:
+                        result['team2_last_match_stats'] = self._fetch_event_stats(last_event_id)
+
+                if result.get('h2h'):
+                    h2h_stats = []
+                    for h2h_match in result['h2h'][:2]:
+                        h2h_event_id = h2h_match.get('event_id')
+                        if not h2h_event_id:
+                            continue
+                        stats = self._fetch_event_stats(h2h_event_id)
+                        if stats:
+                            h2h_stats.append({
+                                'event_id': str(h2h_event_id),
+                                'date': h2h_match.get('date', ''),
+                                'home_team': h2h_match.get('home_team', ''),
+                                'away_team': h2h_match.get('away_team', ''),
+                                'stats': stats
+                            })
+                    result['h2h_recent_stats'] = h2h_stats
+            except Exception as e:
+                error_msg = f"Ошибка получения расширенной статистики: {e}"
+                logger.error(error_msg)
+                result['errors'].append(error_msg)
+
+        # 8. Lineups (составы) — для последних 2 матчей каждой команды
         if include_lineups:
             try:
                 # Получаем составы для team1: первые 2 доступных lineup в форме
@@ -300,7 +387,7 @@ class MatchDataFetcher:
                 logger.error(error_msg)
                 result['errors'].append(error_msg)
 
-        # 7. Кубковые данные: путь и домашние позиции команд
+        # 9. Кубковые данные: путь и домашние позиции команд
         if result['is_cup'] and include_cup_context:
             cup_events = self._fetch_cup_matches_by_season(league_id, season)
             result['team1_cup_path'] = self._build_cup_path_from_events(cup_events, team1)
@@ -459,6 +546,7 @@ class MatchDataFetcher:
                     if event.get('strStatus') not in ['Match Finished', 'FT']:
                         continue
                     finished.append({
+                        'event_id': event.get('idEvent', ''),
                         'date': event.get('dateEvent', ''),
                         'home_team': event.get('strHomeTeam', ''),
                         'away_team': event.get('strAwayTeam', ''),
@@ -855,7 +943,9 @@ class MatchDataFetcher:
             return {
                 'league_id': team.get('idLeague'),
                 'league_name': team.get('strLeague', ''),
-                'team_name': team.get('strTeam', '')
+                'team_name': team.get('strTeam', ''),
+                'country': team.get('strCountry', ''),
+                'stadium_location': team.get('strStadiumLocation', ''),
             }
         except Exception as e:
             logger.error(f"Ошибка _fetch_team_details: {e}")
@@ -1063,6 +1153,106 @@ class MatchDataFetcher:
             logger.error(f"Ошибка _fetch_timeline: {e}")
             return []
 
+    @staticmethod
+    def _normalize_event_stat_name(raw_name: str) -> str:
+        """Нормализует название статистики в удобный русский лейбл."""
+        raw = str(raw_name or '').strip()
+        if not raw:
+            return ''
+
+        normalized = ' '.join(raw.lower().replace(':', '').split())
+        return EVENT_STAT_ALIASES.get(normalized, raw)
+
+    @staticmethod
+    def _normalize_event_stat_value(value) -> str:
+        """Приводит значение статистики к короткой строке."""
+        if value is None:
+            return ''
+        text = str(value).strip()
+        if text.lower() in ('', 'null', 'none', '-', '--'):
+            return ''
+        return text
+
+    def _fetch_event_stats(self, event_id: int) -> dict:
+        """
+        Получить расширенную статистику события (владение, удары, xG и т.д.).
+
+        Returns:
+            {
+                'Владение мячом': {'home': '55%', 'away': '45%'},
+                'Удары всего': {'home': '16', 'away': '11'},
+                ...
+            }
+            или {} если данных нет.
+        """
+        try:
+            response = self._get_with_retry(
+                "lookupeventstats.php",
+                params={'id': event_id},
+                timeout=10
+            )
+            if response.status_code != 200:
+                logger.warning(f"Event stats: статус {response.status_code} для event {event_id}")
+                return {}
+
+            data = response.json()
+            if not isinstance(data, dict):
+                return {}
+
+            rows = (
+                data.get('statistics')
+                or data.get('stats')
+                or data.get('eventstats')
+                or []
+            )
+            if not isinstance(rows, list) or not rows:
+                logger.debug(f"Event stats: нет данных для event {event_id}")
+                return {}
+
+            parsed = {}
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+
+                raw_name = (
+                    row.get('strStat')
+                    or row.get('strStatistic')
+                    or row.get('strType')
+                    or row.get('strKey')
+                    or row.get('strName')
+                )
+                stat_name = self._normalize_event_stat_name(raw_name)
+                if not stat_name:
+                    continue
+
+                home_value = self._normalize_event_stat_value(
+                    row.get('strHome')
+                    or row.get('strHomeValue')
+                    or row.get('intHome')
+                    or row.get('home')
+                )
+                away_value = self._normalize_event_stat_value(
+                    row.get('strAway')
+                    or row.get('strAwayValue')
+                    or row.get('intAway')
+                    or row.get('away')
+                )
+                if not home_value and not away_value:
+                    continue
+
+                # При дубликатах оставляем наиболее заполненный вариант.
+                prev = parsed.get(stat_name, {})
+                prev_home = prev.get('home', '')
+                prev_away = prev.get('away', '')
+                if (home_value and not prev_home) or (away_value and not prev_away) or not prev:
+                    parsed[stat_name] = {'home': home_value or prev_home, 'away': away_value or prev_away}
+
+            return parsed
+
+        except Exception as e:
+            logger.error(f"Ошибка _fetch_event_stats: {e}")
+            return {}
+
 
 def _get_season_date_range(season: str, league_id: str) -> tuple:
     """
@@ -1113,6 +1303,56 @@ def _get_season_date_range(season: str, league_id: str) -> tuple:
     end_date = date(end_year, end_month, end_day)
 
     return start_date, end_date
+
+
+def _format_event_stats_block(title: str, stats: dict) -> str:
+    """Формирует короткий блок по расширенной статистике матча."""
+    if not stats:
+        return ''
+
+    preferred_order = [
+        'Владение мячом',
+        'xG',
+        'Удары всего',
+        'Удары в створ',
+        'Удары мимо',
+        'Заблокированные удары',
+        'Угловые',
+        'Фолы',
+        'Офсайды',
+        'Жёлтые карточки',
+        'Красные карточки',
+        'Сейвы вратаря',
+        'Передачи',
+        'Точность передач',
+    ]
+
+    lines = [f"{title}:"]
+    used = set()
+
+    for key in preferred_order:
+        values = stats.get(key, {})
+        if not isinstance(values, dict):
+            continue
+        home_val = str(values.get('home', '')).strip()
+        away_val = str(values.get('away', '')).strip()
+        if not home_val and not away_val:
+            continue
+        lines.append(f"- {key}: {home_val or '—'} / {away_val or '—'}")
+        used.add(key)
+
+    for key, values in stats.items():
+        if key in used or not isinstance(values, dict):
+            continue
+        home_val = str(values.get('home', '')).strip()
+        away_val = str(values.get('away', '')).strip()
+        if not home_val and not away_val:
+            continue
+        lines.append(f"- {key}: {home_val or '—'} / {away_val or '—'}")
+
+    if len(lines) == 1:
+        return ''
+    return '\n'.join(lines)
 
 
 def build_enriched_context(match: dict, data: dict) -> str:
@@ -1241,6 +1481,81 @@ def build_enriched_context(match: dict, data: dict) -> str:
         if st2:
             lines.append(f"{team2}:\n  {st2.replace(chr(10), chr(10) + '  ')}")
         sections.append('\n'.join(lines))
+
+    # === Расширенная статистика матчей ===
+    stats_sections = []
+    current_stats = _format_event_stats_block(
+        "Текущий матч (если доступно)",
+        data.get('current_event_stats', {})
+    )
+    if current_stats:
+        stats_sections.append(current_stats)
+
+    team1_stats = _format_event_stats_block(
+        f"Последний матч {team1}",
+        data.get('team1_last_match_stats', {})
+    )
+    if team1_stats:
+        stats_sections.append(team1_stats)
+
+    team2_stats = _format_event_stats_block(
+        f"Последний матч {team2}",
+        data.get('team2_last_match_stats', {})
+    )
+    if team2_stats:
+        stats_sections.append(team2_stats)
+
+    h2h_recent_stats = data.get('h2h_recent_stats') or []
+    for idx, item in enumerate(h2h_recent_stats[:2], start=1):
+        if not isinstance(item, dict):
+            continue
+        title = (
+            f"H2H статистика #{idx}: "
+            f"{item.get('home_team', '')} vs {item.get('away_team', '')} "
+            f"({item.get('date', '')})"
+        ).strip()
+        block = _format_event_stats_block(title, item.get('stats') or {})
+        if block:
+            stats_sections.append(block)
+
+    if stats_sections:
+        sections.append("=== РАСШИРЕННАЯ СТАТИСТИКА ===\n" + '\n\n'.join(stats_sections))
+
+    # === Факторы матча: дерби, мотивация, реванш ===
+    try:
+        from match_signals import build_match_signals
+
+        has_signal_input = any([
+            data.get('h2h'),
+            (data.get('standings') or {}).get('table'),
+            data.get('team1_form'),
+            data.get('team2_form'),
+            data.get('team1_last_match_stats'),
+            data.get('team2_last_match_stats'),
+            data.get('h2h_recent_stats'),
+        ])
+        if has_signal_input:
+            signals = build_match_signals(match, data)
+            if signals:
+                lines = ["=== ПСИХОЛОГИЧЕСКИЕ ФАКТОРЫ ==="]
+                for key in ('derby', 'motivation', 'revenge'):
+                    block = signals.get(key, {})
+                    if not isinstance(block, dict):
+                        continue
+                    label = block.get('label', key)
+                    score = block.get('score', 0)
+                    reasons = block.get('reasons') or []
+                    reason_text = '; '.join(r for r in reasons if r) if reasons else 'слабый сигнал'
+                    lines.append(f"{label}: {score}/100 — {reason_text}")
+                confidence = signals.get('confidence', {})
+                if confidence:
+                    lines.append(
+                        f"Уверенность модели факторов: "
+                        f"{confidence.get('label', 'средняя')} ({confidence.get('score', 0)}/100)"
+                    )
+                sections.append('\n'.join(lines))
+    except Exception as e:
+        logger.warning(f"Не удалось собрать блок психологических факторов: {e}")
 
     if not sections:
         return "Обогащённые данные недоступны."

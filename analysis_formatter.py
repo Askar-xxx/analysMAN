@@ -84,9 +84,15 @@ def extract_current_form(enriched_data: dict, team_name: str, is_home: bool) -> 
         as_ = int(match.get('away_score', 0) or 0)
 
         # Определяем с какой стороны играла команда
-        if match.get('home_team') == team_name:
+        is_home_team = match.get('home_team') == team_name
+        is_away_team = match.get('away_team') == team_name
+        # Грязные данные: обе стороны совпадают — пропускаем
+        if is_home_team and is_away_team:
+            continue
+        if is_home_team:
             form_str += 'W' if hs > as_ else ('D' if hs == as_ else 'L')
         else:
+            # Либо явный матч гостя, либо имя не совпало (fallback — считаем как гость)
             form_str += 'W' if as_ > hs else ('D' if hs == as_ else 'L')
 
     # Считаем статистику по форме
@@ -253,11 +259,9 @@ def extract_stats_trends(enriched_data: dict, team_name: str, is_home: bool) -> 
     avg_scored = total_scored / total if total > 0 else 0
     avg_conceded = total_conceded / total if total > 0 else 0
 
-    location = "домашних" if is_home else "выездных"
-
     lines = [
         f"• Забивают в {scored_pct:.0f}% матчей",
-        f"• Пропускают в {conceded_pct:.0f}% {location} игр",
+        f"• Пропускают в {conceded_pct:.0f}% матчей",
         f"• В среднем {avg_scored:.2f} гола за матч",
         f"• Пропускают {avg_conceded:.2f} в среднем"
     ]
