@@ -883,11 +883,13 @@ async def handle_show_table(
     team2 = match_dict.get('team2', '?')
     logger.info(f"[TABLE] Запрос таблицы для {team1} vs {team2} (match_id={match_id})")
 
-    await safe_edit_message(
-        query,
-        "⏳ Подготавливаем таблицу анализа...",
-        None
-    )
+    # Если пользователь уже на фото-экране таблицы и снова нажал «Таблица»,
+    # ничего не делаем, чтобы не засорять чат промежуточными сообщениями.
+    if getattr(query.message, 'photo', None):
+        logger.info(f"[TABLE] Фото уже открыто, пропускаем повторную отрисовку (match_id={match_id})")
+        return
+
+    await safe_edit_message(query, "⏳ Подготавливаем таблицу анализа...", None)
 
     try:
         t0 = time.time()
