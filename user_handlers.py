@@ -28,6 +28,34 @@ MENU_DEPOSIT = 'deposit'
 
 logger = logging.getLogger(__name__)
 
+CALLBACK_DEBOUNCE_SECONDS = 0.35
+
+
+def _is_callback_spam(context, callback_data: str) -> bool:
+    """
+    Защита от дребезга кнопок:
+    одинаковый callback в коротком окне считаем повторным нажатием.
+    """
+    now = time.monotonic()
+    last_data = context.user_data.get('_last_callback_data')
+    last_at = context.user_data.get('_last_callback_at', 0.0)
+
+    context.user_data['_last_callback_data'] = callback_data
+    context.user_data['_last_callback_at'] = now
+
+    return (
+        last_data == callback_data
+        and (now - float(last_at)) < CALLBACK_DEBOUNCE_SECONDS
+    )
+
+
+def _safe_int(raw):
+    """Безопасный int-парсер для callback payload."""
+    try:
+        return int(raw)
+    except Exception:
+        return None
+
 
 async def _cleanup_topup_step_images(query, context):
     """Удаляет служебные STEP_скриншоты второго UX из истории чата."""
@@ -200,6 +228,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Основной обработчик кнопок"""
     query = update.callback_query
     await safe_answer_callback(query)
+    if _is_callback_spam(context, query.data or ''):
+        logger.info("Игнорируем повторный callback (debounce): %s", query.data)
+        return
     user_id = update.effective_user.id
     username = update.effective_user.username
     database.get_or_create_user(user_id, username)
@@ -240,7 +271,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['menu_history'].append(MENU_MAIN)
         await handle_how_it_works(query)
     elif query.data.startswith('hiw_page_'):
-        page = int(query.data.split('_')[-1])
+        page = _safe_int(query.data.split('_')[-1])
+        if page is None:
+            await safe_edit_message(query, "Экран устарел. Откройте заново.", keyboards.main_menu_keyboard())
+            return
         await handle_how_it_works(query, page=page)
     elif query.data == 'noop':
         await query.answer()
@@ -266,7 +300,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         date_str = parts[3]
         await handle_analysis_back_to_matches(query, context, sport, date_str)
     elif query.data.startswith('match_'):
-        match_id = int(query.data.split('_')[1])
+        match_id = _safe_int(query.data.split('_')[1])
+        if match_id is None:
+            await safe_edit_message(query, "Карточка матча устарела.", keyboards.main_menu_keyboard())
+            return
         # Сохраняем предыдущее меню и текущий матч с учетом источника
         match_source = context.user_data.get('match_source', 'browse')
         # Не дублируем запись если возвращаемся из анализа к тому же матчу
@@ -283,7 +320,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['current_match_id'] = match_id
         await handle_match_detail(query, user_id, match_id, match_source=match_source)
     elif query.data.startswith('buy_'):
-        match_id = int(query.data.split('_')[1])
+        match_id = _safe_int(query.data.split('_')[1])
+        if match_id is None:
+            await safe_edit_message(query, "Покупка недоступна: экран устарел.", keyboards.main_menu_keyboard())
+            return
         # Сохраняем текущее меню (детали матча) в историю
         context.user_data['menu_history'].append(MENU_MATCH_DETAIL)
         await handle_purchase(query, user_id)
@@ -321,7 +361,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
     elif query.data.startswith('show_analysis_'):
         # Обратная совместимость со старым callback.
-        match_id = int(query.data.split('_')[2])
+        match_id = _safe_int(query.data.split('_')[2])
+        if match_id is None:
+            await safe_edit_message(query, "Экран устарел. Откройте матч заново.", keyboards.main_menu_keyboard())
+            return
         await handle_show_table(
             query, context, user_id, match_id,
             callback_suffix='',
@@ -346,7 +389,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _remember_post_topup_target(context)
         await handle_deposit_menu(query, context, user_id)
     elif query.data.startswith('return_to_match_'):
-        match_id = int(query.data.split('_')[-1])
+        match_id = _safe_int(query.data.split('_')[-1])
+        if match_id is None:
+            await safe_edit_message(query, "Экран устарел. Вернитесь в меню.", keyboards.main_menu_keyboard())
+            return
         context.user_data['current_match_id'] = match_id
         match_source = context.user_data.get('post_topup_match_source', 'browse')
         context.user_data['match_source'] = match_source
@@ -694,6 +740,14 @@ async def handle_purchase(query, user_id):
     # Списываем с баланса и создаём paid purchase
     success, message = database.purchase_analysis(user_id, match_id)
     if not success:
+        if "уже приобрет" in str(message).lower():
+            await safe_edit_message(
+                query,
+                "✅ Анализ для этого матча уже приобретён.\n\n"
+                "Откройте «Мои анализы» или карточку матча.",
+                keyboards.main_menu_keyboard()
+            )
+            return
         await safe_edit_message(
             query,
             f"❌ Ошибка покупки: {message}",
@@ -702,24 +756,25 @@ async def handle_purchase(query, user_id):
         return
 
     # Мгновенная генерация анализа
+    from webhook_server import (
+        generate_and_send_analysis,
+        _build_generation_progress_text,
+    )
+
+    progress_statuses = {
+        'text_data': 'run',
+        'text_generate': 'pending',
+        'table_prepare': 'pending',
+        'table_render': 'pending',
+        'send': 'pending',
+    }
     await safe_edit_message(
         query,
-        f"⏳ <b>Генерируем анализ...</b>\n\n"
-        f"🏆 {match_dict['team1']} vs {match_dict['team2']}\n\n"
-        "<b>Текстовый анализ</b>\n"
-        "⏳ 1/2 Сбор и обогащение данных\n"
-        "▫️ 2/2 Генерация текста\n\n"
-        "<b>Таблица</b>\n"
-        "▫️ 1/2 Подготовка таблицы\n"
-        "▫️ 2/2 Рендер изображения\n\n"
-        "<b>Финал</b>\n"
-        "▫️ Отправка результата\n\n"
-        "⏱ Обычно это занимает <b>30-60 секунд</b>.",
+        _build_generation_progress_text(match_dict, progress_statuses),
         None,
         parse_mode='HTML'
     )
 
-    from webhook_server import generate_and_send_analysis
     await generate_and_send_analysis(
         user_id, match_id, match_dict,
         instruction_message_id=query.message.message_id
@@ -869,7 +924,11 @@ async def handle_show_table(
     if thread:
         bot = query.message.get_bot()
         chat_id = query.message.chat_id
+        current_message_id = query.message.message_id
         for mid in thread.get('related_message_ids', []):
+            if mid == current_message_id:
+                # Текущее сообщение удалять нельзя: его же и обрабатываем.
+                continue
             try:
                 await bot.delete_message(chat_id=chat_id, message_id=mid)
             except Exception:
@@ -888,8 +947,6 @@ async def handle_show_table(
     if getattr(query.message, 'photo', None):
         logger.info(f"[TABLE] Фото уже открыто, пропускаем повторную отрисовку (match_id={match_id})")
         return
-
-    await safe_edit_message(query, "⏳ Подготавливаем таблицу анализа...", None)
 
     try:
         t0 = time.time()
@@ -917,7 +974,8 @@ async def handle_show_table(
                 reply_markup=keyboards.analysis_view_keyboard(
                     match_id=match_id,
                     back_callback_data=back_callback_data,
-                    callback_suffix=callback_suffix
+                    callback_suffix=callback_suffix,
+                    active_view='table'
                 )
             )
             related_message_ids.append(sent_photo.message_id)
@@ -941,7 +999,8 @@ async def handle_show_table(
             keyboards.analysis_view_keyboard(
                 match_id=match_id,
                 back_callback_data=back_callback_data,
-                callback_suffix=callback_suffix
+                callback_suffix=callback_suffix,
+                active_view='table'
             )
         )
 
@@ -956,7 +1015,11 @@ async def handle_show_text_analysis(
     if thread:
         bot = query.message.get_bot()
         chat_id = query.message.chat_id
+        current_message_id = query.message.message_id
         for mid in thread.get('related_message_ids', []):
+            if mid == current_message_id:
+                # Текущее сообщение удалять нельзя: его отредактирует safe_edit_message.
+                continue
             try:
                 await bot.delete_message(chat_id=chat_id, message_id=mid)
             except Exception:
@@ -1007,7 +1070,8 @@ async def handle_show_text_analysis(
         keyboards.analysis_view_keyboard(
             match_id=match_id,
             back_callback_data=back_callback_data,
-            callback_suffix=callback_suffix
+            callback_suffix=callback_suffix,
+            active_view='text'
         ),
         parse_mode='HTML'
     )

@@ -123,6 +123,15 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users (user_id)
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS generation_jobs (
+            match_id INTEGER PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'running',
+            owner TEXT,
+            updated_at TEXT NOT NULL,
+            error TEXT
+        )
+    ''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_topups_token ON balance_topups(token)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_topups_user_id ON balance_topups(user_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_topups_status ON balance_topups(status)')
@@ -201,6 +210,27 @@ def init_db():
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_purchases_token ON purchases(token)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_purchases_status ON purchases(status)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_purchases_user_id ON purchases(user_id)')
+    # Миграция для старых БД: удаляем дубли paid-покупок, иначе unique-индекс не создастся.
+    cursor.execute(
+        '''
+        DELETE FROM purchases
+        WHERE status = 'paid'
+          AND id NOT IN (
+              SELECT MIN(id)
+              FROM purchases
+              WHERE status = 'paid'
+              GROUP BY user_id, match_id
+          )
+        '''
+    )
+    # Один пользователь может иметь только одну paid-покупку на матч.
+    cursor.execute(
+        '''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_purchases_paid_user_match
+        ON purchases(user_id, match_id)
+        WHERE status = 'paid'
+        '''
+    )
 
     # Системные админы всегда присутствуют в таблице для корректной выдачи меню команд.
     for admin_id in _get_system_admin_ids():
@@ -632,45 +662,194 @@ def purchase_analysis(user_id, match_id):
 
     conn = get_db_connection()
     cursor = conn.cursor()
-
-    cursor.execute('SELECT * FROM matches WHERE id = ?', (match_id,))
-    match = cursor.fetchone()
-    if not match:
-        conn.close()
-        return False, "Матч не найден"
-
-    cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
-    user = cursor.fetchone()
-    if not user:
-        conn.close()
-        return False, "Пользователь не найден"
-
     price = ANALYSIS_PRICE_RUB
-    if user['balance'] < price:
-        conn.close()
-        return False, (
-            f"Недостаточно средств. Нужно: {price} руб., "
-            f"у вас: {user['balance']} руб."
+
+    try:
+        # Лочим БД на запись, чтобы два параллельных клика не создали двойную покупку.
+        cursor.execute('BEGIN IMMEDIATE')
+
+        cursor.execute('SELECT 1 FROM matches WHERE id = ?', (match_id,))
+        match = cursor.fetchone()
+        if not match:
+            conn.rollback()
+            return False, "Матч не найден"
+
+        cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            conn.rollback()
+            return False, "Пользователь не найден"
+
+        cursor.execute(
+            '''
+            SELECT id FROM purchases
+            WHERE user_id = ? AND match_id = ? AND status = 'paid'
+            LIMIT 1
+            ''',
+            (user_id, match_id)
+        )
+        if cursor.fetchone():
+            conn.rollback()
+            return False, "Анализ уже приобретен"
+
+        if user['balance'] < price:
+            conn.rollback()
+            return False, (
+                f"Недостаточно средств. Нужно: {price} руб., "
+                f"у вас: {user['balance']} руб."
+            )
+
+        cursor.execute(
+            '''
+            UPDATE users
+            SET balance = balance - ?,
+                total_analysis_bought = total_analysis_bought + 1
+            WHERE user_id = ? AND balance >= ?
+            ''',
+            (price, user_id, price)
+        )
+        if cursor.rowcount == 0:
+            conn.rollback()
+            return False, "Недостаточно средств."
+
+        purchase_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute(
+            '''
+            INSERT INTO purchases (user_id, match_id, purchase_date, status, amount)
+            VALUES (?, ?, ?, 'paid', ?)
+            ''',
+            (user_id, match_id, purchase_date, price * 100)
         )
 
-    # Списываем с баланса
-    cursor.execute('''
-        UPDATE users
-        SET balance = balance - ?,
-            total_analysis_bought = total_analysis_bought + 1
-        WHERE user_id = ?
-    ''', (price, user_id))
+        conn.commit()
+        return True, "Покупка успешна"
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return False, "Анализ уже приобретен"
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
-    # Создаём оплаченную покупку сразу
-    purchase_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    cursor.execute('''
-        INSERT INTO purchases (user_id, match_id, purchase_date, status, amount)
-        VALUES (?, ?, ?, 'paid', ?)
-    ''', (user_id, match_id, purchase_date, price * 100))
 
-    conn.commit()
-    conn.close()
-    return True, "Покупка успешна"
+def _parse_dt_safe(raw: str):
+    """Парсер datetime с fallback для кривых/пустых значений."""
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw, '%Y-%m-%d %H:%M:%S')
+    except Exception:
+        return None
+
+
+def acquire_generation_job(match_id, owner=None, stale_after_seconds=300):
+    """
+    Пытается захватить lock генерации для match_id.
+
+    Returns:
+        bool: True если lock захвачен текущим процессом.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    now = datetime.now()
+    now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+
+    try:
+        cursor.execute('BEGIN IMMEDIATE')
+        cursor.execute(
+            '''
+            SELECT status, updated_at
+            FROM generation_jobs
+            WHERE match_id = ?
+            ''',
+            (match_id,)
+        )
+        row = cursor.fetchone()
+
+        if not row:
+            cursor.execute(
+                '''
+                INSERT INTO generation_jobs (match_id, status, owner, updated_at, error)
+                VALUES (?, 'running', ?, ?, NULL)
+                ''',
+                (match_id, owner, now_str)
+            )
+            conn.commit()
+            return True
+
+        status = (row['status'] or '').lower()
+        updated_at = _parse_dt_safe(row['updated_at'])
+        is_stale = (
+            updated_at is None
+            or (now - updated_at).total_seconds() > int(stale_after_seconds)
+        )
+
+        if status == 'running' and not is_stale:
+            conn.rollback()
+            return False
+
+        cursor.execute(
+            '''
+            UPDATE generation_jobs
+            SET status = 'running',
+                owner = ?,
+                updated_at = ?,
+                error = NULL
+            WHERE match_id = ?
+            ''',
+            (owner, now_str, match_id)
+        )
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+
+def finish_generation_job(match_id, status='done', error=None):
+    """Завершает lock генерации для match_id."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    try:
+        cursor.execute(
+            '''
+            INSERT INTO generation_jobs (match_id, status, owner, updated_at, error)
+            VALUES (?, ?, NULL, ?, ?)
+            ON CONFLICT(match_id) DO UPDATE SET
+                status = excluded.status,
+                owner = NULL,
+                updated_at = excluded.updated_at,
+                error = excluded.error
+            ''',
+            (match_id, status, now_str, error)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def wait_for_match_analysis(match_id, timeout_seconds=90, poll_interval=0.5):
+    """
+    Ждёт появления analysis_text в matches для данного матча.
+    Возвращает True, если текст появился в пределах timeout.
+    """
+    import time
+    deadline = time.monotonic() + float(timeout_seconds)
+    while time.monotonic() < deadline:
+        match = get_match_by_id(match_id)
+        if match:
+            if isinstance(match, dict):
+                analysis_text = str(match.get('analysis_text') or '').strip()
+            else:
+                analysis_text = str(match['analysis_text'] or '').strip()
+            if analysis_text:
+                return True
+        time.sleep(float(poll_interval))
+    return False
 
 
 def create_balance_topup(user_id, amount_rub=0):

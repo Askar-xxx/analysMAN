@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+PROGRESS_DONE_VISIBLE_SECONDS = 1.2
+
 
 def _stage_icon(status: str) -> str:
     """Иконка состояния шага прогресса."""
@@ -206,6 +208,23 @@ async def _cleanup_progress_message(bot, user_id: int, instruction_message_id: i
         logger.warning(f"Не удалось удалить сообщение с прогрессом: {e}")
 
 
+async def _finalize_generation_progress(
+    bot,
+    user_id: int,
+    instruction_message_id: int,
+    match_dict: dict,
+    statuses: dict,
+) -> None:
+    """Показывает финальные галочки и только потом скрывает сообщение прогресса."""
+    statuses['send'] = 'done'
+    await _update_generation_progress(
+        bot, user_id, instruction_message_id, match_dict, statuses
+    )
+    if instruction_message_id and PROGRESS_DONE_VISIBLE_SECONDS > 0:
+        await asyncio.sleep(PROGRESS_DONE_VISIBLE_SECONDS)
+    await _cleanup_progress_message(bot, user_id, instruction_message_id)
+
+
 def verify_signature(payload_body, signature_header):
     """
     Проверка подписи webhook от DonationAlerts (HMAC SHA256).
@@ -264,6 +283,7 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
         bool: True если успешно
     """
     total_started_at = time.monotonic()
+    generation_job_acquired = False
     try:
         # Импортируем здесь, чтобы избежать циклических зависимостей
         from match_data_fetcher import MatchDataFetcher, build_enriched_context
@@ -302,11 +322,9 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
                 bot, user_id, instruction_message_id, match_dict, progress_statuses
             )
             await _send_analysis_ready_message(bot, user_id, match_id, match_dict)
-            progress_statuses['send'] = 'done'
-            await _update_generation_progress(
+            await _finalize_generation_progress(
                 bot, user_id, instruction_message_id, match_dict, progress_statuses
             )
-            await _cleanup_progress_message(bot, user_id, instruction_message_id)
             return True
 
         # Защита от параллельной генерации одного и того же матча.
@@ -336,9 +354,53 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
                     bot, user_id, instruction_message_id, match_dict, progress_statuses
                 )
                 await _send_analysis_ready_message(bot, user_id, match_id, match_dict)
-                progress_statuses['send'] = 'done'
-                await _update_generation_progress(
+                await _finalize_generation_progress(
                     bot, user_id, instruction_message_id, match_dict, progress_statuses
+                )
+                return True
+
+            owner = f"user:{user_id}"
+            generation_job_acquired = database.acquire_generation_job(
+                match_id=match_id,
+                owner=owner,
+                stale_after_seconds=300
+            )
+            if not generation_job_acquired:
+                logger.info(
+                    "[DB-LOCK] match_id=%s: генерация уже выполняется в другом процессе, ждём кэш",
+                    match_id
+                )
+                cached_ready = await asyncio.to_thread(
+                    database.wait_for_match_analysis,
+                    match_id,
+                    90,
+                    0.5
+                )
+                if cached_ready:
+                    match_dict, cached_analysis_text = _load_match_with_cache(match_id, match_dict)
+                    if cached_analysis_text:
+                        progress_statuses.update({
+                            'text_data': 'done',
+                            'text_generate': 'done',
+                            'table_prepare': 'done',
+                            'table_render': 'done',
+                            'send': 'run',
+                        })
+                        await _update_generation_progress(
+                            bot, user_id, instruction_message_id, match_dict, progress_statuses
+                        )
+                        await _send_analysis_ready_message(bot, user_id, match_id, match_dict)
+                        await _finalize_generation_progress(
+                            bot, user_id, instruction_message_id, match_dict, progress_statuses
+                        )
+                        return True
+
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=(
+                        "⏳ Анализ по этому матчу уже формируется.\n"
+                        "Откройте «Мои анализы» через минуту."
+                    )
                 )
                 await _cleanup_progress_message(bot, user_id, instruction_message_id)
                 return True
@@ -489,14 +551,20 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
                 send_elapsed,
                 total_elapsed
             )
-            progress_statuses['send'] = 'done'
-            await _update_generation_progress(
+            await _finalize_generation_progress(
                 bot, user_id, instruction_message_id, match_dict, progress_statuses
             )
-            await _cleanup_progress_message(bot, user_id, instruction_message_id)
+            database.finish_generation_job(match_id, status='done')
+            generation_job_acquired = False
             return True
 
     except Exception as e:
+        if generation_job_acquired:
+            database.finish_generation_job(
+                match_id,
+                status='error',
+                error=str(e)[:500]
+            )
         logger.error(f"Ошибка генерации/отправки анализа: {e}", exc_info=True)
         # Отправляем сообщение об ошибке пользователю
         try:

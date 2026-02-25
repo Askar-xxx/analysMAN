@@ -93,6 +93,14 @@ async def clean_all_matches_command(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
         return
 
+    if not context.args or context.args[0].strip().upper() != "CONFIRM":
+        await update.message.reply_text(
+            "⚠️ Команда разрушительная и требует подтверждения.\n\n"
+            "Использование:\n"
+            "/clean_all_matches CONFIRM"
+        )
+        return
+
     await update.message.reply_text("⚠️ ВНИМАНИЕ: Удаляю ВСЕ матчи и анализы...")
 
     try:
@@ -481,7 +489,7 @@ async def admin_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "/cleartopups &lt;user_id&gt; — топапы пользователя\n\n"
         "🧹 <b>Очистка матчей:</b>\n"
         "/clean_matches — удалить старые матчи (без покупок) + PNG\n"
-        "/clean_all_matches — ⚠️ ПОЛНАЯ очистка всех матчей и анализов\n\n"
+        "/clean_all_matches CONFIRM — ⚠️ ПОЛНАЯ очистка всех матчей и анализов\n\n"
         "❓ <b>Помощь:</b>\n"
         "/adminhelp — эта справка"
     )

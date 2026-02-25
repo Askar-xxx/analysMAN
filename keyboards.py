@@ -27,15 +27,26 @@ def back_to_main_keyboard():
     ])
 
 
-def analysis_view_keyboard(match_id=None, back_callback_data='back', callback_suffix=''):
+def analysis_view_keyboard(
+    match_id=None,
+    back_callback_data='back',
+    callback_suffix='',
+    active_view: str = None
+):
     """Клавиатура для просмотра таблицы/текстового анализа."""
     keyboard = []
 
     if match_id is not None:
         suffix = f"_{callback_suffix}" if callback_suffix else ""
+        table_callback = f"show_table_{match_id}{suffix}"
+        text_callback = f"show_text_{match_id}{suffix}"
+        if active_view == 'table':
+            table_callback = "noop"
+        elif active_view == 'text':
+            text_callback = "noop"
         keyboard.append([
-            InlineKeyboardButton("📋 Таблица", callback_data=f"show_table_{match_id}{suffix}"),
-            InlineKeyboardButton("📝 Текст", callback_data=f"show_text_{match_id}{suffix}")
+            InlineKeyboardButton("📋 Таблица", callback_data=table_callback),
+            InlineKeyboardButton("📝 Текст", callback_data=text_callback)
         ])
 
     keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data=back_callback_data)])

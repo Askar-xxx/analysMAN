@@ -306,13 +306,29 @@ async def safe_edit_message(query, text, reply_markup=None, parse_mode='HTML'):
 
         # Проверяем, является ли сообщение фото
         if hasattr(query, 'message') and query.message and query.message.photo:
-            # Удаляем сообщение с фото и отправляем новое текстовое в чат
+            # Для фото сначала пробуем менять подпись — это стабильнее и не засоряет чат.
+            if len(text) <= 1024:
+                try:
+                    await query.edit_message_caption(
+                        caption=text,
+                        reply_markup=reply_markup,
+                        parse_mode=parse_mode
+                    )
+                    return True
+                except Exception as e:
+                    err = str(e).lower()
+                    if "message is not modified" in err:
+                        return True
+                    # Fallback ниже: удаляем фото и отправляем текст.
+                    logger.warning("Не удалось обновить подпись фото, fallback на send_message: %s", e)
+
+            # Если подпись слишком длинная или caption-edit не сработал —
+            # удаляем фото и отправляем новое текстовое сообщение.
             chat_id = query.message.chat_id
             try:
                 await query.message.delete()
             except Exception:
                 pass
-            # Отправляем новое сообщение в чат (не reply)
             bot = query.message.get_bot()
             await bot.send_message(
                 chat_id=chat_id,
