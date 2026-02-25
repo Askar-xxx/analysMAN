@@ -8,7 +8,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sync_matches import SportsDBSyncer  # noqa: E402
+import database  # noqa: E402
+from sync_matches import SportsDBSyncer, run_coverage_check  # noqa: E402
 
 # Генерируем актуальные даты для моков (today и tomorrow)
 _today = datetime.now().date()
@@ -91,6 +92,8 @@ CREATE_MATCHES_SQL = '''
         analysis_text TEXT,
         price INTEGER DEFAULT 150,
         is_active BOOLEAN DEFAULT 1,
+        coverage_ok INTEGER DEFAULT NULL,
+        coverage_checked_at TEXT DEFAULT NULL,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
 '''
@@ -119,6 +122,60 @@ def _create_test_db():
     conn.commit()
     conn.close()
     return db_path
+
+
+def _insert_match(
+    db_path,
+    *,
+    api_event_id,
+    match_date,
+    coverage_ok=None,
+    team1="Team A",
+    team2="Team B",
+    match_time="23:59"
+):
+    """Добавляет тестовый матч в БД и возвращает его id."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        '''
+        INSERT INTO matches (
+            sport, team1, team2, match_date, match_time,
+            league, api_event_id, source, home_team_id, away_team_id,
+            price, is_active, coverage_ok
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''',
+        (
+            'football',
+            team1,
+            team2,
+            match_date,
+            match_time,
+            'Premier League',
+            api_event_id,
+            'TheSportsDB',
+            '1',
+            '2',
+            150,
+            1,
+            coverage_ok
+        )
+    )
+    match_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return match_id
+
+
+def _db_connection_factory(db_path):
+    """Фабрика для подмены database.get_db_connection в тестах витрины."""
+
+    def _get_conn():
+        conn = sqlite3.connect(db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    return _get_conn
 
 
 class TestSyncTop3:
@@ -254,6 +311,147 @@ class TestBulkMode:
             # Все матчи должны быть вставлены (без дублей)
             assert results['errors'] == 0
             assert results['inserted'] + results['skipped'] == results['total']
+        finally:
+            os.unlink(db_path)
+
+
+class TestCoverageCheck:
+    """Тесты фоновой проверки покрытия."""
+
+    @patch('match_data_fetcher.MatchDataFetcher.fetch_match_data')
+    @patch('analysis_formatter.build_table_data')
+    def test_coverage_check_sets_ok(self, mock_build_table_data, mock_fetch_match_data):
+        db_path = _create_test_db()
+        future_date = (datetime.now().date() + timedelta(days=1)).strftime('%Y-%m-%d')
+        try:
+            match_id = _insert_match(
+                db_path,
+                api_event_id='cov-ok-1',
+                match_date=future_date,
+                coverage_ok=None
+            )
+            mock_fetch_match_data.return_value = {}
+            mock_build_table_data.return_value = {
+                'raw_coverage_rows_count': 3,
+                'raw_missing_cells_count': 1,
+            }
+
+            results = run_coverage_check(db_path=db_path, sleep_seconds=0)
+
+            conn = sqlite3.connect(db_path)
+            row = conn.execute(
+                'SELECT coverage_ok, coverage_checked_at FROM matches WHERE id = ?',
+                (match_id,)
+            ).fetchone()
+            conn.close()
+
+            assert results['checked'] == 1
+            assert results['ok'] == 1
+            assert results['hidden'] == 0
+            assert row[0] == 1
+            assert row[1] is not None
+        finally:
+            os.unlink(db_path)
+
+    @patch('match_data_fetcher.MatchDataFetcher.fetch_match_data')
+    @patch('analysis_formatter.build_table_data')
+    def test_coverage_check_sets_bad(self, mock_build_table_data, mock_fetch_match_data):
+        db_path = _create_test_db()
+        future_date = (datetime.now().date() + timedelta(days=1)).strftime('%Y-%m-%d')
+        try:
+            match_id = _insert_match(
+                db_path,
+                api_event_id='cov-bad-1',
+                match_date=future_date,
+                coverage_ok=None
+            )
+            mock_fetch_match_data.return_value = {}
+            mock_build_table_data.return_value = {
+                'raw_coverage_rows_count': 1,
+                'raw_missing_cells_count': 3,
+            }
+
+            results = run_coverage_check(db_path=db_path, sleep_seconds=0)
+
+            conn = sqlite3.connect(db_path)
+            row = conn.execute(
+                'SELECT coverage_ok, coverage_checked_at FROM matches WHERE id = ?',
+                (match_id,)
+            ).fetchone()
+            conn.close()
+
+            assert results['checked'] == 1
+            assert results['ok'] == 0
+            assert results['hidden'] == 1
+            assert row[0] == 0
+            assert row[1] is not None
+        finally:
+            os.unlink(db_path)
+
+
+class TestStorefrontCoverageFilter:
+    """Тесты фильтрации витрины по coverage_ok."""
+
+    def test_storefront_hides_unchecked(self):
+        db_path = _create_test_db()
+        future_date = (datetime.now().date() + timedelta(days=1)).strftime('%Y-%m-%d')
+        try:
+            _insert_match(
+                db_path,
+                api_event_id='store-null-1',
+                match_date=future_date,
+                coverage_ok=None
+            )
+            with patch(
+                'database.get_db_connection',
+                side_effect=_db_connection_factory(db_path)
+            ):
+                matches = database.get_matches_by_date_filtered('football', future_date)
+                dates = database.get_available_dates_with_matches('football')
+            assert len(matches) == 0
+            assert future_date not in dates
+        finally:
+            os.unlink(db_path)
+
+    def test_storefront_hides_bad(self):
+        db_path = _create_test_db()
+        future_date = (datetime.now().date() + timedelta(days=1)).strftime('%Y-%m-%d')
+        try:
+            _insert_match(
+                db_path,
+                api_event_id='store-bad-1',
+                match_date=future_date,
+                coverage_ok=0
+            )
+            with patch(
+                'database.get_db_connection',
+                side_effect=_db_connection_factory(db_path)
+            ):
+                matches = database.get_matches_by_date_filtered('football', future_date)
+                dates = database.get_available_dates_with_matches('football')
+            assert len(matches) == 0
+            assert future_date not in dates
+        finally:
+            os.unlink(db_path)
+
+    def test_storefront_shows_good(self):
+        db_path = _create_test_db()
+        future_date = (datetime.now().date() + timedelta(days=1)).strftime('%Y-%m-%d')
+        try:
+            _insert_match(
+                db_path,
+                api_event_id='store-good-1',
+                match_date=future_date,
+                coverage_ok=1
+            )
+            with patch(
+                'database.get_db_connection',
+                side_effect=_db_connection_factory(db_path)
+            ):
+                matches = database.get_matches_by_date_filtered('football', future_date)
+                dates = database.get_available_dates_with_matches('football')
+            assert len(matches) == 1
+            assert dates == [future_date]
         finally:
             os.unlink(db_path)
 

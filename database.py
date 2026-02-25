@@ -167,6 +167,14 @@ def init_db():
                 print(f"Добавлено поле {column_name} в таблицу matches")
             except sqlite3.OperationalError as e:
                 print(f"Не удалось добавить поле {column_name}: {e}")
+    try:
+        cursor.execute("ALTER TABLE matches ADD COLUMN coverage_ok INTEGER DEFAULT NULL")
+    except Exception:
+        pass
+    try:
+        cursor.execute("ALTER TABLE matches ADD COLUMN coverage_checked_at TEXT DEFAULT NULL")
+    except Exception:
+        pass
 
     # Индексы для matches
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_match_date ON matches(match_date)')
@@ -479,6 +487,7 @@ def get_available_dates_with_matches(sport):
         SELECT DISTINCT match_date
         FROM matches
         WHERE sport = ? AND match_date >= ? AND match_date <= ? AND is_active = 1
+          AND coverage_ok = 1
         ORDER BY match_date
     ''', (sport, today, week_later))
     dates = cursor.fetchall()
@@ -1120,7 +1129,7 @@ def get_matches_by_date_filtered(sport, match_date):
     # Получаем все активные матчи на дату
     cursor.execute('''
         SELECT * FROM matches
-        WHERE sport = ? AND match_date = ? AND is_active = 1
+        WHERE sport = ? AND match_date = ? AND is_active = 1 AND coverage_ok = 1
         ORDER BY match_time
     ''', (sport, match_date))
     matches = cursor.fetchall()
