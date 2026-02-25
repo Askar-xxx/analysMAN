@@ -124,6 +124,88 @@ def _count_context_blocks(enriched_context: str) -> int:
     return sum(1 for line in (enriched_context or '').splitlines() if line.strip().startswith("==="))
 
 
+_MATCH_GENERATION_LOCKS = {}
+
+
+def _get_match_generation_lock(match_id: int) -> asyncio.Lock:
+    """
+    Возвращает lock для конкретного match_id.
+    Нужен, чтобы не запускать параллельную генерацию одного и того же матча.
+    """
+    lock = _MATCH_GENERATION_LOCKS.get(match_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _MATCH_GENERATION_LOCKS[match_id] = lock
+    return lock
+
+
+def _load_match_with_cache(match_id: int, fallback_match_dict: dict) -> tuple[dict, str]:
+    """
+    Возвращает актуальные данные матча из БД и cached analysis_text.
+    Если матч не найден в БД, использует fallback_match_dict.
+    """
+    db_match = database.get_match_by_id(match_id)
+    if db_match:
+        match_dict = dict(db_match)
+    else:
+        match_dict = dict(fallback_match_dict or {})
+    cached_text = (match_dict.get('analysis_text') or '').strip()
+    return match_dict, cached_text
+
+
+async def _send_analysis_ready_message(bot, user_id: int, match_id: int, match_dict: dict) -> None:
+    """Отправляет пользователю экран выбора формата готового анализа."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    sport = match_dict.get('sport')
+    match_date = match_dict.get('match_date')
+    back_callback_data = (
+        f"analysis_back_{sport}_{match_date}"
+        if sport and match_date
+        else 'back'
+    )
+    callback_suffix = f"_{sport}_{match_date}" if sport and match_date else ""
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "📋 Таблица",
+                callback_data=f"show_table_{match_id}{callback_suffix}"
+            ),
+            InlineKeyboardButton(
+                "📝 Текст",
+                callback_data=f"show_text_{match_id}{callback_suffix}"
+            ),
+        ],
+        [InlineKeyboardButton("◀️ Назад", callback_data=back_callback_data)],
+        [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
+    ]
+
+    ready_text = (
+        "✅ <b>Анализ готов</b>\n\n"
+        f"🏆 {match_dict.get('team1', 'Команда 1')} vs {match_dict.get('team2', 'Команда 2')}\n"
+        f"📅 {match_dict.get('match_date', '')} в {match_dict.get('match_time', '')} МСК\n\n"
+        "🎛️ Выберите формат просмотра:"
+    )
+    await bot.send_message(
+        chat_id=user_id,
+        text=ready_text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='HTML'
+    )
+
+
+async def _cleanup_progress_message(bot, user_id: int, instruction_message_id: int) -> None:
+    """Удаляет сообщение прогресса после успешного завершения."""
+    if not instruction_message_id:
+        return
+    try:
+        await bot.delete_message(chat_id=user_id, message_id=instruction_message_id)
+        logger.info(f"Удалено сообщение с прогрессом (message_id={instruction_message_id})")
+    except Exception as e:
+        logger.warning(f"Не удалось удалить сообщение с прогрессом: {e}")
+
+
 def verify_signature(payload_body, signature_header):
     """
     Проверка подписи webhook от DonationAlerts (HMAC SHA256).
@@ -200,199 +282,219 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
             bot, user_id, instruction_message_id, match_dict, progress_statuses
         )
 
-        # Этап 1: Сбор обогащённых данных
-        logger.info(f"Сбор данных для матча {match_id}...")
-        enriched_data = {}
-        enriched_context = "Обогащённые данные недоступны."
-        data_started_at = time.monotonic()
-        try:
-            fetcher = MatchDataFetcher()
-            enriched_data = fetcher.fetch_match_data(match_dict)
-            enriched_context = build_enriched_context(match_dict, enriched_data)
-            data_elapsed = time.monotonic() - data_started_at
-            data_summary = _build_enriched_data_summary(enriched_data)
-            context_chars = len(enriched_context or "")
-            context_blocks = _count_context_blocks(enriched_context)
+        # Быстрый путь: если анализ уже сохранён в БД, DeepSeek не вызываем.
+        match_dict, cached_analysis_text = _load_match_with_cache(match_id, match_dict)
+        if cached_analysis_text:
             logger.info(
-                "Данные собраны за %.1fs. summary=%s, context_chars=%s, context_blocks=%s",
-                data_elapsed,
-                data_summary,
-                context_chars,
-                context_blocks,
+                "[CACHE] match_id=%s: анализ уже есть в БД (%s символов), "
+                "пропускаем генерацию DeepSeek",
+                match_id,
+                len(cached_analysis_text)
             )
-            if enriched_data.get('errors'):
-                logger.warning("Ошибки enriched_data: %s", enriched_data.get('errors'))
-        except Exception as e:
-            data_elapsed = time.monotonic() - data_started_at
-            logger.error(f"Ошибка сбора данных: {e}", exc_info=True)
-            logger.error("Этап сбора данных завершился с ошибкой за %.1fs", data_elapsed)
-            progress_statuses['text_data'] = 'error'
+            progress_statuses.update({
+                'text_data': 'done',
+                'text_generate': 'done',
+                'table_prepare': 'done',
+                'table_render': 'done',
+                'send': 'run',
+            })
             await _update_generation_progress(
                 bot, user_id, instruction_message_id, match_dict, progress_statuses
             )
-            raise
+            await _send_analysis_ready_message(bot, user_id, match_id, match_dict)
+            progress_statuses['send'] = 'done'
+            await _update_generation_progress(
+                bot, user_id, instruction_message_id, match_dict, progress_statuses
+            )
+            await _cleanup_progress_message(bot, user_id, instruction_message_id)
+            return True
 
-        progress_statuses['text_data'] = 'done'
-        progress_statuses['text_generate'] = 'run'
-        await _update_generation_progress(
-            bot, user_id, instruction_message_id, match_dict, progress_statuses
-        )
+        # Защита от параллельной генерации одного и того же матча.
+        match_lock = _get_match_generation_lock(match_id)
+        if match_lock.locked():
+            logger.info(
+                "[LOCK] match_id=%s: генерация уже идёт, ждём готовый результат",
+                match_id
+            )
 
-        # Этап 2: Генерация текстового анализа
-        logger.info(f"Генерация анализа для матча {match_id}...")
-        text_started_at = time.monotonic()
-        analysis_text = await generate_match_text_analysis(match_dict, enriched_context)
-        text_elapsed = time.monotonic() - text_started_at
-        logger.info(
-            "Текстовый анализ сгенерирован за %.1fs (%s символов)",
-            text_elapsed,
-            len(analysis_text or "")
-        )
-        progress_statuses['text_generate'] = 'done'
-        progress_statuses['table_prepare'] = 'run'
-        await _update_generation_progress(
-            bot, user_id, instruction_message_id, match_dict, progress_statuses
-        )
-
-        # Этап 3: Рендеринг PNG таблицы
-        logger.info("Рендеринг PNG таблицы...")
-        cached_png_path = None
-        render_started_at = time.monotonic()
-        try:
-            from analysis_formatter import build_table_data
-            from image_renderer import render_analysis_table
-            import os
-            import shutil
-
-            table_data = build_table_data(match_dict, enriched_data)
-            rows_count = int(
-                table_data.get(
-                    'raw_coverage_rows_count',
-                    table_data.get('coverage_rows_count', 0)
+        async with match_lock:
+            # Double-check: пока ждали lock, анализ могли уже сгенерировать.
+            match_dict, cached_analysis_text = _load_match_with_cache(match_id, match_dict)
+            if cached_analysis_text:
+                logger.info(
+                    "[CACHE-AFTER-LOCK] match_id=%s: анализ уже готов, DeepSeek не вызываем",
+                    match_id
                 )
-            )
-            missing_cells = int(table_data.get('raw_missing_cells_count', 0))
-            logger.info(
-                "Таблица данных собрана: coverage_rows=%s, missing_cells=%s",
-                rows_count,
-                missing_cells
-            )
-            progress_statuses['table_prepare'] = 'done'
-            progress_statuses['table_render'] = 'run'
-            await _update_generation_progress(
-                bot, user_id, instruction_message_id, match_dict, progress_statuses
-            )
-            temp_png = render_analysis_table(match_dict, table_data)
+                progress_statuses.update({
+                    'text_data': 'done',
+                    'text_generate': 'done',
+                    'table_prepare': 'done',
+                    'table_render': 'done',
+                    'send': 'run',
+                })
+                await _update_generation_progress(
+                    bot, user_id, instruction_message_id, match_dict, progress_statuses
+                )
+                await _send_analysis_ready_message(bot, user_id, match_id, match_dict)
+                progress_statuses['send'] = 'done'
+                await _update_generation_progress(
+                    bot, user_id, instruction_message_id, match_dict, progress_statuses
+                )
+                await _cleanup_progress_message(bot, user_id, instruction_message_id)
+                return True
 
-            # Сохраняем в постоянную папку
-            target_path = f"analysis_cache/analysis_{match_id}.webp"
-            os.makedirs("analysis_cache", exist_ok=True)
-            shutil.copy(temp_png, target_path)
-
-            # Проверяем, что файл действительно скопирован
-            if os.path.exists(target_path):
-                cached_png_path = target_path
-                logger.info(f"PNG таблица сохранена: {cached_png_path}")
-            else:
-                logger.error(f"Файл не был скопирован: {target_path}")
-
-            # Удаляем временный файл
+            # Этап 1: Сбор обогащённых данных
+            logger.info(f"Сбор данных для матча {match_id}...")
+            enriched_data = {}
+            enriched_context = "Обогащённые данные недоступны."
+            data_started_at = time.monotonic()
             try:
-                os.remove(temp_png)
-            except Exception:
-                pass
-        except Exception as e:
-            logger.error(f"Ошибка рендеринга PNG: {e}", exc_info=True)
-            cached_png_path = None  # Обнуляем путь при ошибке
-            progress_statuses['table_render'] = 'error'
-            await _update_generation_progress(
-                bot, user_id, instruction_message_id, match_dict, progress_statuses
-            )
-        finally:
-            render_elapsed = time.monotonic() - render_started_at
-            logger.info(
-                "Этап рендеринга PNG завершён за %.1fs (cached=%s)",
-                render_elapsed,
-                bool(cached_png_path)
-            )
-        if progress_statuses.get('table_render') != 'error':
-            progress_statuses['table_render'] = 'done'
-        progress_statuses['send'] = 'run'
-        await _update_generation_progress(
-            bot, user_id, instruction_message_id, match_dict, progress_statuses
-        )
-
-        # Сохраняем результаты в БД
-        db_started_at = time.monotonic()
-        if cached_png_path:
-            database.update_match_analysis(match_id, analysis_text, cached_png_path)
-        else:
-            database.update_match_analysis(match_id, analysis_text)
-        db_elapsed = time.monotonic() - db_started_at
-        logger.info("Анализ и PNG путь сохранены в БД за %.1fs", db_elapsed)
-
-        # Этап 4: Отправка пользователю (выбор формата просмотра)
-        send_started_at = time.monotonic()
-        sport = match_dict.get('sport')
-        match_date = match_dict.get('match_date')
-        back_callback_data = (
-            f"analysis_back_{sport}_{match_date}"
-            if sport and match_date
-            else 'back'
-        )
-        callback_suffix = f"_{sport}_{match_date}" if sport and match_date else ""
-
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-        keyboard = [
-            [
-                InlineKeyboardButton(
-                    "📋 Таблица",
-                    callback_data=f"show_table_{match_id}{callback_suffix}"
-                ),
-                InlineKeyboardButton(
-                    "📝 Текст",
-                    callback_data=f"show_text_{match_id}{callback_suffix}"
-                ),
-            ],
-            [InlineKeyboardButton("◀️ Назад", callback_data=back_callback_data)],
-            [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
-        ]
-
-        ready_text = (
-            "✅ <b>Анализ готов</b>\n\n"
-            f"🏆 {match_dict['team1']} vs {match_dict['team2']}\n"
-            f"📅 {match_dict['match_date']} в {match_dict['match_time']} МСК\n\n"
-            "🎛️ Выберите формат просмотра:"
-        )
-        await bot.send_message(
-            chat_id=user_id,
-            text=ready_text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='HTML'
-        )
-
-        send_elapsed = time.monotonic() - send_started_at
-        total_elapsed = time.monotonic() - total_started_at
-        logger.info(
-            "Экран выбора формата отправлен пользователю %s за %.1fs (полный pipeline %.1fs)",
-            user_id,
-            send_elapsed,
-            total_elapsed
-        )
-        progress_statuses['send'] = 'done'
-        await _update_generation_progress(
-            bot, user_id, instruction_message_id, match_dict, progress_statuses
-        )
-
-        # Удаляем сообщение с прогрессом после успешной отправки
-        if instruction_message_id:
-            try:
-                await bot.delete_message(chat_id=user_id, message_id=instruction_message_id)
-                logger.info(f"Удалено сообщение с прогрессом (message_id={instruction_message_id})")
+                fetcher = MatchDataFetcher()
+                enriched_data = fetcher.fetch_match_data(match_dict)
+                enriched_context = build_enriched_context(match_dict, enriched_data)
+                data_elapsed = time.monotonic() - data_started_at
+                data_summary = _build_enriched_data_summary(enriched_data)
+                context_chars = len(enriched_context or "")
+                context_blocks = _count_context_blocks(enriched_context)
+                logger.info(
+                    "Данные собраны за %.1fs. summary=%s, context_chars=%s, context_blocks=%s",
+                    data_elapsed,
+                    data_summary,
+                    context_chars,
+                    context_blocks,
+                )
+                if enriched_data.get('errors'):
+                    logger.warning("Ошибки enriched_data: %s", enriched_data.get('errors'))
             except Exception as e:
-                logger.warning(f"Не удалось удалить сообщение с прогрессом: {e}")
+                data_elapsed = time.monotonic() - data_started_at
+                logger.error(f"Ошибка сбора данных: {e}", exc_info=True)
+                logger.error("Этап сбора данных завершился с ошибкой за %.1fs", data_elapsed)
+                progress_statuses['text_data'] = 'error'
+                await _update_generation_progress(
+                    bot, user_id, instruction_message_id, match_dict, progress_statuses
+                )
+                raise
 
-        return True
+            progress_statuses['text_data'] = 'done'
+            progress_statuses['text_generate'] = 'run'
+            await _update_generation_progress(
+                bot, user_id, instruction_message_id, match_dict, progress_statuses
+            )
+
+            # Этап 2: Генерация текстового анализа
+            logger.info(f"Генерация анализа для матча {match_id}...")
+            text_started_at = time.monotonic()
+            analysis_text = await generate_match_text_analysis(match_dict, enriched_context)
+            text_elapsed = time.monotonic() - text_started_at
+            logger.info(
+                "Текстовый анализ сгенерирован за %.1fs (%s символов)",
+                text_elapsed,
+                len(analysis_text or "")
+            )
+            progress_statuses['text_generate'] = 'done'
+            progress_statuses['table_prepare'] = 'run'
+            await _update_generation_progress(
+                bot, user_id, instruction_message_id, match_dict, progress_statuses
+            )
+
+            # Этап 3: Рендеринг PNG таблицы
+            logger.info("Рендеринг PNG таблицы...")
+            cached_png_path = None
+            render_started_at = time.monotonic()
+            try:
+                from analysis_formatter import build_table_data
+                from image_renderer import render_analysis_table
+                import os
+                import shutil
+
+                table_data = build_table_data(match_dict, enriched_data)
+                rows_count = int(
+                    table_data.get(
+                        'raw_coverage_rows_count',
+                        table_data.get('coverage_rows_count', 0)
+                    )
+                )
+                missing_cells = int(table_data.get('raw_missing_cells_count', 0))
+                logger.info(
+                    "Таблица данных собрана: coverage_rows=%s, missing_cells=%s",
+                    rows_count,
+                    missing_cells
+                )
+                progress_statuses['table_prepare'] = 'done'
+                progress_statuses['table_render'] = 'run'
+                await _update_generation_progress(
+                    bot, user_id, instruction_message_id, match_dict, progress_statuses
+                )
+                temp_png = render_analysis_table(match_dict, table_data)
+
+                # Сохраняем в постоянную папку
+                target_path = f"analysis_cache/analysis_{match_id}.webp"
+                os.makedirs("analysis_cache", exist_ok=True)
+                shutil.copy(temp_png, target_path)
+
+                # Проверяем, что файл действительно скопирован
+                if os.path.exists(target_path):
+                    cached_png_path = target_path
+                    logger.info(f"PNG таблица сохранена: {cached_png_path}")
+                else:
+                    logger.error(f"Файл не был скопирован: {target_path}")
+
+                # Удаляем временный файл
+                try:
+                    os.remove(temp_png)
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.error(f"Ошибка рендеринга PNG: {e}", exc_info=True)
+                cached_png_path = None  # Обнуляем путь при ошибке
+                progress_statuses['table_render'] = 'error'
+                await _update_generation_progress(
+                    bot, user_id, instruction_message_id, match_dict, progress_statuses
+                )
+            finally:
+                render_elapsed = time.monotonic() - render_started_at
+                logger.info(
+                    "Этап рендеринга PNG завершён за %.1fs (cached=%s)",
+                    render_elapsed,
+                    bool(cached_png_path)
+                )
+            if progress_statuses.get('table_render') != 'error':
+                progress_statuses['table_render'] = 'done'
+            progress_statuses['send'] = 'run'
+            await _update_generation_progress(
+                bot, user_id, instruction_message_id, match_dict, progress_statuses
+            )
+
+            # Сохраняем результаты в БД
+            db_started_at = time.monotonic()
+            if cached_png_path:
+                database.update_match_analysis(match_id, analysis_text, cached_png_path)
+            else:
+                database.update_match_analysis(match_id, analysis_text)
+            db_elapsed = time.monotonic() - db_started_at
+            logger.info("Анализ и PNG путь сохранены в БД за %.1fs", db_elapsed)
+
+            # Перечитываем матч из БД, чтобы отправлять пользователю консистентные данные.
+            match_dict, _ = _load_match_with_cache(match_id, match_dict)
+
+            # Этап 4: Отправка пользователю (выбор формата просмотра)
+            send_started_at = time.monotonic()
+            await _send_analysis_ready_message(bot, user_id, match_id, match_dict)
+
+            send_elapsed = time.monotonic() - send_started_at
+            total_elapsed = time.monotonic() - total_started_at
+            logger.info(
+                "Экран выбора формата отправлен пользователю %s за %.1fs (полный pipeline %.1fs)",
+                user_id,
+                send_elapsed,
+                total_elapsed
+            )
+            progress_statuses['send'] = 'done'
+            await _update_generation_progress(
+                bot, user_id, instruction_message_id, match_dict, progress_statuses
+            )
+            await _cleanup_progress_message(bot, user_id, instruction_message_id)
+            return True
 
     except Exception as e:
         logger.error(f"Ошибка генерации/отправки анализа: {e}", exc_info=True)
