@@ -663,7 +663,7 @@ class SportsDBSyncer:
 
 def run_coverage_check(
     db_path: str = "sports_bot.db",
-    min_rows: int = 3,
+    min_rows: int = 5,
     max_missing_cells: int = 1,
     sleep_seconds: float = 0.8
 ) -> Dict[str, int]:

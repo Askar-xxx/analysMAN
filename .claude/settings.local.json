@@ -33,7 +33,13 @@
       "WebFetch(domain:medium.com)",
       "WebFetch(domain:www.api-football.com)",
       "Bash(pip install:*)",
-      "Bash(git rm:*)"
+      "Bash(git rm:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(git pull:*)",
+      "Bash(cd:*)",
+      "WebFetch(domain:www.postman.com)",
+      "Bash(cd /c/Users/user/analysMAN && PYTHONIOENCODING=utf-8 python -c \"\nimport sqlite3\nconn = sqlite3.connect\\('sports_bot.db'\\)\nconn.row_factory = sqlite3.Row\ncur = conn.cursor\\(\\)\ncur.execute\\('SELECT id, team1, team2, league, analysis_text, analysis_png_path FROM matches WHERE analysis_text IS NOT NULL'\\)\nrows = cur.fetchall\\(\\)\nfor r in rows:\n    print\\(f'=== Match {r[\\\\\"id\\\\\"]}: {r[\\\\\"team1\\\\\"]} vs {r[\\\\\"team2\\\\\"]} \\({r[\\\\\"league\\\\\"]}\\) ==='\\)\n    print\\(f'PNG path: {r[\\\\\"analysis_png_path\\\\\"]}'\\)\n    text = r['analysis_text'] or ''\n    print\\(f'Analysis text \\({len\\(text\\)} chars\\):'\\)\n    print\\(text[:3000]\\)\n    print\\(\\)\nconn.close\\(\\)\n\" 2>&1)"
     ]
   }
 }
