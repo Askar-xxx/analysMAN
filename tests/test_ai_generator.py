@@ -6,9 +6,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import clean_and_truncate  # noqa: E402
 from ai_generator import (  # noqa: E402
     _build_match_context,
-    _collect_quality_issues,
-    _extract_missing_required_sections,
+    _find_missing_sections,
     _inject_section_before_conclusion,
+    _build_missing_section_block,
+    _extract_psych_signals,
 )
 
 
@@ -72,77 +73,39 @@ class TestAnalysisPostprocessing:
         assert "мск" in content.lower()
         assert "venue" in content.lower() or "стадион" in content.lower()
 
-    def test_quality_check_accepts_emoji_headings(self):
-        """Эмодзи в заголовках не ломают проверку обязательных секций."""
+    def test_find_missing_sections_all_present(self):
+        """Все 5 секций на месте — missing пуст."""
         text = (
-            "⚽ **Контекст матча**\n"
-            "Матч 1 проходит 02.03.2026, команды имеют 45 очков и 41 очко.\n\n"
-            "📈 **Форма и турнирная ситуация**\n"
-            "За 5 туров: 3 победы, 1 ничья, 1 поражение, в таблице 4 и 6 место.\n\n"
-            "📊 **Статистика и игровые паттерны**\n"
-            "xG 1.8 против 1.2, владение 58%, 14 ударов, 6 в створ, 5 угловых.\n\n"
-            "🧠 **Психологические факторы**\n"
-            "Есть серия из 7 матчей без поражений и фактор реванша после 1:2.\n\n"
-            "🔑 **Вывод**\n"
-            "Команды подходят с плотной формой: 10 и 12 очков в последних 5 турах."
-        )
-        issues = _collect_quality_issues(text)
-        missing_sections = [i for i in issues if "обязательный блок" in i]
-        assert missing_sections == []
-
-    def test_quality_check_flags_local_time_phrase(self):
-        """Фраза про местное время должна считаться ошибкой качества."""
-        text = (
-            "⚽ **Контекст матча**\n"
-            "Матч начнется в 20:00 по местному времени.\n\n"
+            "⚽ **Контекст матча**\nТекст.\n\n"
             "📈 **Форма и турнирная ситуация**\nТекст.\n\n"
             "📊 **Статистика и игровые паттерны**\nТекст.\n\n"
             "🧠 **Психологические факторы**\nТекст.\n\n"
-            "🔑 **Вывод**\nТекст с 2 фактами: 10 очков и 58% владения."
+            "🔑 **Вывод**\nТекст."
         )
-        issues = _collect_quality_issues(text, match_time_msk="23:00")
-        assert any("местное время" in issue.lower() for issue in issues)
+        assert _find_missing_sections(text) == []
 
-    def test_quality_check_flags_missing_emoji_heading(self):
-        """Если заголовок без эмодзи, quality-check должен это отметить."""
+    def test_find_missing_sections_detects_missing(self):
+        """Пропущенная секция обнаруживается."""
         text = (
-            "**Контекст матча**\nТекст.\n\n"
+            "⚽ **Контекст матча**\nТекст.\n\n"
             "📈 **Форма и турнирная ситуация**\nТекст.\n\n"
             "📊 **Статистика и игровые паттерны**\nТекст.\n\n"
-            "🧠 **Психологические факторы**\nТекст.\n\n"
-            "🔑 **Вывод**\nТекст с фактами: 2 гола, 14 ударов."
+            "🔑 **Вывод**\nТекст."
         )
-        issues = _collect_quality_issues(text)
-        assert any("должен содержать эмодзи" in issue.lower() for issue in issues)
-
-    def test_quality_check_accepts_psychological_background_heading(self):
-        """Синоним «Психологический фон» не должен считаться пропавшим блоком."""
-        text = (
-            "⚽ **Контекст матча**\n"
-            "Матч 1 проходит 02.03.2026, команды имеют 45 и 41 очко.\n\n"
-            "📈 **Форма и турнирная ситуация**\n"
-            "За 5 туров: 3 победы, 1 ничья, 1 поражение.\n\n"
-            "📊 **Статистика и игровые паттерны**\n"
-            "xG 1.8 против 1.2, владение 58%, 14 ударов, 6 в створ.\n\n"
-            "🧠 **Психологический фон матча**\n"
-            "После поражения 1:2 у гостей есть фактор реванша.\n\n"
-            "🔑 **Вывод**\n"
-            "По цифрам: 58% владения и 14 ударов создают базу для плотного матча."
-        )
-        issues = _collect_quality_issues(text)
-        assert not any("психологические факторы" in issue.lower() for issue in issues)
-
-    def test_extract_missing_required_sections_from_issues(self):
-        """Парсер missing-секций корректно выделяет названия блоков."""
-        issues = [
-            "отсутствует обязательный блок «психологические факторы»",
-            "отсутствует обязательный блок «вывод»",
-            "заголовок «контекст матча» должен содержать эмодзи",
-        ]
-        missing = _extract_missing_required_sections(issues)
+        missing = _find_missing_sections(text)
         assert "психологические факторы" in missing
-        assert "вывод" in missing
-        assert "контекст матча" not in missing
+
+    def test_find_missing_sections_accepts_synonym(self):
+        """Синоним «Психологический фон» распознаётся."""
+        text = (
+            "⚽ **Контекст матча**\nТекст.\n\n"
+            "📈 **Форма и турнирная ситуация**\nТекст.\n\n"
+            "📊 **Статистика и игровые паттерны**\nТекст.\n\n"
+            "🧠 **Психологический фон матча**\nТекст.\n\n"
+            "🔑 **Вывод**\nТекст."
+        )
+        missing = _find_missing_sections(text)
+        assert "психологические факторы" not in missing
 
     def test_inject_section_before_conclusion(self):
         """Fallback-блок вставляется перед «Выводом», а не в самый конец."""
@@ -164,6 +127,49 @@ class TestAnalysisPostprocessing:
         analysis = "Хороший анализ матча. " * 60  # ~1320 символов
         result = clean_and_truncate(analysis)
         assert len(result) > 500
+
+    def test_extract_psych_signals_parses_block(self):
+        """Парсер извлекает сигналы из enriched_context."""
+        context = (
+            "=== ФОРМА ===\nНекие данные.\n\n"
+            "=== ПСИХОЛОГИЧЕСКИЕ ФАКТОРЫ ===\n"
+            "Дерби: 75/100 — историческое противостояние\n"
+            "Мотивация: 60/100 — борьба за еврокубки\n"
+            "Уверенность модели факторов: высокая (80/100)\n\n"
+            "=== ДРУГОЙ БЛОК ===\nДругие данные."
+        )
+        signals = _extract_psych_signals(context)
+        assert len(signals) == 2
+        assert "Дерби" in signals[0]
+        assert "Мотивация" in signals[1]
+
+    def test_extract_psych_signals_empty_when_no_block(self):
+        """Если блока психологических факторов нет — пустой список."""
+        context = "=== ФОРМА ===\nДанные формы."
+        assert _extract_psych_signals(context) == []
+
+    def test_build_missing_psych_block_with_signals(self):
+        """Fallback психологических факторов использует реальные сигналы."""
+        match_data = {'team1': 'Arsenal', 'team2': 'Chelsea'}
+        context = (
+            "=== ПСИХОЛОГИЧЕСКИЕ ФАКТОРЫ ===\n"
+            "Дерби: 80/100 — лондонское дерби\n"
+        )
+        block = _build_missing_section_block(
+            "психологические факторы", match_data, context
+        )
+        assert "Дерби" in block
+        assert "лондонское дерби" in block
+        assert "плей-офф" not in block  # старый шаблон убран
+
+    def test_build_missing_psych_block_without_signals(self):
+        """Fallback без сигналов — честное сообщение, а не шаблон."""
+        match_data = {'team1': 'Arsenal', 'team2': 'Chelsea', 'league': 'EPL'}
+        block = _build_missing_section_block(
+            "психологические факторы", match_data, ""
+        )
+        assert "не выявлено" in block
+        assert "EPL" in block
 
 
 class TestBuildMatchContext:

@@ -239,6 +239,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Сохраняем предыдущее меню
         context.user_data['menu_history'].append(MENU_MAIN)
         await handle_how_it_works(query)
+    elif query.data.startswith('hiw_page_'):
+        page = int(query.data.split('_')[-1])
+        await handle_how_it_works(query, page=page)
+    elif query.data == 'noop':
+        await query.answer()
     elif query.data.startswith('sport_'):
         sport = query.data.split('_')[1]
         # Сохраняем предыдущее меню
@@ -446,15 +451,16 @@ async def handle_sport_selection(query, context, sport):
 
 async def handle_date_selection_back(query, context, sport):
     """Возврат к выбору даты"""
+    sport_name = {'football': 'футболу', 'basketball': 'баскетболу', 'hockey': 'хоккею'}.get(sport, sport)
     dates = database.get_available_dates_with_matches(sport)
     if not dates:
         await safe_edit_message(
             query,
-            f"На ближайшую неделю матчей по {sport} нет.",
+            f"На ближайшую неделю матчей по {sport_name} нет.",
             keyboards.main_menu_keyboard()
         )
         return
-    text = f"Выберите дату для просмотра матчей по {sport}:\n\n"
+    text = f"Выберите дату для просмотра матчей по {sport_name}:\n\n"
     await safe_edit_message(
         query,
         text,
@@ -613,15 +619,9 @@ async def handle_match_detail(query, user_id, match_id, match_source='browse'):
 
     if has_purchased:
         if match_source == 'purchased':
-            text += (
-                "\n\n🎛️ Выберите формат просмотра:\n"
-                "«Таблица» или «Текст»."
-            )
+            text += "\n\n🎛️ Выберите формат просмотра:"
         else:
-            text += (
-                "\n\n✅ Вы уже приобрели этот анализ.\n"
-                "Выберите формат просмотра: «Таблица» или «Текст»."
-            )
+            text += "\n\n✅ Вы уже приобрели этот анализ.\nВыберите формат просмотра:"
     elif user_balance >= price:
         text += (
             f"\n\nУ вас: <b>{user_balance}</b> 💎 | "
@@ -909,21 +909,20 @@ async def handle_show_table(
         related_message_ids = []
 
         with open(png_path, 'rb') as photo:
-            sent_photo = await bot.send_photo(chat_id=chat_id, photo=photo)
+            sent_photo = await bot.send_photo(
+                chat_id=chat_id,
+                photo=photo,
+                reply_markup=keyboards.analysis_view_keyboard(
+                    match_id=match_id,
+                    back_callback_data=back_callback_data,
+                    callback_suffix=callback_suffix
+                )
+            )
             related_message_ids.append(sent_photo.message_id)
 
-        sent_nav = await bot.send_message(
-            chat_id=chat_id,
-            text="📋 Таблица анализа готова. Можно переключиться на текстовый разбор.",
-            reply_markup=keyboards.analysis_view_keyboard(
-                match_id=match_id,
-                back_callback_data=back_callback_data,
-                callback_suffix=callback_suffix
-            )
-        )
         _remember_analysis_thread(
             context,
-            conclusion_message_id=sent_nav.message_id,
+            conclusion_message_id=sent_photo.message_id,
             related_message_ids=related_message_ids
         )
 
@@ -1708,45 +1707,168 @@ async def handle_deposit_menu(query, context, user_id):
     )
 
 
-async def handle_how_it_works(query):
-    """Экран «Как это работает» — информационная брошюра."""
-    from config import ANALYSIS_PRICE_RUB
+def _build_how_it_works_pages() -> list[str]:
+    """Возвращает список страниц раздела «Как это работает»."""
+    return [
+        # 1. Общие сведения
+        (
+            "♣ Ваш выбор — начало персональной аналитики.\n\n"
+            "Выбираете вид спорта, дату и матч — бот собирает данные и "
+            "готовит структурированный разбор под конкретную игру.\n\n"
+            "☰ Как это выглядит на практике:\n\n"
+            "• <i>Шаг 1: выбираете спорт (футбол, баскетбол или хоккей).</i>\n"
+            "• <i>Шаг 2: выбираете дату и нужный матч.</i>\n"
+            "• <i>Шаг 3: получаете анализ в формате карточки и текста.</i>\n\n"
+            "☰ Важно:\n\n"
+            "• <i>Мы не даём советы по ставкам и коэффициентам.</i>\n"
+            "• <i>Только факты, контекст и аналитический вывод по данным.</i>\n"
+            "• <i>Купленные материалы сохраняются в разделе «Мои анализы».</i>\n\n"
+            "Дальше покажем, что именно бот собирает и как считает итог. 💠"
+        ),
+        # 2. БД
+        (
+            "🗂 После выбора матча бот запускает сбор данных.\n\n"
+            "☰ Что собираем из источников и БД:\n\n"
+            "• <i>Турнирное положение команд и общую форму.</i>\n"
+            "• <i>Личные встречи (H2H) и динамику последних матчей.</i>\n"
+            "• <i>Статистику по ключевым метрикам, доступным в источнике.</i>\n"
+            "• <i>Контекст матча: дата, время, лига, участники.</i>\n\n"
+            "☰ Как это устроено в боте:\n\n"
+            "• <i>Матчи подгружаются автоматически планировщиком.</i>\n"
+            "• <i>Витрина показывает ближайшие события без ручного обновления.</i>\n"
+            "• <i>Перед выдачей анализ строится только по фактически найденным данным.</i>\n\n"
+            "Итог: сначала база и проверка контекста, потом передача в ИИ."
+        ),
+        # 3. ИИ
+        (
+            "⌘ Как работает ИИ с предоставленными данными?\n\n"
+            "Модель выступает как спортивный аналитик: принимает собранный "
+            "контекст матча и строит вывод на цифрах, а не на эмоциях.\n\n"
+            "☰ Что делает ИИ:\n\n"
+            "• <i>Сопоставляет форму команд и очные встречи.</i>\n"
+            "• <i>Находит сильные и слабые зоны по статистике.</i>\n"
+            "• <i>Учитывает турнирную ситуацию и плотность календаря.</i>\n"
+            "• <i>Формирует итоговый аналитический вывод.</i>\n\n"
+            "☰ В каком виде получаете результат:\n\n"
+            "• <i>Карточка-таблица для быстрого чтения.</i>\n"
+            "• <i>Текстовый разбор с пояснениями.</i>\n\n"
+            "Без магии: сначала данные, потом модель, потом понятный результат."
+        ),
+        # 4. Открыты для предложений
+        (
+            "⇆ Мы развиваем бота и открыты к вашим предложениям.\n\n"
+            "Сервис живой: регулярно улучшаем качество анализа, "
+            "обработку данных и удобство навигации в меню.\n\n"
+            "☰ Что дорабатываем постоянно:\n\n"
+            "• <i>Качество и полноту данных по матчам.</i>\n"
+            "• <i>Формат карточек и текстовых объяснений.</i>\n"
+            "• <i>Скорость генерации и стабильность выдачи.</i>\n"
+            "• <i>Новые сценарии меню и полезные функции.</i>\n\n"
+            "☰ Если есть идеи:\n\n"
+            "• <i>Напишите в техподдержку прямо из главного меню.</i>\n"
+            "• <i>Все конструктивные предложения рассматриваются и учитываются.</i>\n\n"
+            "Бот развивается постоянно: приоритет — точность данных и удобство использования."
+        ),
+        # 5. Цель
+        (
+            "❖ <b>Миссия BetWise</b>\n\n"
+            "Сделать спортивную аналитику доступной и понятной: "
+            "чтобы пользователь быстро получал контекст матча и принимал решения на фактах.\n\n"
+            "☰ Зачем создан проект:\n\n"
+            "• <i>Сократить время на самостоятельный сбор информации по матчу.</i>\n"
+            "• <i>Собрать ключевые данные в одном месте и в едином формате.</i>\n"
+            "• <i>Дать понятный аналитический вывод без информационного шума.</i>\n\n"
+            "☰ Какую пользу получает пользователь:\n\n"
+            "• <i>Быстрый доступ к структурированному разбору матча.</i>\n"
+            "• <i>Прозрачную логику анализа на базе статистики и контекста.</i>\n"
+            "• <i>Удобный доступ к купленным материалам в разделе «Мои анализы».</i>\n\n"
+            "Если возникнут вопросы или предложения, используйте кнопку «Техподдержка»."
+        ),
+    ]
 
-    price = int(ANALYSIS_PRICE_RUB)
-    text = (
-        "⚙️ <b>Как это работает</b>\n\n"
 
-        "📌 <b>Что это такое</b>\n"
-        "AI-анализ футбольных матчей в формате карточки: "
-        "форма команд, личные встречи, статистика, турнирное положение.\n"
-        "Без прогнозов, коэффициентов и советов по ставкам — "
-        "только чистая аналитика.\n\n"
-
-        "🏆 <b>Доступные турниры</b>\n"
-        "• Английская Премьер-лига\n"
-        "• Ла Лига\n"
-        "• Бундеслига\n"
-        "• Лига чемпионов УЕФА\n"
-        "• Лига Европы УЕФА\n\n"
-
-        "⏳ <b>Расписание</b>\n"
-        "Матчи появляются за 3 дня до начала.\n"
-        "Время матчей указано по МСК.\n\n"
-
-        "💎 <b>Оплата</b>\n"
-        f"1 анализ = {price} 💎\n"
-        "1 руб. = 1 💎\n"
-        "Пополнение через DonationAlerts: "
-        "отправляешь донат с кодом в комментарии — 💎 зачисляются.\n\n"
-
-        "📂 <b>Мои анализы</b>\n"
-        "Купленные анализы хранятся в разделе «Мои анализы» "
-        "в течение 1 дня после окончания матча."
-    )
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⬅️ Назад", callback_data='go_back')]
+def _how_it_works_keyboard(page: int, total: int) -> InlineKeyboardMarkup:
+    """Клавиатура пагинации для раздела «Как это работает»."""
+    prev_callback = f"hiw_page_{page - 1}" if page > 0 else "noop"
+    next_callback = f"hiw_page_{page + 1}" if page < total - 1 else "noop"
+    nav_buttons = [
+        InlineKeyboardButton("Пред.", callback_data=prev_callback),
+        InlineKeyboardButton(f"{page + 1} из {total}", callback_data="noop"),
+        InlineKeyboardButton("След.", callback_data=next_callback),
+    ]
+    return InlineKeyboardMarkup([
+        nav_buttons,
+        [InlineKeyboardButton("◀️ Назад", callback_data='go_back')]
     ])
-    await safe_edit_message(query, text, keyboard, parse_mode='HTML')
+
+
+def _how_it_works_image_path() -> Path | None:
+    """Возвращает путь до image.png для экрана «Как это работает», если файл существует."""
+    base_dir = Path(__file__).resolve().parent
+    candidates = [
+        base_dir / 'assets' / 'image.png',
+        base_dir / 'image.png',
+    ]
+    for image_path in candidates:
+        if image_path.exists():
+            return image_path
+    return None
+
+
+async def _render_how_it_works_page(query, text: str, keyboard: InlineKeyboardMarkup):
+    """
+    Рендер экрана «Как это работает».
+    Если image.png найден — показываем фото с подписью и клавиатурой.
+    Иначе используем стандартный текстовый режим.
+    """
+    image_path = _how_it_works_image_path()
+    if not image_path or len(text) > 1024:
+        await safe_edit_message(query, text, keyboard, parse_mode='HTML')
+        return
+
+    bot = query.message.get_bot()
+    chat_id = query.message.chat_id
+
+    # Если уже на фото-сообщении, обновляем только подпись/кнопки.
+    if getattr(query.message, 'photo', None):
+        try:
+            await query.edit_message_caption(
+                caption=text,
+                reply_markup=keyboard,
+                parse_mode='HTML'
+            )
+            return
+        except Exception as e:
+            if "Message is not modified" not in str(e):
+                logger.warning("Не удалось обновить подпись how_it_works: %s", e)
+
+    # Если текущее сообщение не фото — создаём новое фото-сообщение и удаляем старое.
+    try:
+        with image_path.open('rb') as image_file:
+            await bot.send_photo(
+                chat_id=chat_id,
+                photo=image_file,
+                caption=text,
+                reply_markup=keyboard,
+                parse_mode='HTML'
+            )
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning("Не удалось отправить image.png для how_it_works: %s", e)
+        await safe_edit_message(query, text, keyboard, parse_mode='HTML')
+
+
+async def handle_how_it_works(query, page: int = 0):
+    """Экран «Как это работает» — информационная брошюра с пагинацией."""
+    pages = _build_how_it_works_pages()
+    total = len(pages)
+    page = max(0, min(page, total - 1))
+    text = pages[page]
+    keyboard = _how_it_works_keyboard(page, total)
+    await _render_how_it_works_page(query, text, keyboard)
 
 
 async def handle_support(query):

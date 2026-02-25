@@ -362,7 +362,7 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
             "✅ <b>Анализ готов</b>\n\n"
             f"🏆 {match_dict['team1']} vs {match_dict['team2']}\n"
             f"📅 {match_dict['match_date']} в {match_dict['match_time']} МСК\n\n"
-            "Выберите формат просмотра:"
+            "🎛️ Выберите формат просмотра:"
         )
         await bot.send_message(
             chat_id=user_id,
