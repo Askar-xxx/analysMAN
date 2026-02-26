@@ -19,7 +19,6 @@ split_for_telegram:
 - Ни одна часть не режет слово посередине
 - Пустая строка → пустой список или список с одним пустым элементом
 """
-import pytest
 from utils import clean_and_truncate, split_for_telegram
 
 

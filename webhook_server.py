@@ -249,7 +249,6 @@ def verify_signature(payload_body, signature_header):
     return hmac.compare_digest(expected_signature, signature_header)
 
 
-
 async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_message_id=None):
     """
     Генерирует анализ и отправляет пользователю через Telegram.

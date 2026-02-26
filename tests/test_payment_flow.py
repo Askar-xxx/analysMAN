@@ -186,7 +186,7 @@ class TestWebhookHappyPath:
         resp = _post_webhook(client, {
             "id": "donation_002",
             "amount": "150.00",
-            "message": f"код xyz789abcdef",
+            "message": "код xyz789abcdef",
         })
 
         assert resp.status_code == 200, resp.get_data(as_text=True)
