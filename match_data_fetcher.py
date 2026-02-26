@@ -1547,12 +1547,6 @@ def build_enriched_context(match: dict, data: dict) -> str:
                     reasons = block.get('reasons') or []
                     reason_text = '; '.join(r for r in reasons if r) if reasons else 'слабый сигнал'
                     lines.append(f"{label}: {score}/100 — {reason_text}")
-                confidence = signals.get('confidence', {})
-                if confidence:
-                    lines.append(
-                        f"Уверенность модели факторов: "
-                        f"{confidence.get('label', 'средняя')} ({confidence.get('score', 0)}/100)"
-                    )
                 sections.append('\n'.join(lines))
     except Exception as e:
         logger.warning(f"Не удалось собрать блок психологических факторов: {e}")

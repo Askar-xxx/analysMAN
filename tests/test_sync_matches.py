@@ -332,7 +332,7 @@ class TestCoverageCheck:
             )
             mock_fetch_match_data.return_value = {}
             mock_build_table_data.return_value = {
-                'raw_coverage_rows_count': 3,
+                'raw_coverage_rows_count': 6,
                 'raw_missing_cells_count': 1,
             }
 

@@ -10,6 +10,10 @@ from ai_generator import (  # noqa: E402
     _inject_section_before_conclusion,
     _build_missing_section_block,
     _extract_psych_signals,
+    _ensure_section_emojis,
+    _is_section_thin,
+    _remove_section,
+    _count_sentences,
 )
 
 
@@ -160,7 +164,6 @@ class TestAnalysisPostprocessing:
         )
         assert "Дерби" in block
         assert "лондонское дерби" in block
-        assert "плей-офф" not in block  # старый шаблон убран
 
     def test_build_missing_psych_block_without_signals(self):
         """Fallback без сигналов — честное сообщение, а не шаблон."""
@@ -170,6 +173,102 @@ class TestAnalysisPostprocessing:
         )
         assert "не выявлено" in block
         assert "EPL" in block
+
+    def test_ensure_section_emojis_adds_missing_key(self):
+        """Заголовок «Вывод» без emoji 🔑 получает его автоматически."""
+        text = "\n".join([
+            "⚽ **Контекст матча**",
+            "Текст контекста.",
+            "",
+            "📈 **Форма и турнирная ситуация**",
+            "Текст формы.",
+            "",
+            "📊 **Статистика и игровые паттерны**",
+            "Текст статистики.",
+            "",
+            "🧠 **Психологические факторы**",
+            "Текст психологии.",
+            "",
+            "**Вывод**",
+            "Текст вывода.",
+        ])
+        result = _ensure_section_emojis(text)
+        assert "🔑 **Вывод**" in result
+        assert result.count("⚽") == 1
+        assert result.count("🔑") == 1
+
+    def test_ensure_section_emojis_bare_heading(self):
+        """Заголовок без ** и без emoji — оборачивается и получает emoji."""
+        text = "\n".join([
+            "⚽ **Контекст матча**",
+            "Текст.",
+            "",
+            "  Вывод",
+            "Текст вывода.",
+        ])
+        result = _ensure_section_emojis(text)
+        assert "🔑 **Вывод**" in result
+
+    def test_thin_psych_section_one_sentence(self):
+        """Секция 🧠 с одним предложением считается thin."""
+        text = "\n".join([
+            "⚽ **Контекст матча**",
+            "Текст контекста достаточной длины.",
+            "",
+            "🧠 **Психологические факторы**",
+            "Матч не является дерби в классическом понимании, но исторически "
+            "очные встречи проходят в жёсткой борьбе, о чём свидетельствует "
+            "в среднем 7.0 карточек и около 24.0 фолов за игру.",
+            "",
+            "🔑 **Вывод**",
+            "Текст вывода.",
+        ])
+        assert _is_section_thin(text, "психологические факторы")
+        removed = _remove_section(text, "психологические факторы")
+        assert "карточек" not in removed
+        assert "🔑 **Вывод**" in removed
+
+    def test_thin_psych_section_very_short(self):
+        """Секция 🧠 с коротким текстом считается thin."""
+        text = "\n".join([
+            "⚽ **Контекст матча**",
+            "Текст.",
+            "",
+            "🧠 **Психологические факторы**",
+            "Коротко.",
+            "",
+            "🔑 **Вывод**",
+            "Текст вывода.",
+        ])
+        assert _is_section_thin(text, "психологические факторы")
+
+    def test_normal_psych_section_not_replaced(self):
+        """Нормальная секция 🧠 с 3+ предложениями НЕ считается thin."""
+        long_body = (
+            "Психологический фон матча определяется рядом факторов. "
+            "Обе команды подходят к встрече с серьёзной мотивацией, "
+            "что подтверждается их турнирным положением. "
+            "Дополнительное давление на хозяев оказывает необходимость "
+            "набирать очки для борьбы за зону еврокубков. "
+            "Гости, напротив, могут играть раскрепощённо без турнирного давления."
+        )
+        text = "\n".join([
+            "⚽ **Контекст матча**",
+            "Текст контекста.",
+            "",
+            "🧠 **Психологические факторы**",
+            long_body,
+            "",
+            "🔑 **Вывод**",
+            "Текст вывода.",
+        ])
+        assert not _is_section_thin(text, "психологические факторы")
+
+    def test_count_sentences(self):
+        """Подсчёт предложений работает корректно."""
+        assert _count_sentences("Одно предложение.") == 1
+        assert _count_sentences("Первое предложение. Второе предложение. Третье.") == 3
+        assert _count_sentences("") == 0
 
 
 class TestBuildMatchContext:

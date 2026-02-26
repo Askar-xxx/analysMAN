@@ -102,18 +102,36 @@ class TestCleanAndTruncateLength:
 class TestCleanAndTruncateEmoji:
     def test_few_emoji_preserved(self):
         """Допустимое количество эмодзи сохраняется."""
-        text = "⚽ Команда А против Команды Б.\n📊 Статистика говорит о многом."
+        text = "🏆 Команда А против Команды Б.\n🔥 Статистика говорит о многом."
         result = clean_and_truncate(text)
-        assert "⚽" in result
-        assert "📊" in result
+        assert "🏆" in result
+        assert "🔥" in result
+
+    def test_heading_emoji_preserved_in_headings(self):
+        """Emoji секций сохраняются в заголовках, убираются из тела."""
+        text = (
+            "⚽ **Контекст матча**\n"
+            "Текст с ⚽ внутри и 📊 тоже.\n\n"
+            "📊 **Статистика**\nДанные."
+        )
+        result = clean_and_truncate(text)
+        assert "⚽ **Контекст матча**" in result
+        assert "📊 **Статистика**" in result
+        assert "с  внутри" in result or "⚽" not in result.split("**Контекст матча**")[1].split("📊")[0]
 
     def test_excess_emoji_removed(self):
         """Эмодзи сверх лимита удаляются."""
-        # Больше MAX_EMOJI_TOTAL (8) эмодзи — лишние должны исчезнуть
-        text = "⚽ ⚽ ⚽ ⚽ ⚽ ⚽ ⚽ ⚽ ⚽ ⚽ текст"
+        text = "🏆 🔥 💪 ⭐ 🎯 ⚡ ⚔️ 🧩 🏟 🎾 текст"
         result = clean_and_truncate(text)
-        emoji_count = sum(1 for c in result if c == "⚽")
+        import unicodedata
+        emoji_count = sum(1 for c in result if unicodedata.category(c) in ('So', 'Sk'))
         assert emoji_count <= 8
+
+    def test_duplicate_emoji_removed(self):
+        """Повторные эмодзи в теле удаляются."""
+        text = "🏆 Победа. 🏆 Ещё раз. 🏆 Третий."
+        result = clean_and_truncate(text)
+        assert result.count("🏆") == 1
 
 
 # ---------------------------------------------------------------------------

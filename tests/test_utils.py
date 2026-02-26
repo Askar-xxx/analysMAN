@@ -65,8 +65,8 @@ class TestCleanAndTruncate:
         assert "команда" in result.lower()
 
     def test_emoji_limit_total(self):
-        """В тексте не более 8 эмодзи после обработки."""
-        text = "⚽ Раздел 1\n🏀 Раздел 2\n🏒 Раздел 3\n🔥 Раздел 4\n⭐ Раздел 5\n📊 Раздел 6"
+        """В тексте не более 8 декоративных эмодзи после обработки."""
+        text = "🏆 Раздел 1\n🏀 Раздел 2\n🏒 Раздел 3\n🔥 Раздел 4\n⭐ Раздел 5\n🎯 Раздел 6"
         result = clean_and_truncate(text)
         emoji_count = sum(1 for ch in result if ord(ch) > 0x2600)
         assert emoji_count <= 8
