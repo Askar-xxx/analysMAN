@@ -39,7 +39,18 @@
       "Bash(git pull:*)",
       "Bash(cd:*)",
       "WebFetch(domain:www.postman.com)",
-      "Bash(cd /c/Users/user/analysMAN && PYTHONIOENCODING=utf-8 python -c \"\nimport sqlite3\nconn = sqlite3.connect\\('sports_bot.db'\\)\nconn.row_factory = sqlite3.Row\ncur = conn.cursor\\(\\)\ncur.execute\\('SELECT id, team1, team2, league, analysis_text, analysis_png_path FROM matches WHERE analysis_text IS NOT NULL'\\)\nrows = cur.fetchall\\(\\)\nfor r in rows:\n    print\\(f'=== Match {r[\\\\\"id\\\\\"]}: {r[\\\\\"team1\\\\\"]} vs {r[\\\\\"team2\\\\\"]} \\({r[\\\\\"league\\\\\"]}\\) ==='\\)\n    print\\(f'PNG path: {r[\\\\\"analysis_png_path\\\\\"]}'\\)\n    text = r['analysis_text'] or ''\n    print\\(f'Analysis text \\({len\\(text\\)} chars\\):'\\)\n    print\\(text[:3000]\\)\n    print\\(\\)\nconn.close\\(\\)\n\" 2>&1)"
+      "Bash(cd /c/Users/user/analysMAN && PYTHONIOENCODING=utf-8 python -c \"\nimport sqlite3\nconn = sqlite3.connect\\('sports_bot.db'\\)\nconn.row_factory = sqlite3.Row\ncur = conn.cursor\\(\\)\ncur.execute\\('SELECT id, team1, team2, league, analysis_text, analysis_png_path FROM matches WHERE analysis_text IS NOT NULL'\\)\nrows = cur.fetchall\\(\\)\nfor r in rows:\n    print\\(f'=== Match {r[\\\\\"id\\\\\"]}: {r[\\\\\"team1\\\\\"]} vs {r[\\\\\"team2\\\\\"]} \\({r[\\\\\"league\\\\\"]}\\) ==='\\)\n    print\\(f'PNG path: {r[\\\\\"analysis_png_path\\\\\"]}'\\)\n    text = r['analysis_text'] or ''\n    print\\(f'Analysis text \\({len\\(text\\)} chars\\):'\\)\n    print\\(text[:3000]\\)\n    print\\(\\)\nconn.close\\(\\)\n\" 2>&1)",
+      "Bash(echo EXIT_CODE: $?:*)",
+      "Bash(git:*)",
+      "Bash(git status:*)",
+      "Bash(cd /c/Users/user/analysMAN && PYTHONIOENCODING=utf-8 python -c \"\nfrom ai_generator import _dedup_inline_emojis, _normalize_for_checks, _line_matches_section, REQUIRED_ANALYSIS_SECTIONS\nimport re\n\ntest_line = '\\\\U0001f4c8 Турнирные ситуации команд'\nnorm = _normalize_for_checks\\(test_line\\)\nmatched = False\nfor sec in REQUIRED_ANALYSIS_SECTIONS:\n    if _line_matches_section\\(norm, sec\\):\n        print\\('MATCHED: ' + sec\\)\n        matched = True\n        break\nif not matched:\n    print\\('NOT a heading'\\)\n\" 2>&1)",
+      "Bash(cd /c/Users/user/analysMAN && PYTHONIOENCODING=utf-8 python test_dedup_check.py 2>&1)",
+      "Bash(cd /c/Users/user/analysMAN && PYTHONIOENCODING=utf-8 python test_gen_analysis.py 9 2>&1)",
+      "Bash(cd /c/Users/user/analysMAN && PYTHONIOENCODING=utf-8 python -c \"\nimport sqlite3\nfrom match_data_fetcher import MatchDataFetcher, build_enriched_context\nconn = sqlite3.connect\\('sports_bot.db'\\)\nconn.row_factory = sqlite3.Row\nmatch = dict\\(conn.execute\\('SELECT * FROM matches WHERE id=9'\\).fetchone\\(\\)\\)\nfetcher = MatchDataFetcher\\(\\)\ndata = fetcher.fetch_match_data\\(match\\)\nctx = build_enriched_context\\(match, data\\)\n# Покажем только блок психологических факторов\nfor line in ctx.split\\('\\\\n'\\):\n    if 'ПСИХОЛОГ' in line or 'СИГНАЛ' in line:\n        print\\(line\\)\n        # Печатаем следующие строки до ===\n        idx = ctx.index\\(line\\)\n        rest = ctx[idx:]\n        for l in rest.split\\('\\\\n'\\)[1:]:\n            if l.startswith\\('==='\\):\n                break\n            print\\(l\\)\n        break\n\" 2>&1)",
+      "Bash(cd /c/Users/user/analysMAN && python -m flake8 ai_generator.py --max-line-length=120 2>&1 && PYTHONIOENCODING=utf-8 python test_gen_analysis.py 9 2>&1)",
+      "Bash(cd /c/Users/user/analysMAN && python -m pytest tests/ -q 2>&1 | tail -3 && PYTHONIOENCODING=utf-8 python test_gen_analysis.py 9 2>&1)",
+      "Bash(cd /c/Users/user/analysMAN && PYTHONIOENCODING=utf-8 python test_gen_analysis.py 4 6 9 10 2>&1)",
+      "Bash(PYTHONIOENCODING=utf-8 python:*)"
     ]
   }
 }

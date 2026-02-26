@@ -472,7 +472,7 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
                 temp_png = render_analysis_table(match_dict, table_data)
 
                 # Сохраняем в постоянную папку
-                target_path = f"analysis_cache/analysis_{match_id}.webp"
+                target_path = f"analysis_cache/analysis_{match_id}_v6.webp"
                 os.makedirs("analysis_cache", exist_ok=True)
                 shutil.copy(temp_png, target_path)
 

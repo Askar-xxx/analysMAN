@@ -236,7 +236,7 @@ class SportsDBSyncer:
     def _filter_by_min_coverage(
         self,
         matches: List[Dict],
-        min_rows: int = 3,
+        min_rows: int = 6,
         max_missing_cells: int = 1,
         max_needed: Optional[int] = None
     ) -> List[Dict]:
@@ -263,8 +263,8 @@ class SportsDBSyncer:
                 # Лёгкий режим: без lineups и без домашних позиций (дорогие вызовы).
                 enriched_data = fetcher.fetch_match_data(
                     match,
-                    include_h2h=False,
-                    include_standings=False,
+                    include_h2h=True,
+                    include_standings=True,
                     include_lineups=True,
                     include_domestic_positions=False,
                     include_last_match_events=True,
@@ -663,9 +663,9 @@ class SportsDBSyncer:
 
 def run_coverage_check(
     db_path: str = "sports_bot.db",
-    min_rows: int = 3,
+    min_rows: int = 6,
     max_missing_cells: int = 1,
-    sleep_seconds: float = 0.8
+    sleep_seconds: float = 1.2
 ) -> Dict[str, int]:
     """
     Проверяет coverage для матчей с coverage_ok IS NULL.
@@ -717,8 +717,8 @@ def run_coverage_check(
         try:
             enriched_data = fetcher.fetch_match_data(
                 match,
-                include_h2h=False,
-                include_standings=False,
+                include_h2h=True,
+                include_standings=True,
                 include_lineups=True,
                 include_domestic_positions=False,
                 include_last_match_events=True,
@@ -830,7 +830,7 @@ def main():
         '--min-coverage-rows',
         type=int,
         default=0,
-        help='Мягкий фильтр качества: минимум заполненных строк в карточке (например, 3)'
+        help='Мягкий фильтр качества: минимум заполненных строк в карточке (например, 6)'
     )
     parser.add_argument(
         '--max-missing-cells',
@@ -854,7 +854,7 @@ def main():
         print("=" * 60)
         results = run_coverage_check(
             db_path=args.db,
-            min_rows=args.min_coverage_rows if args.min_coverage_rows > 0 else 3,
+            min_rows=args.min_coverage_rows if args.min_coverage_rows > 0 else 6,
             max_missing_cells=args.max_missing_cells
         )
         print(f"Проверено: {results['checked']}")

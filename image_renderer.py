@@ -25,6 +25,9 @@ CARD_PADDING = 20 * SCALE  # Отступы внутри карточки
 CELL_PADDING = 12 * SCALE  # Отступы внутри ячеек
 HEADER_HEIGHT = 50 * SCALE  # Высота заголовка таблицы
 ROW_MIN_HEIGHT = 45 * SCALE  # Минимальная высота строки
+TEXT_LINE_SPACING = 6 * SCALE  # Межстрочный интервал внутри ячейки (заметный)
+TEXT_PARAGRAPH_SPACING = 4 * SCALE  # Доп. интервал для пустой строки
+HISTORY_CELL_PADDING = 8 * SCALE  # Уменьшенный внутренний отступ для правой ячейки "История встреч"
 
 # Ширина колонок (в процентах от общей ширины таблицы)
 COL1_WIDTH_PCT = 0.28  # Аспект анализа
@@ -149,7 +152,7 @@ def _calculate_row_height(cell_texts: List[str], font: ImageFont.FreeTypeFont,
     Returns:
         Высота строки в пикселях
     """
-    max_lines = 1
+    max_cell_height = ROW_MIN_HEIGHT
 
     for i, text in enumerate(cell_texts):
         if i >= len(col_widths):
@@ -158,20 +161,19 @@ def _calculate_row_height(cell_texts: List[str], font: ImageFont.FreeTypeFont,
         # Вычисляем доступную ширину для текста (минус padding)
         available_width = col_widths[i] - (CELL_PADDING * 2)
         wrapped = _wrap_text(text, font, available_width)
-        max_lines = max(max_lines, len(wrapped))
+        line_bbox = font.getbbox("A")
+        base_line_height = line_bbox[3] - line_bbox[1]
+        line_height = base_line_height + TEXT_LINE_SPACING
+        empty_lines = sum(1 for line in wrapped if not line.strip())
+        cell_height = (len(wrapped) * line_height) + (empty_lines * TEXT_PARAGRAPH_SPACING) + (CELL_PADDING * 2)
+        max_cell_height = max(max_cell_height, cell_height)
 
-    # Высота одной строки текста
-    line_bbox = font.getbbox("A")
-    line_height = line_bbox[3] - line_bbox[1]
-
-    # Общая высота = количество строк * высота строки + padding
-    total_height = max_lines * (line_height + 4) + (CELL_PADDING * 2)
-
-    return max(total_height, ROW_MIN_HEIGHT)
+    return max_cell_height
 
 
 def _draw_cell(draw: ImageDraw.Draw, x: int, y: int, width: int, height: int,
-               text: str, font: ImageFont.FreeTypeFont, is_header: bool = False):
+               text: str, font: ImageFont.FreeTypeFont, is_header: bool = False,
+               valign: str = "top", halign: str = "left", padding: int = CELL_PADDING):
     """
     Рисует одну ячейку таблицы с текстом.
 
@@ -182,6 +184,9 @@ def _draw_cell(draw: ImageDraw.Draw, x: int, y: int, width: int, height: int,
         text: Текст для отрисовки
         font: Шрифт
         is_header: Флаг заголовка (другой цвет фона)
+        valign: Вертикальное выравнивание текста: top|middle
+        halign: Горизонтальное выравнивание текста: left|center
+        padding: Внутренний отступ ячейки
     """
     # Рисуем фон ячейки
     bg_color = _hex_to_rgb(HEADER_BG) if is_header else _hex_to_rgb(CARD_BG)
@@ -192,19 +197,41 @@ def _draw_cell(draw: ImageDraw.Draw, x: int, y: int, width: int, height: int,
     draw.rectangle([x, y, x + width, y + height], outline=border_color, width=1)
 
     # Переносим текст если нужно
-    available_width = width - (CELL_PADDING * 2)
+    available_width = width - (padding * 2)
     wrapped_lines = _wrap_text(text, font, available_width)
 
     # Рисуем текст построчно
     line_bbox = font.getbbox("A")
-    line_height = line_bbox[3] - line_bbox[1] + 4
+    line_height = (line_bbox[3] - line_bbox[1]) + TEXT_LINE_SPACING
 
-    text_y = y + CELL_PADDING
+    text_block_height = 0
+    for line in wrapped_lines:
+        text_block_height += line_height
+        if not line.strip():
+            text_block_height += TEXT_PARAGRAPH_SPACING
+
+    if valign == "middle":
+        text_y = y + max(0, (height - text_block_height) // 2)
+    else:
+        text_y = y + padding
     text_color = _hex_to_rgb(TEXT_COLOR)
 
     for line in wrapped_lines:
-        draw.text((x + CELL_PADDING, text_y), line, fill=text_color, font=font)
+        text_x = x + padding
+        if halign == "center":
+            line_bbox = font.getbbox(line or " ")
+            line_width = line_bbox[2] - line_bbox[0]
+            text_x = x + max(padding, (width - line_width) // 2)
+        draw.text((text_x, text_y), line, fill=text_color, font=font)
+        if not line.strip():
+            text_y += TEXT_PARAGRAPH_SPACING
         text_y += line_height
+
+
+def _compact_history_text(text: str) -> str:
+    """Убирает пустые строки в "История встреч", чтобы не было лишнего зазора."""
+    lines = [line for line in str(text or "").splitlines() if line.strip()]
+    return "\n".join(lines)
 
 
 def render_analysis_table(match: dict, table_data: dict) -> str:
@@ -277,15 +304,33 @@ def render_analysis_table(match: dict, table_data: dict) -> str:
                 }
             ]
 
+        normalized_rows = []
+        for row in rows:
+            new_row = dict(row)
+            label = str(new_row.get('label', '')).strip().casefold()
+            if new_row.get('colspan') and label.startswith("история встреч"):
+                new_row['left'] = _compact_history_text(new_row.get('left', ''))
+            normalized_rows.append(new_row)
+        rows = normalized_rows
+
         # Вычисляем высоты строк
         row_heights = []
         for row in rows:
+            is_history_row = (
+                row.get('colspan') and
+                str(row.get('label', '')).strip().casefold().startswith("история встреч")
+            )
             if row.get('colspan'):
                 row_height = _calculate_row_height(
                     [row.get('label', ''), row.get('left', '')],
                     cell_font,
                     [col1_width, col2_width + col3_width]
                 )
+                if is_history_row:
+                    row_height = max(
+                        ROW_MIN_HEIGHT,
+                        row_height - ((CELL_PADDING - HISTORY_CELL_PADDING) * 2)
+                    )
             else:
                 row_height = _calculate_row_height(
                     [row.get('label', ''), row.get('left', ''), row.get('right', '')],
@@ -344,11 +389,15 @@ def render_analysis_table(match: dict, table_data: dict) -> str:
 
             # Строка с объединёнными правыми колонками
             if row.get('colspan'):
+                is_history_row = str(label).strip().casefold().startswith("история встреч")
                 _draw_cell(draw, header_x, table_y, col1_width, row_height,
-                           label, cell_font)
+                           label, cell_font, valign="top")
                 _draw_cell(draw, header_x + col1_width, table_y,
                            col2_width + col3_width, row_height, left,
-                           cell_font)
+                           cell_font,
+                           valign="middle" if is_history_row else "top",
+                           halign="center" if is_history_row else "left",
+                           padding=HISTORY_CELL_PADDING if is_history_row else CELL_PADDING)
             else:
                 # Обычная строка с 3 колонками
                 _draw_cell(draw, header_x, table_y, col1_width, row_height,

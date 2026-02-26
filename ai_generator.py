@@ -157,6 +157,121 @@ def _extract_psych_signals(enriched_context: str) -> list[str]:
     return lines
 
 
+def _looks_like_heading(line: str) -> bool:
+    """Проверяет, что строка похожа на заголовок секции.
+
+    Заголовок: emoji + **Название секции** (и ничего существенного после).
+    НЕ заголовок: длинная строка с ** внутри (bold-имена команд).
+    """
+    stripped = line.strip()
+    if not stripped:
+        return False
+    # Строка вида: [emoji] **Текст** [необязательно пробелы] — и всё (длина ≤ 60)
+    if re.match(r'^[^\w\s]*\s*\*\*[^*]+\*\*\s*$', stripped) and len(stripped) <= 60:
+        return True
+    # Короткая строка (до 40 символов) без точки — возможный голый заголовок
+    if len(stripped) <= 40 and not stripped.endswith('.') and '**' not in stripped:
+        return True
+    return False
+
+
+def _ensure_section_emojis(text: str) -> str:
+    """Проверяет заголовки секций и добавляет недостающие emoji."""
+    if not text:
+        return text
+    lines = text.splitlines()
+    result = []
+    for line in lines:
+        if _looks_like_heading(line):
+            normalized_line = _normalize_for_checks(line)
+            for section, emoji in REQUIRED_EMOJI_HEADINGS.items():
+                if _line_matches_section(normalized_line, section) and emoji not in line:
+                    stripped = line.lstrip()
+                    if '**' in stripped:
+                        line = line.replace('**', f'{emoji} **', 1)
+                    else:
+                        section_title = section[:1].upper() + section[1:]
+                        indent = line[:len(line) - len(stripped)]
+                        line = f"{indent}{emoji} **{section_title}**"
+                    break
+        result.append(line)
+    return '\n'.join(result)
+
+
+def _extract_section_body(text: str, section: str) -> str | None:
+    """Извлекает тело секции (без заголовка). None если секция не найдена."""
+    lines = (text or "").splitlines()
+    section_start = None
+    for idx, line in enumerate(lines):
+        if _line_matches_section(_normalize_for_checks(line), section):
+            section_start = idx
+            break
+    if section_start is None:
+        return None
+
+    body_lines = []
+    for idx in range(section_start + 1, len(lines)):
+        normalized = _normalize_for_checks(lines[idx])
+        is_heading = False
+        for s in REQUIRED_ANALYSIS_SECTIONS:
+            if s != section and _line_matches_section(normalized, s):
+                is_heading = True
+                break
+        if is_heading:
+            break
+        body_lines.append(lines[idx])
+
+    return "\n".join(body_lines).strip()
+
+
+def _count_sentences(text: str) -> int:
+    """Считает количество предложений по точкам/!/? с учётом аббревиатур."""
+    if not text:
+        return 0
+    # Разбиваем по концам предложений, фильтруем пустые
+    parts = re.split(r'[.!?]+(?:\s|$)', text.strip())
+    return len([p for p in parts if p.strip() and len(p.strip()) > 3])
+
+
+def _is_section_thin(text: str, section: str, min_chars: int = 250,
+                     min_sentences: int = 3) -> bool:
+    """Проверяет, что секция присутствует, но содержит слишком мало текста.
+
+    Секция считается «тонкой» если её тело короче min_chars
+    ИЛИ содержит менее min_sentences предложений.
+    """
+    body = _extract_section_body(text, section)
+    if body is None:
+        return False
+    return len(body) < min_chars or _count_sentences(body) < min_sentences
+
+
+def _remove_section(text: str, section: str) -> str:
+    """Удаляет секцию (заголовок + тело) из текста."""
+    lines = (text or "").splitlines()
+    section_start = None
+    section_end = len(lines)
+    for idx, line in enumerate(lines):
+        if _line_matches_section(_normalize_for_checks(line), section):
+            section_start = idx
+            continue
+        if section_start is not None:
+            normalized = _normalize_for_checks(line)
+            for s in REQUIRED_ANALYSIS_SECTIONS:
+                if s != section and _line_matches_section(normalized, s):
+                    section_end = idx
+                    break
+            if section_end != len(lines):
+                break
+    if section_start is None:
+        return text
+    before = "\n".join(lines[:section_start]).rstrip()
+    after = "\n".join(lines[section_end:]).lstrip()
+    if before and after:
+        return f"{before}\n\n{after}"
+    return before or after
+
+
 def _build_missing_section_block(section: str, match_data: dict, enriched_context: str) -> str:
     """Генерирует локальный fallback-блок для отсутствующей секции без LLM."""
     normalized_section = _normalize_for_checks(section)
@@ -169,9 +284,18 @@ def _build_missing_section_block(section: str, match_data: dict, enriched_contex
     if normalized_section == _normalize_for_checks("психологические факторы"):
         signals = _extract_psych_signals(enriched_context)
         if signals:
+            # Каждый сигнал — отдельный пункт с точкой
+            formatted = []
+            for s in signals:
+                s = s.rstrip('.').strip()
+                if s:
+                    formatted.append(f"• {s}.")
+            signals_block = "\n".join(formatted)
             base = (
-                f"В паре {team1} — {team2} выделяются следующие психологические аспекты. "
-                + " ".join(signals) + "."
+                f"В паре {team1} — {team2} выделяются следующие психологические аспекты:\n"
+                f"{signals_block}\n"
+                f"Совокупность этих факторов формирует психологический фон матча "
+                f"и может повлиять на настрой и мотивацию обеих команд."
             )
         else:
             league = match_data.get('league', '')
@@ -606,15 +730,15 @@ async def generate_match_text_analysis(
         "Целевой объём: 1900–2400 символов. Абсолютный максимум: 2800 символов. "
         "Если текст длиннее — сокращай, сохраняя ключевые факты. "
         "Формат ответа: только готовый текст анализа с заголовками разделов в точном порядке. "
-        "Обязательно используй все 5 заголовков:\n"
+        "ОБЯЗАТЕЛЬНО включи ВСЕ 5 заголовков с эмодзи ТОЧНО ТАК:\n"
         "⚽ **Контекст матча**\n"
         "📈 **Форма и турнирная ситуация**\n"
         "📊 **Статистика и игровые паттерны**\n"
         "🧠 **Психологические факторы**\n"
         "🔑 **Вывод**\n"
+        "КАЖДАЯ секция должна содержать минимум 2 предложения текста. "
         "Не даёшь прогноз исхода, не упоминаешь букмекерские коэффициенты и не советуешь ставки. "
-        "Обязательно используй 3-5 эмодзи для визуального акцента (⚽📊🔥📈💪). "
-        "Каждый заголовок раздела должен содержать эмодзи. "
+        "Названия команд выделяй жирным: **Ливерпуль**, **Арсенал** и т.д. "
         "Указывай время матча только в МСК и не используй формулировку «по местному времени»."
     )
 
@@ -628,7 +752,28 @@ async def generate_match_text_analysis(
         temperature=0.7
     )
 
-    raw_text = response.choices[0].message.content.strip()
+    # Диагностика ответа DeepSeek — максимально безопасная
+    try:
+        choices_count = len(response.choices) if response.choices else 0
+        finish_reason = response.choices[0].finish_reason if choices_count else 'N/A'
+        raw_content = response.choices[0].message.content if choices_count else None
+    except (IndexError, AttributeError, TypeError) as parse_err:
+        logger.error("Не удалось распарсить ответ DeepSeek: %s, response=%s", parse_err, response)
+        raise ValueError(f"DeepSeek API: ошибка парсинга ответа: {parse_err}")
+
+    logger.info(
+        "DeepSeek response: choices=%s, finish_reason=%s, content_len=%s",
+        choices_count,
+        finish_reason,
+        len(raw_content) if raw_content else 0,
+    )
+    if not raw_content:
+        logger.error(
+            "DeepSeek вернул пустой ответ: choices=%s, finish_reason=%s, model=%s",
+            choices_count, finish_reason, getattr(response, 'model', 'unknown'),
+        )
+        raise ValueError("DeepSeek API вернул пустой ответ")
+    raw_text = raw_content.strip()
     analysis_text = clean_and_truncate(
         raw_text,
         target_max=2400,
@@ -636,6 +781,7 @@ async def generate_match_text_analysis(
         hard_cap=2800
     )
     analysis_text = _normalize_kickoff_time_mentions(analysis_text, match_time_msk)
+    analysis_text = _ensure_section_emojis(analysis_text)
 
     # Структурные гарантии: вставляем fallback-блоки для пропущенных секций
     missing = _find_missing_sections(analysis_text)
@@ -652,6 +798,14 @@ async def generate_match_text_analysis(
     if injected:
         logger.info("Добавлены fallback-блоки: %s", ", ".join(injected))
 
+    # Проверка содержательности секции «Психологические факторы»
+    psych_section = "психологические факторы"
+    if psych_section not in missing and _is_section_thin(analysis_text, psych_section):
+        logger.info("Секция «Психологические факторы» слишком скудная — заменяем fallback-блоком")
+        analysis_text = _remove_section(analysis_text, psych_section)
+        block = _build_missing_section_block(psych_section, match_data, enriched_context)
+        analysis_text = _inject_section_before_conclusion(analysis_text, block)
+
     # Гарантия наличия блока «Вывод»
     if "вывод" not in _normalize_for_checks(analysis_text):
         analysis_text = f"{analysis_text.rstrip()}\n\n{_fallback_conclusion(match_data, enriched_context)}"
@@ -663,6 +817,9 @@ async def generate_match_text_analysis(
         soft_cap=3400,
         hard_cap=3600
     )
+
+    # Повторная гарантия emoji в заголовках (после всех манипуляций)
+    analysis_text = _ensure_section_emojis(analysis_text)
 
     return analysis_text
 

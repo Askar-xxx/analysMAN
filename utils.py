@@ -38,9 +38,12 @@ BANNED_ROOTS = re.compile(
 
 # Разрешённые эмодзи (спорт, аналитика)
 ALLOWED_EMOJI = {'⚽', '🏀', '🏒', '📊', '📈', '📅', '⏰', '🔥', '⭐', '🎯',
-                 '🏆', '💪', '👀', '📝', '🔑', '⚡', '🛡️', '⚔️', '🥅', '🎾'}
+                 '🏆', '💪', '👀', '📝', '🔑', '⚡', '🛡️', '⚔️', '🥅', '🎾',
+                 '🧠', '🧩', '🏟'}
 MAX_EMOJI_TOTAL = 8
 MAX_EMOJI_PER_SECTION = 2
+# Emoji заголовков секций — не считаются в лимит и не дедуплицируются
+SECTION_HEADING_EMOJI = {'⚽', '📈', '📊', '🧠', '🔑'}
 
 
 def _is_emoji(char: str) -> bool:
@@ -68,17 +71,30 @@ def _is_section_heading(line: str) -> bool:
 
 
 def _limit_emoji(text: str) -> str:
-    """Ограничивает эмодзи: макс N на раздел, макс M всего."""
+    """Ограничивает эмодзи: макс N на раздел, макс M всего, без повторов."""
     total_emoji_count = 0
     section_emoji_count = 0
+    used_emoji = set()
     result_lines = []
 
     for line in text.splitlines(keepends=True):
-        if _is_section_heading(line):
+        is_heading = _is_section_heading(line)
+        if is_heading:
             section_emoji_count = 0
         chars = []
         for char in line:
             if _is_emoji(char):
+                # Emoji заголовков секций в заголовочной строке — пропускаем без лимита
+                if is_heading and char in SECTION_HEADING_EMOJI:
+                    chars.append(char)
+                    continue
+                # Emoji заголовков секций в теле текста — всегда убираем
+                if char in SECTION_HEADING_EMOJI:
+                    continue
+                # Дедупликация: повторные emoji убираем
+                if char in used_emoji:
+                    continue
+                # Лимит на секцию и общий
                 if (
                     section_emoji_count < MAX_EMOJI_PER_SECTION
                     and total_emoji_count < MAX_EMOJI_TOTAL
@@ -86,7 +102,7 @@ def _limit_emoji(text: str) -> str:
                     chars.append(char)
                     section_emoji_count += 1
                     total_emoji_count += 1
-                # Иначе пропускаем эмодзи
+                    used_emoji.add(char)
             else:
                 chars.append(char)
         result_lines.append(''.join(chars))

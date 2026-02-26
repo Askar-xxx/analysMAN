@@ -395,6 +395,112 @@ async def clear_purchases_command(update: Update, context: ContextTypes.DEFAULT_
         conn.close()
 
 
+async def clear_user_analysis_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /clearuseranalysis <user_id> — удалить покупки пользователя и его анализы.
+
+    Логика:
+    1) Удаляем все покупки пользователя из purchases.
+    2) Для матчей из этих покупок, где больше нет покупок других пользователей:
+       очищаем analysis_text и analysis_png_path.
+    3) Пытаемся удалить соответствующие PNG-файлы с диска.
+    """
+    admin_id = update.effective_user.id
+    if not database.is_admin(admin_id):
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+        return
+
+    args = context.args
+    if len(args) != 1:
+        await update.message.reply_text(
+            "❌ Неверный формат.\n\n"
+            "Использование:\n"
+            "/clearuseranalysis <user_id>\n\n"
+            "Пример:\n"
+            "/clearuseranalysis 123456789"
+        )
+        return
+
+    try:
+        target_user_id = int(args[0])
+    except ValueError:
+        await update.message.reply_text("❌ user_id должен быть числом.")
+        return
+
+    conn = database.get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute('SELECT DISTINCT match_id FROM purchases WHERE user_id = ?', (target_user_id,))
+        user_match_ids = [row[0] for row in cursor.fetchall()]
+
+        cursor.execute('SELECT COUNT(*) FROM purchases WHERE user_id = ?', (target_user_id,))
+        purchases_count = cursor.fetchone()[0]
+
+        if purchases_count == 0:
+            await update.message.reply_text(
+                f"ℹ️ У пользователя {target_user_id} нет покупок. Удалять нечего."
+            )
+            return
+
+        cursor.execute('DELETE FROM purchases WHERE user_id = ?', (target_user_id,))
+        deleted_purchases = cursor.rowcount
+
+        cleared_match_ids = []
+        png_paths = []
+        if user_match_ids:
+            placeholders = ','.join('?' for _ in user_match_ids)
+            cursor.execute(
+                f'''
+                SELECT id, analysis_png_path
+                FROM matches
+                WHERE id IN ({placeholders})
+                  AND id NOT IN (SELECT DISTINCT match_id FROM purchases)
+                  AND (analysis_text IS NOT NULL OR analysis_png_path IS NOT NULL)
+                ''',
+                user_match_ids
+            )
+            rows_to_clear = cursor.fetchall()
+            cleared_match_ids = [row[0] for row in rows_to_clear]
+            png_paths = [row[1] for row in rows_to_clear if row[1]]
+
+            if cleared_match_ids:
+                placeholders_clear = ','.join('?' for _ in cleared_match_ids)
+                cursor.execute(
+                    f'''
+                    UPDATE matches
+                    SET analysis_text = NULL,
+                        analysis_png_path = NULL
+                    WHERE id IN ({placeholders_clear})
+                    ''',
+                    cleared_match_ids
+                )
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    deleted_png = 0
+    for png_path in png_paths:
+        if png_path and os.path.exists(png_path):
+            try:
+                os.remove(png_path)
+                deleted_png += 1
+            except Exception as e:
+                logger.warning(f"Не удалось удалить PNG {png_path}: {e}")
+
+    await update.message.reply_text(
+        "✅ Очистка пользователя завершена:\n\n"
+        f"👤 user_id: {target_user_id}\n"
+        f"🗑 Удалено покупок: {deleted_purchases}\n"
+        f"🧹 Очищено анализов матчей: {len(cleared_match_ids)}\n"
+        f"🖼 Удалено PNG: {deleted_png}"
+    )
+    logger.warning(
+        f"Admin {admin_id} выполнил clearuseranalysis user={target_user_id}: "
+        f"purchases={deleted_purchases}, cleared_matches={len(cleared_match_ids)}, png={deleted_png}"
+    )
+
+
 async def clear_topups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /cleartopups [user_id|all|pending] — очистить таблицу balance_topups.
@@ -475,11 +581,11 @@ async def admin_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "/clearbalance &lt;user_id&gt; — обнулить баланс\n"
         "  <i>Пример: /clearbalance 123456789</i>\n\n"
         "🛒 <b>Покупки анализов:</b>\n"
-        "/clearpurchases all — удалить все покупки\n"
-        "/clearpurchases &lt;user_id&gt; — покупки пользователя\n\n"
+        "/clearuseranalysis &lt;user_id&gt; — удалить покупки + анализы пользователя\n\n"
         "ℹ️ <b>Совместимость (legacy):</b>\n"
+        "/clearpurchases all|&lt;user_id&gt; — старая команда очистки только purchases\n"
         "/clean_purchases pending|expired|all — старая команда из user_handlers\n"
-        "  <i>Рекомендуется использовать /clearpurchases, чтобы не путаться.</i>\n\n"
+        "  <i>Рекомендуется использовать /clearuseranalysis, чтобы не путаться.</i>\n\n"
         "💳 <b>Пополнения баланса:</b>\n"
         "/cleartopups all — удалить все топапы\n"
         "/cleartopups pending — только ожидающие\n"
@@ -510,7 +616,7 @@ async def setup_admin_commands_menu(bot):
         BotCommand('stats', 'Статистика БД'),
         BotCommand('addbalance', 'Пополнить баланс: /addbalance <user_id> <сумма>'),
         BotCommand('clearbalance', 'Обнулить баланс: /clearbalance <user_id>'),
-        BotCommand('clearpurchases', 'Очистить покупки: /clearpurchases [all|user_id]'),
+        BotCommand('clearuseranalysis', 'Удалить покупки + анализы: /clearuseranalysis <user_id>'),
         BotCommand('cleartopups', 'Очистить топапы: /cleartopups [all|pending|user_id]'),
         BotCommand('clean_matches', 'Удалить старые матчи и PNG'),
         BotCommand('clean_all_matches', '⚠️ Удалить ВСЕ матчи и анализы'),
@@ -559,10 +665,11 @@ def setup_admin_handlers(application):
     application.add_handler(CommandHandler('addbalance', add_balance_command))
     application.add_handler(CommandHandler('clearbalance', clear_balance_command))
     application.add_handler(CommandHandler('clearpurchases', clear_purchases_command))
+    application.add_handler(CommandHandler('clearuseranalysis', clear_user_analysis_command))
     application.add_handler(CommandHandler('cleartopups', clear_topups_command))
     application.add_handler(CommandHandler('adminhelp', admin_help_command))
     logger.info(
         "Админские команды зарегистрированы: "
         "/clean_matches, /clean_all_matches, /stats, "
-        "/addbalance, /clearbalance, /clearpurchases, /cleartopups, /adminhelp"
+        "/addbalance, /clearbalance, /clearpurchases, /clearuseranalysis, /cleartopups, /adminhelp"
     )
