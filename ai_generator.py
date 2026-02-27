@@ -56,6 +56,32 @@ SECTION_ROOT_VARIANTS = {
     "вывод": [("вывод",), ("итог",)],
 }
 
+PSYCH_SECTION = "психологические факторы"
+PSYCH_SCORE_PATTERN = re.compile(r'(?<!\d)(\d{1,3})\s*/\s*100')
+PSYCH_BETTING_TERMS = re.compile(
+    r'\b(?:коэффициент\w*|ставк\w*|букмекер\w*|тотал\w*|фора\w*)\b',
+    re.IGNORECASE
+)
+PSYCH_CAUSAL_MARKERS = (
+    "поэтому",
+    "на фоне",
+    "это может",
+    "давлен",
+    "мотивац",
+    "реванш",
+    "дерби",
+    "серия",
+)
+PSYCH_CATEGORY_KEYWORDS = {
+    "tournament_pressure": ("мотивац", "турнир", "таблиц", "очки", "зона", "давлен", "плей"),
+    "derby_tension": ("дерби", "принципиал", "сопернич", "противостоя"),
+    "revenge_motivation": ("реванш", "ответн"),
+    "form_pressure": ("серия", "форма", "без побед", "поражен", "неудач", "динамик"),
+    "injury_uncertainty": ("травм", "кадров", "состав", "дисквалиф", "ротац", "потер"),
+}
+PSYCH_MIN_ACCEPTABLE_CHARS = 150
+PSYCH_MIN_CAUSAL_CHARS = 100
+
 
 def _normalize_for_checks(text: str) -> str:
     normalized = unicodedata.normalize("NFKC", (text or "")).casefold()
@@ -175,6 +201,16 @@ def _looks_like_heading(line: str) -> bool:
     return False
 
 
+def _is_section_heading_line(line: str, section: str) -> bool:
+    """Проверяет, что строка является заголовком конкретной секции."""
+    if not _line_matches_section(_normalize_for_checks(line), section):
+        return False
+    stripped = line.strip()
+    if stripped.startswith("==="):
+        return False
+    return _looks_like_heading(line)
+
+
 def _ensure_section_emojis(text: str) -> str:
     """Проверяет заголовки секций и добавляет недостающие emoji."""
     if not text:
@@ -203,7 +239,7 @@ def _extract_section_body(text: str, section: str) -> str | None:
     lines = (text or "").splitlines()
     section_start = None
     for idx, line in enumerate(lines):
-        if _line_matches_section(_normalize_for_checks(line), section):
+        if _is_section_heading_line(line, section):
             section_start = idx
             break
     if section_start is None:
@@ -211,13 +247,7 @@ def _extract_section_body(text: str, section: str) -> str | None:
 
     body_lines = []
     for idx in range(section_start + 1, len(lines)):
-        normalized = _normalize_for_checks(lines[idx])
-        is_heading = False
-        for s in REQUIRED_ANALYSIS_SECTIONS:
-            if s != section and _line_matches_section(normalized, s):
-                is_heading = True
-                break
-        if is_heading:
+        if any(_is_section_heading_line(lines[idx], s) for s in REQUIRED_ANALYSIS_SECTIONS if s != section):
             break
         body_lines.append(lines[idx])
 
@@ -243,7 +273,20 @@ def _is_section_thin(text: str, section: str, min_chars: int = 250,
     body = _extract_section_body(text, section)
     if body is None:
         return False
-    return len(body) < min_chars or _count_sentences(body) < min_sentences
+    section_key = _normalize_for_checks(section)
+    body_len = len(body)
+    sentences_count = _count_sentences(body)
+
+    if section_key == _normalize_for_checks(PSYCH_SECTION):
+        normalized_body = _normalize_for_checks(body)
+        has_causal_marker = any(marker in normalized_body for marker in PSYCH_CAUSAL_MARKERS)
+        if sentences_count >= 2 and body_len >= PSYCH_MIN_ACCEPTABLE_CHARS:
+            return False
+        if sentences_count >= 1 and body_len >= PSYCH_MIN_CAUSAL_CHARS and has_causal_marker:
+            return False
+        return True
+
+    return body_len < min_chars or sentences_count < min_sentences
 
 
 def _remove_section(text: str, section: str) -> str:
@@ -252,16 +295,12 @@ def _remove_section(text: str, section: str) -> str:
     section_start = None
     section_end = len(lines)
     for idx, line in enumerate(lines):
-        if _line_matches_section(_normalize_for_checks(line), section):
+        if section_start is None and _is_section_heading_line(line, section):
             section_start = idx
             continue
         if section_start is not None:
-            normalized = _normalize_for_checks(line)
-            for s in REQUIRED_ANALYSIS_SECTIONS:
-                if s != section and _line_matches_section(normalized, s):
-                    section_end = idx
-                    break
-            if section_end != len(lines):
+            if any(_is_section_heading_line(line, s) for s in REQUIRED_ANALYSIS_SECTIONS if s != section):
+                section_end = idx
                 break
     if section_start is None:
         return text
@@ -270,6 +309,187 @@ def _remove_section(text: str, section: str) -> str:
     if before and after:
         return f"{before}\n\n{after}"
     return before or after
+
+
+def _count_section_headings(text: str, section: str) -> int:
+    """Возвращает количество заголовков секции в тексте."""
+    return sum(1 for line in (text or "").splitlines() if _is_section_heading_line(line, section))
+
+
+def _extract_psych_score(signal: str) -> int | None:
+    """Извлекает score X/100 из сигнала."""
+    match = PSYCH_SCORE_PATTERN.search(signal or "")
+    if not match:
+        return None
+    return max(0, min(100, int(match.group(1))))
+
+
+def _clean_psych_signal_text(signal: str) -> str:
+    """Очищает сигнал от технического шума и score."""
+    cleaned = re.sub(r'^\s*[-•*]\s*', '', signal or '').strip()
+    cleaned = PSYCH_SCORE_PATTERN.sub('', cleaned)
+    cleaned = PSYCH_BETTING_TERMS.sub('', cleaned)
+    cleaned = re.sub(r'\s{2,}', ' ', cleaned)
+    return cleaned.strip(" -—–:;,.")
+
+
+def _resolve_psych_category(signal_text: str) -> str | None:
+    """Определяет каноническую категорию сигнала."""
+    normalized = _normalize_for_checks(signal_text)
+    for category, keywords in PSYCH_CATEGORY_KEYWORDS.items():
+        if any(keyword in normalized for keyword in keywords):
+            return category
+    return None
+
+
+def _extract_psych_detail(signal_text: str) -> str:
+    """Пытается вытащить короткую фактическую деталь из сигнала."""
+    parts = re.split(r'\s*[—–-]\s*|\s*:\s*', signal_text, maxsplit=1)
+    detail = parts[1] if len(parts) == 2 else signal_text
+    detail = detail.strip().strip(".")
+    if len(detail) > 110:
+        detail = detail[:107].rstrip() + "..."
+    return detail
+
+
+def _score_to_psych_level(score: int) -> str | None:
+    """Переводит score сигнала в уровень акцента текста."""
+    if score < 20:
+        return None
+    if score < 40:
+        return "mild"
+    if score < 65:
+        return "medium"
+    return "strong"
+
+
+def _render_psych_sentence(
+    category: str,
+    level: str,
+    team1: str,
+    team2: str,
+    detail: str = "",
+) -> str:
+    """Рендерит одно fallback-предложение по категории сигнала."""
+    templates = {
+        "tournament_pressure": {
+            "mild": f"Турнирный фон немного повышает значимость матча для {team1} и {team2}.",
+            "medium": f"Турнирная ситуация добавляет матчу {team1} — {team2} ощутимого напряжения.",
+            "strong": f"Высокая турнирная цена встречи усиливает психологическое давление на обе команды.",
+        },
+        "derby_tension": {
+            "mild": "В паре чувствуется принципиальность, которая может усилить эмоции в ключевых эпизодах.",
+            "medium": "Принципиальный характер противостояния повышает эмоциональный накал матча.",
+            "strong": "Фактор дерби создает повышенное эмоциональное давление и влияет на ритм решений.",
+        },
+        "revenge_motivation": {
+            "mild": "Легкий мотив реванша добавляет встрече дополнительной внутренней концентрации.",
+            "medium": "Тема реванша заметно усиливает мотивацию и влияет на психологический настрой.",
+            "strong": "Сильный мотив реванша повышает внутреннее давление и может менять риск-профиль по ходу игры.",
+        },
+        "form_pressure": {
+            "mild": "Последние результаты формируют умеренный фон ожиданий перед этой встречей.",
+            "medium": "Текущая серия результатов усиливает психологическое давление на обе стороны.",
+            "strong": "Контекст последних матчей делает эмоциональную устойчивость одним из ключевых факторов игры.",
+        },
+        "injury_uncertainty": {
+            "mild": "Кадровый контекст добавляет небольшую неопределенность в привычные игровые роли.",
+            "medium": "Изменения в составе повышают неопределенность и требуют быстрой психологической адаптации.",
+            "strong": "Существенные кадровые потери усиливают риск психологической нестабильности в стрессовых эпизодах.",
+        },
+    }
+    sentence = templates.get(category, {}).get(level, "")
+    if not sentence:
+        return ""
+
+    detail = detail.strip()
+    if detail and len(detail) >= 18:
+        detail = PSYCH_BETTING_TERMS.sub('', detail).strip(" ,.;:-")
+        if detail:
+            sentence = sentence.rstrip(".") + f" На фоне {detail}."
+
+    return sentence
+
+
+def render_psychological_fallback(
+    signals: list[str],
+    team1: str,
+    team2: str,
+    context: dict | None = None,
+) -> str:
+    """Рендерит human-friendly fallback для секции «Психологические факторы»."""
+    deduped_by_category: dict[str, dict[str, str | int]] = {}
+    for raw_signal in signals or []:
+        score = _extract_psych_score(raw_signal)
+        effective_score = score if score is not None else 35
+        level = _score_to_psych_level(effective_score)
+        if not level:
+            continue
+
+        cleaned_signal = _clean_psych_signal_text(raw_signal)
+        if not cleaned_signal:
+            continue
+        category = _resolve_psych_category(cleaned_signal)
+        if not category:
+            continue
+
+        candidate = {
+            "score": effective_score,
+            "level": level,
+            "detail": _extract_psych_detail(cleaned_signal),
+        }
+        current = deduped_by_category.get(category)
+        if current is None or int(candidate["score"]) > int(current["score"]):
+            deduped_by_category[category] = candidate
+
+    sentences: list[str] = []
+    if deduped_by_category:
+        if len(deduped_by_category) > 1:
+            sentences.append(
+                f"В матче {team1} — {team2} психологический фон формируется сразу несколькими факторами."
+            )
+        else:
+            sentences.append(
+                f"В матче {team1} — {team2} психологический фактор может заметно повлиять на ход игры."
+            )
+
+        ordered = sorted(
+            deduped_by_category.items(),
+            key=lambda item: int(item[1]["score"]),
+            reverse=True,
+        )
+        for category, data in ordered[:3]:
+            sentence = _render_psych_sentence(
+                category=category,
+                level=str(data["level"]),
+                team1=team1,
+                team2=team2,
+                detail=str(data["detail"]),
+            )
+            if sentence:
+                sentences.append(sentence)
+
+    if len(sentences) < 2:
+        league = ""
+        round_info = ""
+        if isinstance(context, dict):
+            league = str(context.get("league", "")).strip()
+            round_info = str(context.get("round", "")).strip()
+        context_part = ""
+        if league and round_info:
+            context_part = f" в рамках {league}, {round_info}"
+        elif league:
+            context_part = f" в рамках {league}"
+        sentences = [
+            f"В матче {team1} — {team2} психологический фон выглядит достаточно ровным, без явного перекоса по мотивации.",
+            f"Даже при нейтральном контексте{context_part} многое будет зависеть от реакции команд на первые сложные эпизоды.",
+        ]
+
+    text = " ".join(sentences[:4]).strip()
+    text = PSYCH_SCORE_PATTERN.sub('', text)
+    text = PSYCH_BETTING_TERMS.sub('', text)
+    text = text.replace("•", "")
+    return re.sub(r'\s{2,}', ' ', text).strip()
 
 
 def _build_missing_section_block(section: str, match_data: dict, enriched_context: str) -> str:
@@ -281,36 +501,10 @@ def _build_missing_section_block(section: str, match_data: dict, enriched_contex
     section_emoji = REQUIRED_EMOJI_HEADINGS.get(normalized_section, "📌")
     heading = f"{section_emoji} **{section_title}**"
 
-    if normalized_section == _normalize_for_checks("психологические факторы"):
+    if normalized_section == _normalize_for_checks(PSYCH_SECTION):
         signals = _extract_psych_signals(enriched_context)
-        if signals:
-            # Каждый сигнал — отдельный пункт с точкой
-            formatted = []
-            for s in signals:
-                s = s.rstrip('.').strip()
-                if s:
-                    formatted.append(f"• {s}.")
-            signals_block = "\n".join(formatted)
-            base = (
-                f"В паре {team1} — {team2} выделяются следующие психологические аспекты:\n"
-                f"{signals_block}\n"
-                f"Совокупность этих факторов формирует психологический фон матча "
-                f"и может повлиять на настрой и мотивацию обеих команд."
-            )
-        else:
-            league = match_data.get('league', '')
-            round_info = match_data.get('round', '')
-            context_parts = []
-            if league:
-                context_parts.append(f"в рамках {league}")
-            if round_info:
-                context_parts.append(f"({round_info} тур)")
-            context_str = " ".join(context_parts)
-            base = (
-                f"Специфических психологических факторов (дерби, реванш, борьба за выживание) "
-                f"в паре {team1} — {team2} {context_str} не выявлено. "
-                f"Обе команды подходят к матчу в штатном режиме."
-            )
+        logger.info("psych_fallback_template_used")
+        base = render_psychological_fallback(signals, team1, team2, context=match_data)
     else:
         facts = _extract_context_fact_lines(enriched_context, limit=2)
         base = (
@@ -774,14 +968,13 @@ async def generate_match_text_analysis(
         )
         raise ValueError("DeepSeek API вернул пустой ответ")
     raw_text = raw_content.strip()
-    analysis_text = clean_and_truncate(
-        raw_text,
-        target_max=2400,
-        soft_cap=2600,
-        hard_cap=2800
-    )
+    analysis_text = raw_text
     analysis_text = _normalize_kickoff_time_mentions(analysis_text, match_time_msk)
     analysis_text = _ensure_section_emojis(analysis_text)
+
+    psych_heading_count = _count_section_headings(analysis_text, PSYCH_SECTION)
+    if psych_heading_count > 1:
+        logger.info("psych_duplicate_heading_detected count=%s", psych_heading_count)
 
     # Структурные гарантии: вставляем fallback-блоки для пропущенных секций
     missing = _find_missing_sections(analysis_text)
@@ -791,6 +984,8 @@ async def generate_match_text_analysis(
     for section in missing:
         if _normalize_for_checks(section) == _normalize_for_checks("вывод"):
             continue
+        if _normalize_for_checks(section) == _normalize_for_checks(PSYCH_SECTION):
+            logger.info("psych_missing_after_model")
         block = _build_missing_section_block(section, match_data, enriched_context)
         analysis_text = _inject_section_before_conclusion(analysis_text, block)
         injected.append(section)
@@ -799,8 +994,9 @@ async def generate_match_text_analysis(
         logger.info("Добавлены fallback-блоки: %s", ", ".join(injected))
 
     # Проверка содержательности секции «Психологические факторы»
-    psych_section = "психологические факторы"
+    psych_section = PSYCH_SECTION
     if psych_section not in missing and _is_section_thin(analysis_text, psych_section):
+        logger.info("psych_thin_after_model")
         logger.info("Секция «Психологические факторы» слишком скудная — заменяем fallback-блоком")
         analysis_text = _remove_section(analysis_text, psych_section)
         block = _build_missing_section_block(psych_section, match_data, enriched_context)
