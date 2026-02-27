@@ -552,7 +552,7 @@ async def handle_date_selection(query, context, sport, date_str):
     text = f"{sport_display} <b>Матчи на {date_label}:</b>\n\n"
     for match in matches:
         text += f"• {match['team1']} vs {match['team2']} в {match['match_time']}\n"
-    text += "\n👇 <b>Выберите матч для просмотра анализа:</b>"
+    text += "\n👇 <b>Выберите матч для просмотра анализа (МСК):</b>"
     keyboard = []
     for match in matches:
         button_text = f"{match['team1']} vs {match['team2']} ({match['match_time']})"
@@ -1213,7 +1213,7 @@ async def handle_purchased_date(query, user_id, sport, date_str):
     text = f"{sport_display} <b>Матчи на {date_label}:</b>\n\n"
     for match in date_matches:
         text += f"• {match['team1']} vs {match['team2']} ({match['match_time']})\n"
-    text += "\n👇 <b>Выберите матч для просмотра анализа:</b>"
+    text += "\n👇 <b>Выберите матч для просмотра анализа (МСК):</b>"
     # Создаем клавиатуру с матчами
     keyboard = []
     for match in date_matches:
@@ -1891,7 +1891,7 @@ def _how_it_works_keyboard(page: int, total: int) -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup([
         nav_buttons,
-        [InlineKeyboardButton("◀️ Назад", callback_data='go_back')]
+        [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
     ])
 
 
