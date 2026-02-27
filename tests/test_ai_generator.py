@@ -1,8 +1,12 @@
 """Тесты для ai_generator.py: проверка загрузки промпта, постобработки и построения контекста."""
+import asyncio
 import sys
 import os
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import ai_generator  # noqa: E402
 from utils import clean_and_truncate  # noqa: E402
 from ai_generator import (  # noqa: E402
     _build_match_context,
@@ -14,6 +18,7 @@ from ai_generator import (  # noqa: E402
     _is_section_thin,
     _remove_section,
     _count_sentences,
+    render_psychological_fallback,
 )
 
 
@@ -126,6 +131,57 @@ class TestAnalysisPostprocessing:
         result = _inject_section_before_conclusion(source, block)
         assert result.index("🧠 **Психологические факторы**") < result.index("🔑 **Вывод**")
 
+    def test_remove_section_single_heading(self):
+        """Удаление секции с одним заголовком вырезает весь блок до следующего раздела."""
+        source = (
+            "⚽ **Контекст матча**\n"
+            "Контекст.\n\n"
+            "🧠 **Психологические факторы**\n"
+            "Старый психологический текст.\n\n"
+            "🔑 **Вывод**\n"
+            "Финал."
+        )
+        result = _remove_section(source, "психологические факторы")
+        assert "🧠 **Психологические факторы**" not in result
+        assert "Старый психологический текст" not in result
+        assert "⚽ **Контекст матча**" in result
+        assert "🔑 **Вывод**" in result
+
+    def test_remove_section_duplicate_heading_replacement_has_single_heading(self):
+        """При двойном заголовке 🧠 после replacement остается только один заголовок."""
+        source = (
+            "⚽ **Контекст матча**\n"
+            "Контекст.\n\n"
+            "🧠 **Психологические факторы**\n"
+            "Первый кусок.\n\n"
+            "🧠 **Психологические факторы**\n"
+            "Второй кусок.\n\n"
+            "🔑 **Вывод**\n"
+            "Финал."
+        )
+        removed = _remove_section(source, "психологические факторы")
+        replacement = (
+            "🧠 **Психологические факторы**\n"
+            "Новый fallback-текст."
+        )
+        result = _inject_section_before_conclusion(removed, replacement)
+        assert result.count("🧠 **Психологические факторы**") == 1
+        assert "Первый кусок" not in result
+        assert "Второй кусок" not in result
+
+    def test_remove_section_to_eof(self):
+        """Удаление последней секции работает корректно до конца текста (EOF)."""
+        source = (
+            "⚽ **Контекст матча**\n"
+            "Контекст.\n\n"
+            "🧠 **Психологические факторы**\n"
+            "Последний блок без следующего заголовка."
+        )
+        result = _remove_section(source, "психологические факторы")
+        assert "🧠 **Психологические факторы**" not in result
+        assert "Последний блок" not in result
+        assert result.strip() == "⚽ **Контекст матча**\nКонтекст."
+
     def test_normal_length_text_not_truncated(self):
         """Текст в целевом диапазоне (1400-1900) не обрезается."""
         analysis = "Хороший анализ матча. " * 60  # ~1320 символов
@@ -162,8 +218,10 @@ class TestAnalysisPostprocessing:
         block = _build_missing_section_block(
             "психологические факторы", match_data, context
         )
-        assert "Дерби" in block
+        assert "🧠 **Психологические факторы**" in block
         assert "лондонское дерби" in block
+        assert "/100" not in block
+        assert "•" not in block
 
     def test_build_missing_psych_block_without_signals(self):
         """Fallback без сигналов — честное сообщение, а не шаблон."""
@@ -171,8 +229,54 @@ class TestAnalysisPostprocessing:
         block = _build_missing_section_block(
             "психологические факторы", match_data, ""
         )
-        assert "не выявлено" in block
+        assert "психологический фон" in block.lower()
         assert "EPL" in block
+
+    def test_render_psychological_fallback_strong_signals(self):
+        """Сильные сигналы дают 2-4 связных предложения без скриптового шума."""
+        signals = [
+            "Дерби: 82/100 — лондонское дерби",
+            "Мотивация: 71/100 — борьба за верхнюю часть таблицы",
+            "Реванш: 58/100 — память о поражении в первом круге",
+        ]
+        text = render_psychological_fallback(signals, "Arsenal", "Chelsea")
+        assert 2 <= _count_sentences(text) <= 4
+        assert "/100" not in text
+        assert "•" not in text
+        assert not any(line.strip().startswith("-") for line in text.splitlines())
+        lowered = text.lower()
+        assert "коэффициент" not in lowered
+        assert "ставк" not in lowered
+        assert "букмекер" not in lowered
+
+    def test_render_psychological_fallback_weak_signals(self):
+        """Слабые сигналы дают нейтральный человеческий текст без мусора."""
+        signals = [
+            "Дерби: 12/100 — нейтральная пара",
+            "Мотивация: 18/100 — минимальный фоновый фактор",
+        ]
+        text = render_psychological_fallback(signals, "Arsenal", "Chelsea")
+        assert 2 <= _count_sentences(text) <= 4
+        assert "/100" not in text
+        assert "данных недостаточно" not in text.lower()
+        assert "психологический фон" in text.lower()
+
+    def test_render_psychological_fallback_dedup_categories(self):
+        """Смешанные сигналы не дублируют одну и ту же мысль разными фразами."""
+        signals = [
+            "Мотивация: 58/100 — борьба за топ-4",
+            "Турнирная мотивация: 61/100 — минимальный разрыв по очкам",
+            "Давление таблицы: 54/100 — цена ошибки растет",
+            "Серия: 63/100 — три матча без побед",
+        ]
+        text = render_psychological_fallback(signals, "Arsenal", "Chelsea")
+        assert 2 <= _count_sentences(text) <= 4
+        detail_hits = sum(
+            phrase in text.lower()
+            for phrase in ("борьба за топ-4", "минимальный разрыв по очкам", "цена ошибки растет")
+        )
+        assert detail_hits <= 1
+        assert "/100" not in text
 
     def test_ensure_section_emojis_adds_missing_key(self):
         """Заголовок «Вывод» без emoji 🔑 получает его автоматически."""
@@ -209,8 +313,8 @@ class TestAnalysisPostprocessing:
         result = _ensure_section_emojis(text)
         assert "🔑 **Вывод**" in result
 
-    def test_thin_psych_section_one_sentence(self):
-        """Секция 🧠 с одним предложением считается thin."""
+    def test_thin_psych_section_one_meaningful_sentence_not_thin(self):
+        """Качественная секция 🧠 в одном длинном предложении не считается thin."""
         text = "\n".join([
             "⚽ **Контекст матча**",
             "Текст контекста достаточной длины.",
@@ -223,10 +327,7 @@ class TestAnalysisPostprocessing:
             "🔑 **Вывод**",
             "Текст вывода.",
         ])
-        assert _is_section_thin(text, "психологические факторы")
-        removed = _remove_section(text, "психологические факторы")
-        assert "карточек" not in removed
-        assert "🔑 **Вывод**" in removed
+        assert not _is_section_thin(text, "психологические факторы")
 
     def test_thin_psych_section_very_short(self):
         """Секция 🧠 с коротким текстом считается thin."""
@@ -236,6 +337,20 @@ class TestAnalysisPostprocessing:
             "",
             "🧠 **Психологические факторы**",
             "Коротко.",
+            "",
+            "🔑 **Вывод**",
+            "Текст вывода.",
+        ])
+        assert _is_section_thin(text, "психологические факторы")
+
+    def test_thin_psych_section_formal_one_sentence(self):
+        """Пустая/формальная секция 🧠 должна считаться thin."""
+        text = "\n".join([
+            "⚽ **Контекст матча**",
+            "Текст.",
+            "",
+            "🧠 **Психологические факторы**",
+            "Матч важный и эмоциональный.",
             "",
             "🔑 **Вывод**",
             "Текст вывода.",
@@ -263,6 +378,75 @@ class TestAnalysisPostprocessing:
             "Текст вывода.",
         ])
         assert not _is_section_thin(text, "психологические факторы")
+
+    def test_short_quality_psych_section_not_replaced(self):
+        """Короткая, но содержательная секция 🧠 (2 предложения) не считается thin."""
+        body = (
+            "Турнирная плотность на верхних местах повышает давление в каждом эпизоде, "
+            "поэтому команды будут осторожнее управлять риском после потерь мяча. "
+            "На фоне недавней серии без побед эмоциональная устойчивость может стать ключевым фактором в концовке."
+        )
+        text = "\n".join([
+            "⚽ **Контекст матча**",
+            "Текст контекста.",
+            "",
+            "🧠 **Психологические факторы**",
+            body,
+            "",
+            "🔑 **Вывод**",
+            "Текст вывода.",
+        ])
+        assert not _is_section_thin(text, "психологические факторы")
+
+    def test_pipeline_order_thin_check_happens_before_final_truncate(self, monkeypatch):
+        """Thin-check секции 🧠 выполняется до финального truncate."""
+        raw_text = (
+            "⚽ **Контекст матча**\nКонтекст матча в полном объеме.\n\n"
+            "📈 **Форма и турнирная ситуация**\nФорма команд описана достаточно подробно.\n\n"
+            "📊 **Статистика и игровые паттерны**\nСтатистика подтверждает равный характер пары.\n\n"
+            "🧠 **Психологические факторы**\n"
+            "УНИКАЛЬНЫЙ_ПСИХ_МАРКЕР Турнирная плотность увеличивает внутреннее давление и цену ошибки. "
+            "На фоне серии без побед это может повлиять на эмоциональный контроль в концовке.\n\n"
+            "🔑 **Вывод**\nФинальный вывод по матчу."
+        )
+        fake_response = SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content=raw_text),
+            )],
+            model="deepseek-chat",
+        )
+        monkeypatch.setattr(
+            ai_generator.client.chat.completions,
+            "create",
+            AsyncMock(return_value=fake_response),
+        )
+
+        call_order = []
+        original_is_section_thin = ai_generator._is_section_thin
+
+        def fake_is_section_thin(text, section, min_chars=250, min_sentences=3):
+            if section == "психологические факторы":
+                call_order.append("thin")
+                assert "УНИКАЛЬНЫЙ_ПСИХ_МАРКЕР" in text
+            return original_is_section_thin(
+                text, section, min_chars=min_chars, min_sentences=min_sentences
+            )
+
+        def fake_clean_and_truncate(text, target_max=2800, soft_cap=3400, hard_cap=3600):
+            call_order.append("clean")
+            return text.replace("УНИКАЛЬНЫЙ_ПСИХ_МАРКЕР ", "")
+
+        monkeypatch.setattr(ai_generator, "_is_section_thin", fake_is_section_thin)
+        monkeypatch.setattr(ai_generator, "clean_and_truncate", fake_clean_and_truncate)
+
+        match_data = {"team1": "Arsenal", "team2": "Chelsea", "sport": "football"}
+        result = asyncio.run(ai_generator.generate_match_text_analysis(match_data, ""))
+
+        assert "thin" in call_order
+        assert "clean" in call_order
+        assert call_order.index("thin") < call_order.index("clean")
+        assert "УНИКАЛЬНЫЙ_ПСИХ_МАРКЕР" not in result
 
     def test_count_sentences(self):
         """Подсчёт предложений работает корректно."""
