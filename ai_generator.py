@@ -81,6 +81,79 @@ PSYCH_CATEGORY_KEYWORDS = {
 }
 PSYCH_MIN_ACCEPTABLE_CHARS = 150
 PSYCH_MIN_CAUSAL_CHARS = 100
+PSYCH_SOFT_BLOCK_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    (r"\bкаждая\s+ошибка\s+может\s+стать\s+решающей\b", "каждая ошибка повышает эмоциональную цену эпизода"),
+    (r"\bкаждая\s+ошибка\b.{0,40}\bроков\w*\b", "это повышает эмоциональную цену ошибок"),
+    (r"\bможет\s+стать\s+роков\w*\b", "может сказаться на осторожности и темпе"),
+    (r"\bроков\w*\b", "критичным"),
+    (r"\bэто\s+может\s+стать\s+решающим\s+фактором\b", "это повышает эмоциональную цену ошибок"),
+    (r"\bисход\s+матча\s+определит\b", "на характер игры повлияет"),
+    (r"\bключевыми\s+станут\b", "важными в динамике матча останутся"),
+    (r"\bв\s+итоге\s+именно\b", "на дистанции матча"),
+    (r"\bрешающей\b", "критичной"),
+)
+PSYCH_LEXICAL_REWRITE_RULES: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
+    (re.compile(r"\bдавлен\w*\b", re.IGNORECASE), ("эмоциональная нагрузка", "психологический фон")),
+    (re.compile(r"\bнапряж\w*\b", re.IGNORECASE), ("накал", "нерв матча")),
+    (re.compile(r"\bмотивац\w*\b", re.IGNORECASE), ("настрой", "стимул")),
+    (re.compile(r"\bважност\w*\b", re.IGNORECASE), ("значимость", "цена очков")),
+)
+PSYCH_OPENING_TEMPLATES: dict[str, tuple[str, ...]] = {
+    "tournament_pressure": (
+        "Турнирная цена очков в матче {team1} — {team2} заметно усиливает психологический фон встречи.",
+        "Встреча {team1} — {team2} проходит под ощутимым турнирным давлением из-за значимости каждого очка.",
+        "Для пары {team1} — {team2} ключевым фоном становится борьба за позиции в таблице.",
+    ),
+    "derby_tension": (
+        "В противостоянии {team1} — {team2} ощущается принципиальность, которая поднимает эмоциональный градус.",
+        "Матч {team1} — {team2} несет выраженный дербийный нерв и требует высокого самоконтроля.",
+        "Для пары {team1} — {team2} историческое соперничество усиливает накал уже до стартового свистка.",
+    ),
+    "revenge_motivation": (
+        "В матче {team1} — {team2} заметен мотив ответа за прошлый результат, что усиливает внутренний настрой.",
+        "Пара {team1} — {team2} выходит с выраженной темой реванша, добавляющей эмоций в ключевых моментах.",
+        "Для встречи {team1} — {team2} дополнительным драйвером становится желание исправить прошлый сценарий.",
+    ),
+    "form_pressure": (
+        "Серия последних результатов делает матч {team1} — {team2} психологически чувствительным к первым эпизодам.",
+        "Контекст недавней формы в паре {team1} — {team2} повышает цену игровых колебаний.",
+        "Перед игрой {team1} — {team2} фон последних туров усиливает ожидания и эмоциональную нагрузку.",
+    ),
+    "injury_uncertainty": (
+        "Кадровая неопределенность в матче {team1} — {team2} добавляет нерв в управлении ротацией.",
+        "Встреча {team1} — {team2} проходит на фоне изменений состава, что повышает психологическую нестабильность.",
+        "Для пары {team1} — {team2} фактор травм и ротации делает адаптацию по ходу игры особенно важной.",
+    ),
+    "neutral": (
+        "В матче {team1} — {team2} психологический фон выглядит в целом сбалансированным.",
+        "Перед встречей {team1} — {team2} нет явного эмоционального перекоса между сторонами.",
+        "Для игры {team1} — {team2} стартовый психологический фон остается относительно ровным.",
+    ),
+}
+PSYCH_CONNECTOR_PHRASES: tuple[str, ...] = (
+    "На этом фоне,",
+    "При этом,",
+    "Дополнительно,",
+    "В таких условиях,",
+    "Одновременно,",
+    "Параллельно,",
+    "С другой стороны,",
+    "Кроме того,",
+    "По этой причине,",
+    "На дистанции матча,",
+)
+PSYCH_ENDING_PHRASES: tuple[str, ...] = (
+    "Это повышает эмоциональную цену ошибок в переходных фазах.",
+    "Такой фон обычно влияет на выбор темпа и уровня риска.",
+    "На практике это отражается на хладнокровии в стрессовых отрезках.",
+    "В подобных условиях возрастает значение игровой дисциплины без выводов о результате.",
+    "Это чаще влияет на характер решений с мячом и без мяча.",
+    "Поэтому важной становится реакция команд на первые неудачные отрезки.",
+    "Этот психологический контекст может сказываться на структуре прессинга и контроля.",
+    "В таких матчах особенно заметна роль эмоциональной устойчивости в мелких эпизодах.",
+    "Это смещает акцент на управление ритмом и вниманием в концовках.",
+    "На таком фоне команды чаще осторожнее распределяют риск по ходу встречи.",
+)
 
 
 def _normalize_for_checks(text: str) -> str:
@@ -363,6 +436,88 @@ def _score_to_psych_level(score: int) -> str | None:
     return "strong"
 
 
+def _stable_variant_index(seed: str, variants_count: int) -> int:
+    """Возвращает детерминированный индекс варианта по строковому seed."""
+    if variants_count <= 0:
+        return 0
+    checksum = 0
+    for idx, char in enumerate(seed or ""):
+        checksum = (checksum + (idx + 1) * ord(char)) % 2_147_483_647
+    return checksum % variants_count
+
+
+def _pick_stable_variant(variants: tuple[str, ...], seed: str) -> str:
+    """Детерминированно выбирает вариант из пула по seed."""
+    if not variants:
+        return ""
+    return variants[_stable_variant_index(seed, len(variants))]
+
+
+def _collect_psych_signal_candidates(signals: list[str]) -> dict[str, dict[str, str | int]]:
+    """Собирает сигналы в канонические категории с выбором самого сильного по score."""
+    deduped_by_category: dict[str, dict[str, str | int]] = {}
+    for raw_signal in signals or []:
+        score = _extract_psych_score(raw_signal)
+        effective_score = score if score is not None else 35
+        level = _score_to_psych_level(effective_score)
+        if not level:
+            continue
+
+        cleaned_signal = _clean_psych_signal_text(raw_signal)
+        if not cleaned_signal:
+            continue
+        category = _resolve_psych_category(cleaned_signal)
+        if not category:
+            continue
+
+        candidate = {
+            "score": effective_score,
+            "level": level,
+            "detail": _extract_psych_detail(cleaned_signal),
+        }
+        current = deduped_by_category.get(category)
+        if current is None or int(candidate["score"]) > int(current["score"]):
+            deduped_by_category[category] = candidate
+    return deduped_by_category
+
+
+def _get_dominant_psych_categories(signals: list[str], limit: int = 3) -> list[str]:
+    """Возвращает список доминирующих категорий fallback-сигналов по убыванию score."""
+    deduped_by_category = _collect_psych_signal_candidates(signals)
+    ordered = sorted(
+        deduped_by_category.items(),
+        key=lambda item: int(item[1]["score"]),
+        reverse=True,
+    )
+    return [category for category, _ in ordered[:max(1, limit)]]
+
+
+def _render_psych_opening(
+    team1: str,
+    team2: str,
+    dominant_category: str | None,
+    seed_base: str,
+) -> str:
+    """Рендерит стартовое предложение fallback по доминирующей категории."""
+    category_key = dominant_category if dominant_category in PSYCH_OPENING_TEMPLATES else "neutral"
+    template = _pick_stable_variant(
+        PSYCH_OPENING_TEMPLATES[category_key],
+        f"{seed_base}|opening|{category_key}",
+    )
+    return template.format(team1=team1, team2=team2).strip()
+
+
+def _apply_psych_connector(sentence: str, connector: str) -> str:
+    """Добавляет соединительную фразу перед предложением без потери читабельности."""
+    base = (sentence or "").strip()
+    if not base:
+        return ""
+    first_char = base[0]
+    if first_char.isalpha():
+        base = first_char.lower() + base[1:]
+    return f"{connector} {base}".strip()
+
+
 def _render_psych_sentence(
     category: str,
     level: str,
@@ -417,6 +572,36 @@ def _render_psych_sentence(
     return sentence
 
 
+def _apply_psych_soft_block(text: str) -> str:
+    """Смягчает выводные формулы в fallback-секции «Психологические факторы»."""
+    guarded = text or ""
+    for pattern, replacement in PSYCH_SOFT_BLOCK_REPLACEMENTS:
+        guarded = re.sub(pattern, replacement, guarded, flags=re.IGNORECASE)
+    guarded = re.sub(r"\s{2,}", " ", guarded)
+    return guarded.strip()
+
+
+def _reduce_psych_lexical_repetition(text: str) -> str:
+    """Локально снижает повторы ключевой лексики в fallback-абзаце."""
+    rewritten = text or ""
+    for pattern, replacements in PSYCH_LEXICAL_REWRITE_RULES:
+        seen = 0
+        replacement_idx = 0
+
+        def _replace(match: re.Match[str]) -> str:
+            nonlocal seen, replacement_idx
+            seen += 1
+            if seen <= 1:
+                return match.group(0)
+            replacement = replacements[replacement_idx % len(replacements)]
+            replacement_idx += 1
+            return replacement
+
+        rewritten = pattern.sub(_replace, rewritten)
+    rewritten = re.sub(r"\s{2,}", " ", rewritten)
+    return rewritten.strip()
+
+
 def render_psychological_fallback(
     signals: list[str],
     team1: str,
@@ -424,47 +609,23 @@ def render_psychological_fallback(
     context: dict | None = None,
 ) -> str:
     """Рендерит human-friendly fallback для секции «Психологические факторы»."""
-    deduped_by_category: dict[str, dict[str, str | int]] = {}
-    for raw_signal in signals or []:
-        score = _extract_psych_score(raw_signal)
-        effective_score = score if score is not None else 35
-        level = _score_to_psych_level(effective_score)
-        if not level:
-            continue
-
-        cleaned_signal = _clean_psych_signal_text(raw_signal)
-        if not cleaned_signal:
-            continue
-        category = _resolve_psych_category(cleaned_signal)
-        if not category:
-            continue
-
-        candidate = {
-            "score": effective_score,
-            "level": level,
-            "detail": _extract_psych_detail(cleaned_signal),
-        }
-        current = deduped_by_category.get(category)
-        if current is None or int(candidate["score"]) > int(current["score"]):
-            deduped_by_category[category] = candidate
+    deduped_by_category = _collect_psych_signal_candidates(signals)
+    seed_base = f"{team1}|{team2}|{len(signals or [])}|{'|'.join((signals or [])[:3])}"
 
     sentences: list[str] = []
     if deduped_by_category:
-        if len(deduped_by_category) > 1:
-            sentences.append(
-                f"В матче {team1} — {team2} психологический фон формируется сразу несколькими факторами."
-            )
-        else:
-            sentences.append(
-                f"В матче {team1} — {team2} психологический фактор может заметно повлиять на ход игры."
-            )
-
         ordered = sorted(
             deduped_by_category.items(),
             key=lambda item: int(item[1]["score"]),
             reverse=True,
         )
-        for category, data in ordered[:3]:
+        dominant_category = ordered[0][0]
+        sentences.append(
+            _render_psych_opening(team1, team2, dominant_category, seed_base)
+        )
+
+        detail_sentences: list[str] = []
+        for category, data in ordered[:2]:
             sentence = _render_psych_sentence(
                 category=category,
                 level=str(data["level"]),
@@ -473,7 +634,24 @@ def render_psychological_fallback(
                 detail=str(data["detail"]),
             )
             if sentence:
+                detail_sentences.append(sentence)
+
+        for idx, sentence in enumerate(detail_sentences):
+            if idx == 0:
                 sentences.append(sentence)
+                continue
+            connector = _pick_stable_variant(
+                PSYCH_CONNECTOR_PHRASES,
+                f"{seed_base}|{dominant_category}|connector|{idx}",
+            )
+            sentences.append(_apply_psych_connector(sentence, connector))
+
+        sentences.append(
+            _pick_stable_variant(
+                PSYCH_ENDING_PHRASES,
+                f"{seed_base}|{dominant_category}|ending",
+            )
+        )
 
     if len(sentences) < 2:
         league = ""
@@ -487,20 +665,20 @@ def render_psychological_fallback(
         elif league:
             context_part = f" в рамках {league}"
         sentences = [
+            _render_psych_opening(team1, team2, None, f"{seed_base}|neutral"),
             (
-                f"В матче {team1} — {team2} психологический фон выглядит "
-                "достаточно ровным, без явного перекоса по мотивации."
+                f"Даже при нейтральном контексте{context_part} психологический фон может "
+                "заметно меняться после первых сложных эпизодов."
             ),
-            (
-                f"Даже при нейтральном контексте{context_part} многое будет "
-                "зависеть от реакции команд на первые сложные эпизоды."
-            ),
+            _pick_stable_variant(PSYCH_ENDING_PHRASES, f"{seed_base}|neutral|ending"),
         ]
 
     text = " ".join(sentences[:4]).strip()
     text = PSYCH_SCORE_PATTERN.sub('', text)
     text = PSYCH_BETTING_TERMS.sub('', text)
     text = text.replace("•", "")
+    text = _apply_psych_soft_block(text)
+    text = _reduce_psych_lexical_repetition(text)
     return re.sub(r'\s{2,}', ' ', text).strip()
 
 
@@ -983,10 +1161,18 @@ async def generate_match_text_analysis(
     analysis_text = raw_text
     analysis_text = _normalize_kickoff_time_mentions(analysis_text, match_time_msk)
     analysis_text = _ensure_section_emojis(analysis_text)
+    psych_section_source = "model"
+    psych_reasons: list[str] = []
 
     psych_heading_count = _count_section_headings(analysis_text, PSYCH_SECTION)
     if psych_heading_count > 1:
+        psych_reasons.append("psych_duplicate_heading_detected")
         logger.info("psych_duplicate_heading_detected count=%s", psych_heading_count)
+        analysis_text = _remove_section(analysis_text, PSYCH_SECTION)
+        block = _build_missing_section_block(PSYCH_SECTION, match_data, enriched_context)
+        analysis_text = _inject_section_before_conclusion(analysis_text, block)
+        psych_section_source = "fallback_template"
+        psych_reasons.append("psych_fallback_template_used")
 
     # Структурные гарантии: вставляем fallback-блоки для пропущенных секций
     missing = _find_missing_sections(analysis_text)
@@ -998,6 +1184,9 @@ async def generate_match_text_analysis(
             continue
         if _normalize_for_checks(section) == _normalize_for_checks(PSYCH_SECTION):
             logger.info("psych_missing_after_model")
+            psych_section_source = "missing_repair"
+            psych_reasons.append("psych_missing_after_model")
+            psych_reasons.append("psych_fallback_template_used")
         block = _build_missing_section_block(section, match_data, enriched_context)
         analysis_text = _inject_section_before_conclusion(analysis_text, block)
         injected.append(section)
@@ -1010,6 +1199,9 @@ async def generate_match_text_analysis(
     if psych_section not in missing and _is_section_thin(analysis_text, psych_section):
         logger.info("psych_thin_after_model")
         logger.info("Секция «Психологические факторы» слишком скудная — заменяем fallback-блоком")
+        psych_section_source = "fallback_template"
+        psych_reasons.append("psych_thin_after_model")
+        psych_reasons.append("psych_fallback_template_used")
         analysis_text = _remove_section(analysis_text, psych_section)
         block = _build_missing_section_block(psych_section, match_data, enriched_context)
         analysis_text = _inject_section_before_conclusion(analysis_text, block)
@@ -1028,6 +1220,22 @@ async def generate_match_text_analysis(
 
     # Повторная гарантия emoji в заголовках (после всех манипуляций)
     analysis_text = _ensure_section_emojis(analysis_text)
+
+    psych_body = _extract_section_body(analysis_text, PSYCH_SECTION) or ""
+    psych_chars = len(psych_body)
+    psych_sentences = _count_sentences(psych_body)
+    dominant_categories = _get_dominant_psych_categories(_extract_psych_signals(enriched_context), limit=3)
+    dominant_categories_str = ",".join(dominant_categories) if dominant_categories else "-"
+    reason_codes = list(dict.fromkeys(psych_reasons))
+    reason_codes_str = ",".join(reason_codes) if reason_codes else "-"
+    logger.info(
+        "psych_section_source=%s chars=%s sentences=%s dominant_categories=%s reasons=%s",
+        psych_section_source,
+        psych_chars,
+        psych_sentences,
+        dominant_categories_str,
+        reason_codes_str,
+    )
 
     return analysis_text
 

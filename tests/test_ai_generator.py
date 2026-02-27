@@ -2,6 +2,7 @@
 import asyncio
 import sys
 import os
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -277,6 +278,160 @@ class TestAnalysisPostprocessing:
         )
         assert detail_hits <= 1
         assert "/100" not in text
+
+    def test_render_psychological_fallback_soft_block_conclusion_phrases(self):
+        """Fallback 🧠 не должен звучать как финальный вывод с решающими клише."""
+        signals = [
+            "Мотивация: 76/100 — каждая ошибка может стать решающей",
+            "Давление таблицы: 69/100 — в итоге именно такие эпизоды часто все определяют",
+            "Реванш: 64/100 — это может стать решающим фактором в концовке",
+        ]
+        text = render_psychological_fallback(signals, "Arsenal", "Chelsea")
+        lowered = text.lower()
+        assert "может стать решающ" not in lowered
+        assert "в итоге именно" not in lowered
+        assert "решающей" not in lowered
+
+    def test_psych_soft_block_handles_rockovaya_phrases(self):
+        """Soft-block удаляет формулы вида «каждая ошибка может стать роковой»."""
+        source = (
+            "Каждая ошибка может стать роковой, и это может стать решающим фактором "
+            "в концовке при высокой плотности борьбы."
+        )
+        result = ai_generator._apply_psych_soft_block(source)
+        lowered = result.lower()
+        assert "роков" not in lowered
+        assert "решающ" not in lowered
+        assert (
+            "эмоциональную цену ошибок" in lowered
+            or "осторожности и темпе" in lowered
+        )
+
+    def test_render_psychological_fallback_lexical_repetition_limited(self):
+        """Повторы ключевой лексики в fallback 🧠 ограничены локальным постпроцессингом."""
+        signals = [
+            "Турнирная мотивация: 84/100 — давление и давление после серии ошибок добавляют напряжение",
+            "Серия: 79/100 — дополнительное давление повышает напряжение в концовке",
+            "Реванш: 74/100 — мотивация и мотивация держатся на максимуме",
+        ]
+        text = render_psychological_fallback(signals, "Arsenal", "Chelsea")
+        lowered = text.lower()
+        assert len(re.findall(r"\bдавлен\w*\b", lowered)) <= 2
+        assert len(re.findall(r"\bнапряж\w*\b", lowered)) <= 2
+        assert len(re.findall(r"\bмотивац\w*\b", lowered)) <= 2
+
+    def test_render_psychological_fallback_openings_vary_by_dominant_category(self):
+        """Старт fallback 🧠 зависит от доминирующей категории сигнала."""
+        cases = [
+            ["Дерби: 84/100 — принципиальное противостояние"],
+            ["Турнирная мотивация: 86/100 — высокая цена очков в таблице"],
+            ["Реванш: 82/100 — желание ответить за поражение в первом круге"],
+            ["Серия: 78/100 — четыре матча без побед усиливают фон"],
+            ["Травмы: 76/100 — несколько потерь в стартовом составе"],
+        ]
+        openings = []
+        for signals in cases:
+            text = render_psychological_fallback(signals, "Arsenal", "Chelsea")
+            opening = re.split(r"[.!?]+", text, maxsplit=1)[0].strip()
+            openings.append(opening)
+        assert len(set(openings)) >= 4
+
+    def test_psych_section_source_logged_as_model(self, monkeypatch, caplog):
+        """Если секция 🧠 от модели валидна, логируется psych_section_source=model."""
+        raw_text = (
+            "⚽ **Контекст матча**\nКонтекст матча в полном объеме.\n\n"
+            "📈 **Форма и турнирная ситуация**\nФорма команд описана достаточно подробно.\n\n"
+            "📊 **Статистика и игровые паттерны**\nСтатистика подтверждает равный характер пары.\n\n"
+            "🧠 **Психологические факторы**\n"
+            "Турнирная плотность на верхних местах добавляет эмоциональную нагрузку в каждом эпизоде, "
+            "поэтому обе стороны будут аккуратнее управлять риском после потерь мяча. "
+            "На фоне серии без побед важной становится реакция на неудачные отрезки и контроль темпа в концовке.\n\n"
+            "🔑 **Вывод**\nФинальный вывод по матчу."
+        )
+        fake_response = SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content=raw_text),
+            )],
+            model="deepseek-chat",
+        )
+        monkeypatch.setattr(
+            ai_generator.client.chat.completions,
+            "create",
+            AsyncMock(return_value=fake_response),
+        )
+        match_data = {"team1": "Arsenal", "team2": "Chelsea", "sport": "football"}
+
+        with caplog.at_level("INFO"):
+            asyncio.run(ai_generator.generate_match_text_analysis(match_data, ""))
+        messages = [rec.getMessage() for rec in caplog.records]
+        assert any("psych_section_source=model" in msg for msg in messages)
+
+    def test_psych_section_source_logged_as_missing_repair(self, monkeypatch, caplog):
+        """Если секция 🧠 отсутствует у модели, логируется psych_section_source=missing_repair."""
+        raw_text = (
+            "⚽ **Контекст матча**\nКонтекст матча в полном объеме.\n\n"
+            "📈 **Форма и турнирная ситуация**\nФорма команд описана достаточно подробно.\n\n"
+            "📊 **Статистика и игровые паттерны**\nСтатистика подтверждает равный характер пары.\n\n"
+            "🔑 **Вывод**\nФинальный вывод по матчу."
+        )
+        fake_response = SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content=raw_text),
+            )],
+            model="deepseek-chat",
+        )
+        monkeypatch.setattr(
+            ai_generator.client.chat.completions,
+            "create",
+            AsyncMock(return_value=fake_response),
+        )
+        match_data = {"team1": "Arsenal", "team2": "Chelsea", "sport": "football"}
+        enriched_context = (
+            "=== ПСИХОЛОГИЧЕСКИЕ ФАКТОРЫ ===\n"
+            "Дерби: 82/100 — лондонское противостояние\n"
+            "Мотивация: 74/100 — борьба за еврокубки\n"
+        )
+
+        with caplog.at_level("INFO"):
+            asyncio.run(ai_generator.generate_match_text_analysis(match_data, enriched_context))
+        messages = [rec.getMessage() for rec in caplog.records]
+        assert any("psych_section_source=missing_repair" in msg for msg in messages)
+        assert any("reasons=psych_missing_after_model,psych_fallback_template_used" in msg for msg in messages)
+
+    def test_psych_section_source_logged_as_fallback_template_for_thin(self, monkeypatch, caplog):
+        """Если секция 🧠 слишком короткая, логируется psych_section_source=fallback_template."""
+        raw_text = (
+            "⚽ **Контекст матча**\nКонтекст матча в полном объеме.\n\n"
+            "📈 **Форма и турнирная ситуация**\nФорма команд описана достаточно подробно.\n\n"
+            "📊 **Статистика и игровые паттерны**\nСтатистика подтверждает равный характер пары.\n\n"
+            "🧠 **Психологические факторы**\nКоротко.\n\n"
+            "🔑 **Вывод**\nФинальный вывод по матчу."
+        )
+        fake_response = SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content=raw_text),
+            )],
+            model="deepseek-chat",
+        )
+        monkeypatch.setattr(
+            ai_generator.client.chat.completions,
+            "create",
+            AsyncMock(return_value=fake_response),
+        )
+        match_data = {"team1": "Arsenal", "team2": "Chelsea", "sport": "football"}
+        enriched_context = (
+            "=== ПСИХОЛОГИЧЕСКИЕ ФАКТОРЫ ===\n"
+            "Серия: 79/100 — три матча без побед\n"
+        )
+
+        with caplog.at_level("INFO"):
+            asyncio.run(ai_generator.generate_match_text_analysis(match_data, enriched_context))
+        messages = [rec.getMessage() for rec in caplog.records]
+        assert any("psych_section_source=fallback_template" in msg for msg in messages)
+        assert any("reasons=psych_thin_after_model,psych_fallback_template_used" in msg for msg in messages)
 
     def test_ensure_section_emojis_adds_missing_key(self):
         """Заголовок «Вывод» без emoji 🔑 получает его автоматически."""
