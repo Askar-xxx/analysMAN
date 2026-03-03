@@ -158,3 +158,49 @@ def test_post_init_creates_and_post_shutdown_cancels_heartbeat_task(monkeypatch)
         assert remove_calls == ["main"]
 
     asyncio.run(_run())
+
+
+def test_main_registers_global_error_handler(monkeypatch):
+    added_handlers = []
+
+    class FakeApplication:
+        def __init__(self):
+            self.post_init = None
+            self.post_shutdown = None
+
+        def add_error_handler(self, handler):
+            added_handlers.append(handler)
+
+        def run_polling(self):
+            return None
+
+    class FakeBuilder:
+        def token(self, _token):
+            return self
+
+        def build(self):
+            return FakeApplication()
+
+    fake_application_factory = types.SimpleNamespace(builder=lambda: FakeBuilder())
+
+    monkeypatch.setattr(main, "Application", fake_application_factory)
+    monkeypatch.setattr(main.database, "init_db", lambda: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "user_handlers",
+        types.SimpleNamespace(setup_user_handlers=lambda app: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "payment_handlers",
+        types.SimpleNamespace(setup_payment_handlers=lambda app: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "admin_commands",
+        types.SimpleNamespace(setup_admin_handlers=lambda app: None),
+    )
+
+    main.main()
+
+    assert added_handlers == [main.error_handler]

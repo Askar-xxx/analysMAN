@@ -36,14 +36,16 @@ def get_recent_donations(limit=10):
         'Authorization': f'Bearer {DA_ACCESS_TOKEN}'
     }
 
+    safe_limit = max(1, min(int(limit or 10), 30))
+
     response = requests.get(
-        f'https://www.donationalerts.com/api/v1/alerts/donations?limit={limit}',
+        f'https://www.donationalerts.com/api/v1/alerts/donations?limit={safe_limit}',
         headers=headers
     )
     response.raise_for_status()
     data = response.json()
 
-    return data['data']
+    return list(data.get('data') or [])[:safe_limit]
 
 
 async def process_donation(donation_data):

@@ -19,6 +19,19 @@ logger = logging.getLogger(__name__)
 logging.getLogger('match_data_fetcher').setLevel(logging.WARNING)
 
 
+async def error_handler(update, context):
+    """Глобальный обработчик необработанных исключений PTB."""
+    update_repr = repr(update)
+    if len(update_repr) > 1000:
+        update_repr = f"{update_repr[:997]}..."
+
+    logger.error(
+        "Необработанное исключение PTB. update=%s",
+        update_repr,
+        exc_info=context.error,
+    )
+
+
 async def main_heartbeat_loop():
     """Отдельный heartbeat loop для liveliness-check Docker."""
     while True:
@@ -199,6 +212,7 @@ def main():
     setup_user_handlers(application)
     setup_payment_handlers(application)
     setup_admin_handlers(application)
+    application.add_error_handler(error_handler)
 
     print("Бот запущен...")
     application.run_polling()
