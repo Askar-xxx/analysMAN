@@ -1,29 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-Webhook сервер для приёма уведомлений от DonationAlerts.
+Вспомогательный Flask-сервер и HTTP endpoints проекта.
 
-Обрабатывает оплату анализов:
-1. Получает POST от DonationAlerts с данными о донате
-2. Извлекает token из комментария
-3. Находит pending purchase по token
-4. Проверяет сумму
-5. Генерирует анализ
-6. Отправляет пользователю через Telegram
+Прямой webhook-flow оплаты анализа через DonationAlerts отключён.
+Актуальная обработка донатов идёт через polling listener в da_polling.py.
 """
 import logging
-import hmac
-import hashlib
 import time
 import os
 import re
 from html import unescape
 from datetime import datetime
 from typing import Optional
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify
 import asyncio
 import database
-from config import DA_CLIENT_SECRET, TOKEN
-from utils import extract_token_from_message
+from config import TOKEN
 from telegram.error import BadRequest
 
 # Настройка логирования
@@ -408,30 +400,6 @@ def _build_text_delivery_fallback(match_dict: dict, analysis_text: str) -> str:
         "📝 Текстовый анализ:\n\n"
         f"{body}"
     )
-
-
-def verify_signature(payload_body, signature_header):
-    """
-    Проверка подписи webhook от DonationAlerts (HMAC SHA256).
-
-    Args:
-        payload_body: Тело запроса (bytes)
-        signature_header: Подпись из заголовка X-Signature
-
-    Returns:
-        bool: True если подпись валидна
-    """
-    if not DA_CLIENT_SECRET:
-        logger.error("DA_CLIENT_SECRET не настроен — проверка подписи невозможна")
-        return False
-
-    expected_signature = hmac.new(
-        DA_CLIENT_SECRET.encode('utf-8'),
-        payload_body,
-        hashlib.sha256
-    ).hexdigest()
-
-    return hmac.compare_digest(expected_signature, signature_header)
 
 
 async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_message_id=None):
@@ -981,158 +949,9 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
 
 @app.route('/webhook/donationalerts', methods=['POST'])
 def donationalerts_webhook():
-    """
-    Webhook endpoint для приёма уведомлений от DonationAlerts.
-
-    Ожидаемый формат JSON:
-    {
-        "id": "123456",           # ID события в DA
-        "amount": "150.00",       # Сумма в рублях (string)
-        "message": "ABC123XYZ",   # Комментарий с token
-        "username": "User",       # Имя донатера (опционально)
-        ...
-    }
-    """
-    try:
-        # Логируем запрос
-        logger.info("Получен webhook от DonationAlerts")
-        logger.info(f"Headers: {dict(request.headers)}")
-
-        # Проверка подписи (если настроена)
-        signature = request.headers.get('X-Signature')
-        if signature:
-            if not verify_signature(request.data, signature):
-                logger.warning("Неверная подпись webhook")
-                return jsonify({'error': 'Invalid signature'}), 403
-
-        # Парсинг JSON
-        data = request.get_json()
-        if not data:
-            logger.error("Пустой JSON в запросе")
-            return jsonify({'error': 'Empty JSON'}), 400
-
-        # Логируем без токена — он конфиденциальный
-        safe_log = {k: v for k, v in data.items() if k != 'message'}
-        if 'message' in data:
-            msg = str(data['message'] or '')
-            safe_log['message'] = msg[:6] + '***' if len(msg) > 6 else '***'
-        logger.info(f"Данные webhook: {safe_log}")
-
-        # Извлекаем данные
-        donation_id = data.get('id')
-        amount_str = data.get('amount')  # "150.00"
-        message = data.get('message', '')
-
-        if not donation_id or not amount_str:
-            logger.error("Отсутствуют обязательные поля (id, amount)")
-            return jsonify({'error': 'Missing required fields'}), 400
-
-        # Конвертируем сумму в копейки (integer)
-        try:
-            amount_rub = float(amount_str)
-            amount_kopeks = int(amount_rub * 100)
-        except (ValueError, TypeError):
-            logger.error(f"Неверный формат суммы: {amount_str}")
-            return jsonify({'error': 'Invalid amount format'}), 400
-
-        logger.info(f"Donation ID: {donation_id}, Amount: {amount_kopeks} копеек, Message: {message}")
-
-        # Извлекаем token из комментария
-        token = extract_token_from_message(message)
-        if not token:
-            logger.warning(f"Не найден token в сообщении: {message}")
-            return jsonify({'error': 'Token not found in message'}), 400
-
-        logger.info(f"Извлечён token: {token}")
-
-        # Сначала читаем purchase для проверки суммы и идемпотентности
-        conn = database.get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT id, user_id, match_id, amount, status, donation_event_id
-            FROM purchases
-            WHERE token = ?
-        ''', (token,))
-        purchase = cursor.fetchone()
-
-        if not purchase:
-            conn.close()
-            logger.warning(f"Purchase с token {token} не найден")
-            return jsonify({'error': 'Purchase not found'}), 404
-
-        # Идемпотентность: этот донат уже обрабатывали
-        if purchase['donation_event_id'] == donation_id:
-            conn.close()
-            logger.info(f"Donation {donation_id} уже обработан (идемпотентность)")
-            return jsonify({'status': 'ok', 'message': 'Already processed'}), 200
-
-        if purchase['status'] != 'pending':
-            conn.close()
-            logger.warning(f"Purchase с token {token} уже в статусе {purchase['status']}")
-            return jsonify({'error': 'Purchase not found or already paid'}), 404
-
-        purchase_id = purchase['id']
-        user_id = purchase['user_id']
-        match_id = purchase['match_id']
-        expected_amount = purchase['amount']
-
-        logger.info(
-            f"Найден purchase ID={purchase_id}, user={user_id},"
-            f" match={match_id}, expected_amount={expected_amount}"
-        )
-
-        # Проверяем сумму
-        if amount_kopeks != expected_amount:
-            conn.close()
-            logger.warning(f"Сумма не совпадает: получено {amount_kopeks}, ожидалось {expected_amount}")
-            return jsonify({'error': 'Amount mismatch', 'expected': expected_amount, 'received': amount_kopeks}), 400
-
-        logger.info(f"Сумма совпадает: {amount_kopeks} копеек")
-
-        # Атомарно забираем purchase: UPDATE только если status ещё 'pending'
-        # Это защищает от двух одновременных вебхуков на один токен
-        cursor.execute('''
-            UPDATE purchases
-            SET status = 'paid', donation_event_id = ?
-            WHERE id = ? AND status = 'pending'
-        ''', (donation_id, purchase_id))
-        rows_updated = cursor.rowcount
-        conn.commit()
-        conn.close()
-
-        if rows_updated == 0:
-            logger.warning(f"Purchase {purchase_id} уже был обработан другим процессом (race condition защита)")
-            return jsonify({'status': 'ok', 'message': 'Already processed'}), 200
-
-        logger.info(f"Purchase {purchase_id} обновлён: status='paid', donation_event_id={donation_id}")
-
-        # Получаем данные матча
-        match = database.get_match_by_id(match_id)
-        if not match:
-            logger.error(f"Матч {match_id} не найден в БД")
-            return jsonify({'error': 'Match not found'}), 404
-
-        match_dict = dict(match) if not isinstance(match, dict) else match
-
-        # Генерируем анализ и отправляем пользователю (асинхронно)
-        logger.info(f"Запуск генерации анализа для матча {match_id}...")
-
-        # Запускаем async функцию в новом event loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        success = loop.run_until_complete(generate_and_send_analysis(user_id, match_id, match_dict))
-        loop.close()
-
-        if success:
-            logger.info(f"✅ Webhook обработан успешно. Purchase {purchase_id} оплачен и анализ отправлен.")
-            return jsonify({'status': 'ok', 'purchase_id': purchase_id}), 200
-        else:
-            logger.error(f"❌ Ошибка генерации анализа для purchase {purchase_id}")
-            return jsonify({'status': 'error', 'message': 'Analysis generation failed'}), 500
-
-    except Exception as e:
-        logger.error(f"Ошибка обработки webhook: {e}", exc_info=True)
-        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
+    """Legacy endpoint: прямой webhook-оплаты анализа отключён."""
+    logger.warning("Получен запрос в legacy webhook DonationAlerts, но прямой payment-flow отключён.")
+    return jsonify({'error': 'Legacy donation webhook disabled'}), 410
 
 
 @app.route('/health', methods=['GET'])

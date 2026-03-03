@@ -29,6 +29,7 @@ nul
 
 # Logs
 *.log
+logs/
 *.txt
 !requirements.txt
 !WORKFLOW.txt

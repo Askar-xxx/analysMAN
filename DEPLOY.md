@@ -144,6 +144,9 @@ docker compose up -d --force-recreate
 # Статус
 docker compose -f ~/sports-bot/docker-compose.yml ps
 
+# Детали healthcheck
+docker inspect --format='{{json .State.Health}}' $(docker compose -f ~/sports-bot/docker-compose.yml ps -q bot)
+
 # Логи в реальном времени
 docker compose -f ~/sports-bot/docker-compose.yml logs -f
 
@@ -157,6 +160,62 @@ docker compose -f ~/sports-bot/docker-compose.yml down
 cd ~/sports-bot
 docker compose pull
 docker compose up -d --remove-orphans
+```
+
+---
+
+## Healthcheck контейнера
+
+Контейнер проверяет liveliness двух процессов:
+- `main.py`
+- `da_polling.py`
+
+Проверка идёт через heartbeat-файлы внутри контейнера.
+
+```bash
+# Статус контейнера и health
+docker compose -f ~/sports-bot/docker-compose.yml ps
+docker inspect --format='{{json .State.Health}}' $(docker compose -f ~/sports-bot/docker-compose.yml ps -q bot)
+
+# Проверить heartbeat-файлы
+docker compose -f ~/sports-bot/docker-compose.yml exec bot ls -la /app/temp/health
+```
+
+Если heartbeat одного из процессов перестал обновляться, контейнер перейдёт в `unhealthy`.
+
+---
+
+## Backup SQLite
+
+Бэкап выполняется на хосте сервера, не в контейнере.
+
+Ручной запуск:
+
+```bash
+bash ~/sports-bot/tools/backup_sqlite.sh
+```
+
+Скрипт:
+- делает backup через `sqlite3 .backup`
+- складывает копии в `~/sports-bot/backups`
+- хранит последние 7 backup-файлов
+
+Nightly cron на `04:15`:
+
+```bash
+15 4 * * * /bin/bash /root/sports-bot/tools/backup_sqlite.sh >> /root/sports-bot/logs/backup.log 2>&1
+```
+
+Восстановление:
+
+```bash
+cd ~/sports-bot
+docker compose -f ~/sports-bot/docker-compose.yml down
+cp sports_bot.db sports_bot.db.before_restore
+cp backups/sports_bot_YYYY-MM-DD.db sports_bot.db
+docker compose -f ~/sports-bot/docker-compose.yml up -d
+docker compose -f ~/sports-bot/docker-compose.yml ps
+docker compose -f ~/sports-bot/docker-compose.yml logs --tail=50
 ```
 
 ---

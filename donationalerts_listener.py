@@ -11,7 +11,7 @@ import ssl
 import websockets
 import requests
 import database
-from config import DA_ACCESS_TOKEN
+import config
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,7 +28,7 @@ def get_socket_connection_token():
         dict: {'token': '...', 'user_id': 123456}
     """
     headers = {
-        'Authorization': f'Bearer {DA_ACCESS_TOKEN}'
+        'Authorization': f'Bearer {config.DA_ACCESS_TOKEN}'
     }
 
     response = requests.get(
@@ -57,7 +57,7 @@ def get_centrifuge_subscribe_token(client_id, channel):
         str: Токен для подписки на канал
     """
     headers = {
-        'Authorization': f'Bearer {DA_ACCESS_TOKEN}',
+        'Authorization': f'Bearer {config.DA_ACCESS_TOKEN}',
         'Content-Type': 'application/json'
     }
 
@@ -181,124 +181,8 @@ async def process_donation(donation_data):
             await _process_topup(topup, amount_kopeks, donation_id)
             return
 
-        # 2. Ищем pending purchase по token (покупка анализа)
-        purchase = database.get_purchase_by_token(token)
-
-        if not purchase:
-            # Проверяем идемпотентность
-            conn = database.get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT donation_event_id, status FROM purchases WHERE token = ?
-            ''', (token,))
-            existing = cursor.fetchone()
-            conn.close()
-
-            if existing and existing['donation_event_id'] == str(donation_id):
-                logger.info(f"Donation {donation_id} уже обработан (идемпотентность)")
-                return
-
-            logger.warning(f"Pending purchase с token {token} не найден")
-            return
-
-        purchase_id = purchase['id']
-        user_id = purchase['user_id']
-        match_id = purchase['match_id']
-        expected_amount = purchase['amount']
-        # sqlite3.Row не поддерживает .get(), используем прямую индексацию
-        instruction_message_id = purchase['instruction_message_id']
-
-        logger.info(f"✅ Найден purchase ID={purchase_id}, user={user_id}, match={match_id}")
-
-        # Проверяем сумму
-        if amount_kopeks != expected_amount:
-            logger.warning(f"⚠️ Сумма не совпадает: получено {amount_kopeks}, ожидалось {expected_amount}")
-
-            # Отправляем уведомление пользователю о недостаточной сумме
-            from telegram import Bot
-            from config import TOKEN
-            bot = Bot(token=TOKEN)
-
-            expected_rub = expected_amount / 100
-            received_rub = amount_kopeks / 100
-
-            error_text = (
-                "❌ <b>Недостаточно средств</b>\n\n"
-                f"Получено: <b>{received_rub:.0f} руб.</b>\n"
-                f"Требуется: <b>{expected_rub:.0f} руб.</b>\n\n"
-                "Ваш заказ остаётся активным. Пожалуйста, отправьте донат "
-                f"на правильную сумму (<b>{expected_rub:.0f} руб.</b>) с тем же кодом."
-            )
-
-            try:
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=error_text,
-                    parse_mode='HTML'
-                )
-                logger.info(f"Отправлено уведомление о недостаточной сумме пользователю {user_id}")
-            except Exception as e:
-                logger.error(f"Не удалось отправить уведомление о недостаточной сумме: {e}")
-
-            return
-
-        logger.info(f"💰 Сумма совпадает: {amount_kopeks} копеек")
-
-        # Получаем данные матча
-        match = database.get_match_by_id(match_id)
-        if not match:
-            logger.error(f"❌ Матч {match_id} не найден в БД")
-            return
-
-        match_dict = dict(match) if not isinstance(match, dict) else match
-
-        # Генерируем анализ и отправляем пользователю
-        logger.info(f"🤖 Запуск генерации анализа для матча {match_id}...")
-
-        from webhook_server import generate_and_send_analysis
-        success = await generate_and_send_analysis(
-            user_id, match_id, match_dict, instruction_message_id
-        )
-
-        if success:
-            # Обновляем purchase на status='paid' ТОЛЬКО после успешной генерации
-            conn = database.get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute('''
-                UPDATE purchases
-                SET status = 'paid', donation_event_id = ?
-                WHERE id = ?
-            ''', (str(donation_id), purchase_id))
-            conn.commit()
-            conn.close()
-
-            logger.info(f"✅ Донат обработан успешно! Purchase {purchase_id} оплачен и анализ отправлен.")
-        else:
-            logger.error(f"❌ Ошибка генерации анализа для purchase {purchase_id}")
-
-            # Отправляем уведомление пользователю об ошибке
-            from telegram import Bot
-            from config import TOKEN
-            bot = Bot(token=TOKEN)
-
-            error_text = (
-                "❌ <b>Ошибка генерации анализа</b>\n\n"
-                f"🏆 Матч: <b>{match_dict['team1']} vs {match_dict['team2']}</b>\n\n"
-                "К сожалению, произошла ошибка при создании анализа. "
-                "Ваш заказ остаётся активным — попробуйте получить анализ через "
-                "раздел «Мои анализы» через несколько минут.\n\n"
-                "Если проблема повторится, обратитесь в поддержку."
-            )
-
-            try:
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=error_text,
-                    parse_mode='HTML'
-                )
-                logger.info(f"Отправлено уведомление об ошибке генерации пользователю {user_id}")
-            except Exception as e:
-                logger.error(f"Не удалось отправить уведомление об ошибке: {e}")
+        logger.warning(f"Token {token} не найден в balance_topups")
+        return
 
     except Exception as e:
         logger.error(f"❌ Ошибка обработки доната: {e}", exc_info=True)
@@ -439,14 +323,26 @@ async def listen_donations():
 
 async def main():
     """Главная функция listener"""
-    if not DA_ACCESS_TOKEN:
-        logger.error("❌ DA_ACCESS_TOKEN не настроен в config.py")
+    if not config.DA_ACCESS_TOKEN:
+        logger.error("❌ config.DA_ACCESS_TOKEN не настроен в config.py")
         logger.error("Запустите сначала: python da_oauth.py")
         return
 
     while True:
         try:
             await listen_donations()
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code == 401:
+                logger.warning("DA токен протух (401), пробуем обновить...")
+                try:
+                    from da_oauth import refresh_access_token
+                    refresh_access_token()
+                    logger.info("DA токен успешно обновлён, переподключение...")
+                except Exception as refresh_err:
+                    logger.error(f"Не удалось обновить DA токен: {refresh_err}")
+            else:
+                logger.error(f"❌ HTTP ошибка: {e}", exc_info=True)
+            await asyncio.sleep(5)
         except Exception as e:
             logger.error(f"❌ Ошибка: {e}", exc_info=True)
             logger.info("Переподключение через 5 секунд...")

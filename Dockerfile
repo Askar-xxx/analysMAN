@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Директории для персистентных данных (монтируются как volume)
-RUN mkdir -p analysis_cache temp
+RUN mkdir -p analysis_cache temp logs
 
 # По умолчанию запускаем бота; для listener переопределяется в docker-compose
 CMD ["python", "main.py"]
