@@ -1023,11 +1023,17 @@ def complete_balance_topup(topup_id, donation_event_id, received_amount_rub=None
             else topup['amount_rub']
         )
 
+        # Атомарный захват: только один процесс переведёт pending → paid
         cursor.execute('''
             UPDATE balance_topups
             SET status = 'paid', donation_event_id = ?, amount_rub = ?
-            WHERE id = ?
+            WHERE id = ? AND status = 'pending'
         ''', (donation_event_id, amount_to_credit, topup_id))
+
+        if cursor.rowcount == 0:
+            # Другой процесс уже обработал этот topup
+            conn.commit()
+            return False
 
         cursor.execute('''
             UPDATE users SET balance = COALESCE(balance, 0) + ?

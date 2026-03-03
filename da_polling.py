@@ -37,7 +37,8 @@ def get_recent_donations(limit=10):
 
     response = requests.get(
         f'https://www.donationalerts.com/api/v1/alerts/donations?limit={limit}',
-        headers=headers
+        headers=headers,
+        timeout=15
     )
     response.raise_for_status()
     data = response.json()
