@@ -668,7 +668,9 @@ def run_coverage_check(
     sleep_seconds: float = 1.2
 ) -> Dict[str, int]:
     """
-    Проверяет coverage для матчей с coverage_ok IS NULL.
+    Проверяет coverage для новых матчей (coverage_ok IS NULL)
+    и перепроверяет ранее скрытые (coverage_ok = 0) старше 3 часов
+    или без coverage_checked_at.
     Обновляет coverage_ok и coverage_checked_at для каждого матча.
     """
     from match_data_fetcher import MatchDataFetcher
@@ -689,12 +691,22 @@ def run_coverage_check(
     _ensure_coverage_columns(cursor)
     conn.commit()
 
+    recheck_cutoff = (
+        datetime.now() - timedelta(hours=3)
+    ).strftime('%Y-%m-%d %H:%M:%S')
     cursor.execute('''
         SELECT *
         FROM matches
         WHERE coverage_ok IS NULL
+           OR (
+                coverage_ok = 0
+                AND (
+                    coverage_checked_at IS NULL
+                    OR coverage_checked_at < ?
+                )
+           )
         ORDER BY match_date, match_time
-    ''')
+    ''', (recheck_cutoff,))
     matches = cursor.fetchall()
 
     if not matches:

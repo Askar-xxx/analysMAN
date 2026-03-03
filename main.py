@@ -37,7 +37,8 @@ def _sync_matches_job():
 
     syncer = SportsDBSyncer(
         mode='top3',
-        limit=15
+        limit=15,
+        min_coverage_rows=6
     )
     matches = syncer.sync()
     results = syncer.save_matches_to_db(matches)
