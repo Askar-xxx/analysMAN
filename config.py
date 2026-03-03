@@ -54,6 +54,7 @@ def _env_to_int(name: str, default: int) -> int:
 
 # === Telegram ===
 TOKEN = os.environ.get('TELEGRAM_TOKEN', '')
+ALERT_CHAT_ID = _env_to_int('ALERT_CHAT_ID', 847033482)
 
 # === AI (DeepSeek) ===
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', '')

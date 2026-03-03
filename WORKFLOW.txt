@@ -129,6 +129,7 @@
 
 Статус бота (запущен или нет):
   docker compose -f ~/sports-bot/docker-compose.yml ps
+  docker inspect --format='{{json .State.Health}}' $(docker compose -f ~/sports-bot/docker-compose.yml ps -q bot)
 
 Логи в реальном времени (Ctrl+C для выхода):
   docker compose -f ~/sports-bot/docker-compose.yml logs -f
@@ -149,6 +150,32 @@
   cd ~/sports-bot
   docker compose pull
   docker compose up -d --remove-orphans
+
+Healthcheck:
+  Контейнер проверяет heartbeat двух процессов:
+    - main.py
+    - da_polling.py
+  Если heartbeat одного из процессов перестал обновляться, контейнер станет unhealthy.
+
+Проверить heartbeat-файлы внутри контейнера:
+  docker compose -f ~/sports-bot/docker-compose.yml exec bot ls -la /app/temp/health
+
+Backup SQLite вручную:
+  bash ~/sports-bot/tools/backup_sqlite.sh
+
+Папка с backup-файлами:
+  ~/sports-bot/backups
+
+Cron на ежедневный backup в 04:15:
+  15 4 * * * /bin/bash /root/sports-bot/tools/backup_sqlite.sh >> /root/sports-bot/logs/backup.log 2>&1
+
+Восстановление из backup:
+  cd ~/sports-bot
+  docker compose -f ~/sports-bot/docker-compose.yml down
+  cp sports_bot.db sports_bot.db.before_restore
+  cp backups/sports_bot_YYYY-MM-DD.db sports_bot.db
+  docker compose -f ~/sports-bot/docker-compose.yml up -d
+  docker compose -f ~/sports-bot/docker-compose.yml logs --tail=50
 
 
 ================================================================================

@@ -5,15 +5,30 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 import database
 from config import TOKEN
+from healthcheck_utils import (
+    HEARTBEAT_INTERVAL_SECONDS,
+    remove_heartbeat,
+    touch_heartbeat,
+)
+from logging_utils import setup_logging
 
 # Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+setup_logging('bot')
 logger = logging.getLogger(__name__)
 # Подавляем шумные per-match логи, чтобы консоль не засорялась.
 logging.getLogger('match_data_fetcher').setLevel(logging.WARNING)
+
+
+async def main_heartbeat_loop():
+    """Отдельный heartbeat loop для liveliness-check Docker."""
+    while True:
+        try:
+            touch_heartbeat('main')
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Не удалось обновить heartbeat main.py: %s", e)
+        await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
 
 
 def _sync_matches_job():
@@ -33,9 +48,10 @@ def _sync_matches_job():
 def _cleanup_job():
     """Синхронный job очистки для запуска в отдельном потоке."""
     expired_topups = database.expire_pending_topups()
+    expired_pending_purchases = database.expire_old_pending_purchases()
     deleted_purchases = database.cleanup_old_purchases()
     deleted_matches = database.delete_finished_matches_without_purchases()
-    return expired_topups, deleted_purchases, deleted_matches
+    return expired_topups, expired_pending_purchases, deleted_purchases, deleted_matches
 
 
 async def scheduled_sync_matches():
@@ -72,7 +88,10 @@ async def scheduled_cleanup():
     from datetime import datetime
     logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] APScheduler: ЗАПУСК очистки старых анализов...")
     try:
-        expired_topups, deleted_purchases, deleted_matches = await asyncio.to_thread(_cleanup_job)
+        expired_topups, expired_pending_purchases, deleted_purchases, deleted_matches = await asyncio.to_thread(
+            _cleanup_job
+        )
+        logger.info(f"expired_pending_purchases={expired_pending_purchases}")
         logger.info(
             f"Очистка завершена: expired_topups={expired_topups}, "
             f"покупок={deleted_purchases}, матчей={deleted_matches}"
@@ -83,6 +102,14 @@ async def scheduled_cleanup():
 
 async def post_init(application):
     """Callback после инициализации бота (в контексте event loop)"""
+    try:
+        touch_heartbeat('main')
+    except Exception as e:
+        logger.warning("Не удалось создать стартовый heartbeat main.py: %s", e)
+    application.bot_data['main_heartbeat_task'] = asyncio.create_task(
+        main_heartbeat_loop()
+    )
+
     # Настройка APScheduler для периодической синхронизации
     scheduler = AsyncIOScheduler()
 
@@ -136,10 +163,21 @@ async def post_init(application):
 
 async def post_shutdown(application):
     """Callback перед остановкой бота"""
+    heartbeat_task = application.bot_data.get('main_heartbeat_task')
+    if heartbeat_task:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
+        application.bot_data.pop('main_heartbeat_task', None)
+
     scheduler = application.bot_data.get('scheduler')
     if scheduler:
         scheduler.shutdown(wait=False)
         logger.info("APScheduler остановлен")
+
+    remove_heartbeat('main')
 
 
 def main():

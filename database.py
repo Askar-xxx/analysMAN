@@ -1,5 +1,6 @@
 import sqlite3
 import logging
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
@@ -23,13 +24,30 @@ def _get_system_admin_ids():
 
 
 def get_db_connection():
+    """Legacy: предпочитайте get_db() context manager."""
     conn = sqlite3.connect('sports_bot.db', check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 
-def init_db():
+@contextmanager
+def get_db():
+    """Context manager для безопасного использования БД с WAL mode."""
     conn = get_db_connection()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def init_db():
+    with get_db() as conn:
+        _init_db_tables(conn)
+    print("База данных инициализирована")
+
+
+def _init_db_tables(conn):
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS matches (
@@ -89,6 +107,7 @@ def init_db():
             user_id INTEGER NOT NULL,
             match_id INTEGER NOT NULL,
             purchase_date TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             token TEXT UNIQUE,
             status TEXT DEFAULT 'pending',
             amount REAL,
@@ -196,6 +215,7 @@ def init_db():
         ('token', 'TEXT'),
         ('status', "TEXT DEFAULT 'paid'"),
         ('amount', 'INTEGER'),
+        ('created_at', 'TEXT'),
         ('expires_at', 'TEXT'),
         ('donation_event_id', 'TEXT'),
     ]
@@ -206,6 +226,14 @@ def init_db():
                 print(f"Добавлено поле {column_name} в таблицу purchases")
             except sqlite3.OperationalError as e:
                 print(f"Не удалось добавить поле {column_name}: {e}")
+
+    cursor.execute(
+        '''
+        UPDATE purchases
+        SET created_at = COALESCE(NULLIF(created_at, ''), purchase_date, CURRENT_TIMESTAMP)
+        WHERE created_at IS NULL OR created_at = ''
+        '''
+    )
 
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_purchases_token ON purchases(token)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_purchases_status ON purchases(status)')
@@ -243,43 +271,39 @@ def init_db():
         )
 
     conn.commit()
-    conn.close()
-    print("База данных инициализирована")
 
 
 # ОБНОВЛЕННАЯ ФУНКЦИЯ ДОБАВЛЕНИЯ МАТЧА
 def add_match(sport, team1, team2, match_date, match_time,
               analysis_text=None, price=150, league=None,
               api_event_id=None):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO matches (sport, team1, team2, match_date, match_time,
-                   analysis_text, price, league, api_event_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (sport, team1, team2, match_date, match_time,
-          analysis_text, price, league, api_event_id))
-    match_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return match_id
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO matches (sport, team1, team2, match_date, match_time,
+                       analysis_text, price, league, api_event_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (sport, team1, team2, match_date, match_time,
+              analysis_text, price, league, api_event_id))
+        match_id = cursor.lastrowid
+        conn.commit()
+        return match_id
 
 
 # ОБНОВЛЕННАЯ ФУНКЦИЯ СОЗДАНИЯ МАТЧА (для админов)
 def create_match(sport, team1, team2, match_date, match_time,
                  price=150, league=None):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO matches (sport, team1, team2, match_date, match_time,
-                   price, league)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    ''', (sport, team1, team2, match_date, match_time,
-          price, league))
-    match_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return match_id
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO matches (sport, team1, team2, match_date, match_time,
+                       price, league)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (sport, team1, team2, match_date, match_time,
+              price, league))
+        match_id = cursor.lastrowid
+        conn.commit()
+        return match_id
 
 
 # ФУНКЦИЯ ДЛЯ СИНХРОНИЗАЦИИ (новая)
@@ -290,212 +314,190 @@ def sync_match_from_api(match_data):
     - sport, team1, team2, match_date, match_time
     - league, api_event_id (опционально)
     """
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    # Проверяем, существует ли уже матч с таким api_event_id
-    api_event_id = match_data.get('api_event_id')
-    if api_event_id:
-        cursor.execute('SELECT id FROM matches WHERE api_event_id = ?', (api_event_id,))
+    with get_db() as conn:
+        cursor = conn.cursor()
+        # Проверяем, существует ли уже матч с таким api_event_id
+        api_event_id = match_data.get('api_event_id')
+        if api_event_id:
+            cursor.execute('SELECT id FROM matches WHERE api_event_id = ?', (api_event_id,))
+            existing = cursor.fetchone()
+            if existing:
+                return existing['id'], False  # ID, is_new=False
+        # Проверяем по командам и дате (резервный вариант)
+        cursor.execute('''
+            SELECT id FROM matches
+            WHERE team1 = ? AND team2 = ? AND match_date = ?
+        ''', (match_data['team1'], match_data['team2'], match_data['match_date']))
         existing = cursor.fetchone()
         if existing:
-            conn.close()
-            return existing['id'], False  # ID, is_new=False
-    # Проверяем по командам и дате (резервный вариант)
-    cursor.execute('''
-        SELECT id FROM matches
-        WHERE team1 = ? AND team2 = ? AND match_date = ?
-    ''', (match_data['team1'], match_data['team2'], match_data['match_date']))
-    existing = cursor.fetchone()
-    if existing:
-        conn.close()
-        return existing['id'], False
-    # Добавляем новый матч
-    cursor.execute('''
-        INSERT INTO matches
-        (sport, team1, team2, match_date, match_time,
-         league, api_event_id, price)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        match_data.get('sport', 'football'),
-        match_data['team1'],
-        match_data['team2'],
-        match_data['match_date'],
-        match_data['match_time'],
-        match_data.get('league'),
-        match_data.get('api_event_id'),
-        match_data.get('price', 150)
-    ))
-    match_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return match_id, True  # ID, is_new=True
+            return existing['id'], False
+        # Добавляем новый матч
+        cursor.execute('''
+            INSERT INTO matches
+            (sport, team1, team2, match_date, match_time,
+             league, api_event_id, price)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            match_data.get('sport', 'football'),
+            match_data['team1'],
+            match_data['team2'],
+            match_data['match_date'],
+            match_data['match_time'],
+            match_data.get('league'),
+            match_data.get('api_event_id'),
+            match_data.get('price', 150)
+        ))
+        match_id = cursor.lastrowid
+        conn.commit()
+        return match_id, True  # ID, is_new=True
 
 
 # ОБНОВЛЕННАЯ ФУНКЦИЯ ПОЛУЧЕНИЯ МАТЧА
 def get_match_by_id(match_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM matches WHERE id = ?', (match_id,))
-    match = cursor.fetchone()
-    conn.close()
-    return match
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM matches WHERE id = ?', (match_id,))
+        return cursor.fetchone()
 
 
 # ОБНОВЛЕННАЯ ФУНКЦИЯ ПОЛУЧЕНИЯ ВСЕХ МАТЧЕЙ
 def get_all_matches():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT * FROM matches
-        ORDER BY match_date DESC, match_time DESC
-    ''')
-    matches = cursor.fetchall()
-    conn.close()
-    return matches
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT * FROM matches
+            ORDER BY match_date DESC, match_time DESC
+        ''')
+        return cursor.fetchall()
 
 
 # ОБНОВЛЕННАЯ ФУНКЦИЯ ПОЛУЧЕНИЯ МАТЧЕЙ ПО ДАТЕ
 def get_matches_by_date(sport, match_date):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT * FROM matches
-        WHERE sport = ? AND match_date = ? AND is_active = 1
-        ORDER BY match_time
-    ''', (sport, match_date))
-    matches = cursor.fetchall()
-    conn.close()
-    return matches
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT * FROM matches
+            WHERE sport = ? AND match_date = ? AND is_active = 1
+            ORDER BY match_time
+        ''', (sport, match_date))
+        return cursor.fetchall()
 
 
 # НОВАЯ ФУНКЦИЯ: Проверка структуры БД
 def check_database_structure():
     """Проверить и исправить структуру базы данных"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    print("Проверка структуры базы данных...")
-    # Проверяем таблицу matches
-    cursor.execute("PRAGMA table_info(matches)")
-    columns = cursor.fetchall()
-    print("Таблица 'matches':")
-    required_columns = {
-        'id': 'INTEGER PRIMARY KEY',
-        'sport': 'TEXT',
-        'team1': 'TEXT',
-        'team2': 'TEXT',
-        'match_date': 'TEXT',
-        'match_time': 'TEXT',
-        'league': 'TEXT',
-        'venue': 'TEXT',
-        'api_event_id': 'TEXT',
-        'status': 'TEXT',
-        'analysis_text': 'TEXT',
-        'price': 'INTEGER',
-        'is_active': 'BOOLEAN',
-        'created_at': 'TEXT'
-    }
-    existing_columns = {}
-    for col in columns:
-        existing_columns[col[1]] = col[2]
-        print(f"  - {col[1]}: {col[2]}")
-    # Проверяем отсутствующие столбцы
-    missing_columns = []
-    for col_name, col_type in required_columns.items():
-        if col_name not in existing_columns:
-            missing_columns.append((col_name, col_type))
-    if missing_columns:
-        print("\nОтсутствующие столбцы:")
-        for col_name, col_type in missing_columns:
-            print(f"  - {col_name}: {col_type}")
-        # Добавляем недостающие столбцы
-        print("\nДобавление недостающих столбцов...")
-        for col_name, col_type in missing_columns:
-            try:
-                cursor.execute(f'ALTER TABLE matches ADD COLUMN {col_name} {col_type}')
-                print(f"Добавлен столбец: {col_name}")
-            except Exception as e:
-                print(f"Ошибка при добавлении {col_name}: {e}")
-    else:
-        print("Все необходимые столбцы присутствуют")
-    conn.commit()
-    conn.close()
-    return len(missing_columns) == 0
+    with get_db() as conn:
+        cursor = conn.cursor()
+        print("Проверка структуры базы данных...")
+        cursor.execute("PRAGMA table_info(matches)")
+        columns = cursor.fetchall()
+        print("Таблица 'matches':")
+        required_columns = {
+            'id': 'INTEGER PRIMARY KEY',
+            'sport': 'TEXT',
+            'team1': 'TEXT',
+            'team2': 'TEXT',
+            'match_date': 'TEXT',
+            'match_time': 'TEXT',
+            'league': 'TEXT',
+            'venue': 'TEXT',
+            'api_event_id': 'TEXT',
+            'status': 'TEXT',
+            'analysis_text': 'TEXT',
+            'price': 'INTEGER',
+            'is_active': 'BOOLEAN',
+            'created_at': 'TEXT'
+        }
+        existing_columns = {}
+        for col in columns:
+            existing_columns[col[1]] = col[2]
+            print(f"  - {col[1]}: {col[2]}")
+        missing_columns = []
+        for col_name, col_type in required_columns.items():
+            if col_name not in existing_columns:
+                missing_columns.append((col_name, col_type))
+        if missing_columns:
+            print("\nОтсутствующие столбцы:")
+            for col_name, col_type in missing_columns:
+                print(f"  - {col_name}: {col_type}")
+            print("\nДобавление недостающих столбцов...")
+            for col_name, col_type in missing_columns:
+                try:
+                    cursor.execute(f'ALTER TABLE matches ADD COLUMN {col_name} {col_type}')
+                    print(f"Добавлен столбец: {col_name}")
+                except Exception as e:
+                    print(f"Ошибка при добавлении {col_name}: {e}")
+        else:
+            print("Все необходимые столбцы присутствуют")
+        conn.commit()
+        return len(missing_columns) == 0
 
 
 def get_purchased_matches_by_user(user_id):
     """Получить все купленные матчи пользователя (только оплаченные)"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT m.*, p.purchase_date
-        FROM matches m
-        JOIN purchases p ON m.id = p.match_id
-        WHERE p.user_id = ? AND p.status = 'paid'
-        ORDER BY m.match_date DESC, m.match_time DESC
-    ''', (user_id,))
-    matches = cursor.fetchall()
-    conn.close()
-    return matches
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT m.*, p.purchase_date
+            FROM matches m
+            JOIN purchases p ON m.id = p.match_id
+            WHERE p.user_id = ? AND p.status = 'paid'
+            ORDER BY m.match_date DESC, m.match_time DESC
+        ''', (user_id,))
+        return cursor.fetchall()
 
 
 def get_purchased_matches_by_sport(user_id, sport):
     """Получить купленные матчи пользователя по виду спорта (только оплаченные)"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT m.*, p.purchase_date
-        FROM matches m
-        JOIN purchases p ON m.id = p.match_id
-        WHERE p.user_id = ? AND m.sport = ? AND p.status = 'paid'
-        ORDER BY m.match_date DESC, m.match_time DESC
-    ''', (user_id, sport))
-    matches = cursor.fetchall()
-    conn.close()
-    return matches
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT m.*, p.purchase_date
+            FROM matches m
+            JOIN purchases p ON m.id = p.match_id
+            WHERE p.user_id = ? AND m.sport = ? AND p.status = 'paid'
+            ORDER BY m.match_date DESC, m.match_time DESC
+        ''', (user_id, sport))
+        return cursor.fetchall()
 
 
 def get_purchased_dates_by_sport(user_id, sport):
     """Получить даты купленных матчей по виду спорта (только оплаченные)"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT DISTINCT m.match_date
-        FROM matches m
-        JOIN purchases p ON m.id = p.match_id
-        WHERE p.user_id = ? AND m.sport = ? AND p.status = 'paid'
-        ORDER BY m.match_date DESC
-    ''', (user_id, sport))
-    dates = cursor.fetchall()
-    conn.close()
-    return [date['match_date'] for date in dates]
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT DISTINCT m.match_date
+            FROM matches m
+            JOIN purchases p ON m.id = p.match_id
+            WHERE p.user_id = ? AND m.sport = ? AND p.status = 'paid'
+            ORDER BY m.match_date DESC
+        ''', (user_id, sport))
+        return [date['match_date'] for date in cursor.fetchall()]
 
 
 def get_today_matches(sport):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    today = datetime.now().strftime('%Y-%m-%d')
-    cursor.execute('''
-        SELECT * FROM matches
-        WHERE sport = ? AND match_date = ? AND is_active = 1
-        ORDER BY match_time
-    ''', (sport, today))
-    matches = cursor.fetchall()
-    conn.close()
-    return matches
+    with get_db() as conn:
+        cursor = conn.cursor()
+        today = datetime.now().strftime('%Y-%m-%d')
+        cursor.execute('''
+            SELECT * FROM matches
+            WHERE sport = ? AND match_date = ? AND is_active = 1
+            ORDER BY match_time
+        ''', (sport, today))
+        return cursor.fetchall()
 
 
 def get_today_tomorrow_matches(sport):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    today = datetime.now().strftime('%Y-%m-%d')
-    tomorrow_date = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
-    cursor.execute('''
-        SELECT * FROM matches
-        WHERE sport = ? AND match_date IN (?, ?) AND is_active = 1
-        ORDER BY match_date, match_time
-    ''', (sport, today, tomorrow_date))
-    matches = cursor.fetchall()
-    conn.close()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        today = datetime.now().strftime('%Y-%m-%d')
+        tomorrow_date = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+        cursor.execute('''
+            SELECT * FROM matches
+            WHERE sport = ? AND match_date IN (?, ?) AND is_active = 1
+            ORDER BY match_date, match_time
+        ''', (sport, today, tomorrow_date))
+        matches = cursor.fetchall()
     # Разделяем матчи по дням
     today_matches = []
     tomorrow_matches = []
@@ -509,103 +511,96 @@ def get_today_tomorrow_matches(sport):
 
 # Функция для получения доступных дат с матчами (сегодня + 7 дней вперед)
 def get_available_dates_with_matches(sport):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    today = datetime.now().strftime('%Y-%m-%d')
-    week_later = (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d')
-    cursor.execute('''
-        SELECT DISTINCT match_date
-        FROM matches
-        WHERE sport = ? AND match_date >= ? AND match_date <= ? AND is_active = 1
-          AND coverage_ok = 1
-        ORDER BY match_date
-    ''', (sport, today, week_later))
-    dates = cursor.fetchall()
-    conn.close()
-    return [date['match_date'] for date in dates]
+    with get_db() as conn:
+        cursor = conn.cursor()
+        today = datetime.now().strftime('%Y-%m-%d')
+        week_later = (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d')
+        cursor.execute('''
+            SELECT DISTINCT match_date
+            FROM matches
+            WHERE sport = ? AND match_date >= ? AND match_date <= ? AND is_active = 1
+              AND coverage_ok = 1
+            ORDER BY match_date
+        ''', (sport, today, week_later))
+        return [date['match_date'] for date in cursor.fetchall()]
 
 
 def update_match_analysis(match_id, analysis_text, png_path=None):
     """Обновляет текст анализа и опционально путь к PNG."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    if png_path:
-        cursor.execute('''
-            UPDATE matches
-            SET analysis_text = ?, analysis_png_path = ?
-            WHERE id = ?
-        ''', (analysis_text, png_path, match_id))
-    else:
-        cursor.execute('''
-            UPDATE matches
-            SET analysis_text = ?
-            WHERE id = ?
-        ''', (analysis_text, match_id))
-    conn.commit()
-    conn.close()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        if png_path:
+            cursor.execute('''
+                UPDATE matches
+                SET analysis_text = ?, analysis_png_path = ?
+                WHERE id = ?
+            ''', (analysis_text, png_path, match_id))
+        else:
+            cursor.execute('''
+                UPDATE matches
+                SET analysis_text = ?
+                WHERE id = ?
+            ''', (analysis_text, match_id))
+        conn.commit()
 
 
 def delete_match(match_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM matches WHERE id = ?', (match_id,))
-    conn.commit()
-    conn.close()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM matches WHERE id = ?', (match_id,))
+        conn.commit()
 
 
 # Функции для пользователей
 def get_or_create_user(user_id, username=None):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
-    user = cursor.fetchone()
-    needs_commit = False
-
-    if not user:
-        from config import ANALYSIS_PRICE_RUB
-        welcome_bonus = int(ANALYSIS_PRICE_RUB)
-        cursor.execute('''
-            INSERT INTO users (user_id, username, balance, total_analysis_bought)
-            VALUES (?, ?, ?, 0)
-        ''', (user_id, username, welcome_bonus))
-        needs_commit = True
+    with get_db() as conn:
+        cursor = conn.cursor()
         cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
         user = cursor.fetchone()
-    elif username and user['username'] != username:
-        cursor.execute(
-            'UPDATE users SET username = ? WHERE user_id = ?',
-            (username, user_id)
-        )
-        needs_commit = True
+        needs_commit = False
 
-    # Если пользователь админ, синхронизируем username в таблице admins
-    # (актуально для системных админов из .env и уже добавленных админов).
-    if is_admin(user_id):
-        cursor.execute('SELECT user_id, username FROM admins WHERE user_id = ?', (user_id,))
-        admin_row = cursor.fetchone()
-        if admin_row:
-            if username and admin_row['username'] != username:
-                cursor.execute(
-                    'UPDATE admins SET username = ? WHERE user_id = ?',
-                    (username, user_id)
-                )
-                needs_commit = True
-        else:
+        if not user:
+            from config import ANALYSIS_PRICE_RUB
+            welcome_bonus = int(ANALYSIS_PRICE_RUB)
+            cursor.execute('''
+                INSERT INTO users (user_id, username, balance, total_analysis_bought)
+                VALUES (?, ?, ?, 0)
+            ''', (user_id, username, welcome_bonus))
+            needs_commit = True
+            cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+            user = cursor.fetchone()
+        elif username and user['username'] != username:
             cursor.execute(
-                '''
-                INSERT OR IGNORE INTO admins (user_id, username, added_by)
-                VALUES (?, ?, NULL)
-                ''',
-                (user_id, username)
+                'UPDATE users SET username = ? WHERE user_id = ?',
+                (username, user_id)
             )
             needs_commit = True
 
-    if needs_commit:
-        conn.commit()
-        cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
-        user = cursor.fetchone()
-    conn.close()
-    return user
+        if is_admin(user_id):
+            cursor.execute('SELECT user_id, username FROM admins WHERE user_id = ?', (user_id,))
+            admin_row = cursor.fetchone()
+            if admin_row:
+                if username and admin_row['username'] != username:
+                    cursor.execute(
+                        'UPDATE admins SET username = ? WHERE user_id = ?',
+                        (username, user_id)
+                    )
+                    needs_commit = True
+            else:
+                cursor.execute(
+                    '''
+                    INSERT OR IGNORE INTO admins (user_id, username, added_by)
+                    VALUES (?, ?, NULL)
+                    ''',
+                    (user_id, username)
+                )
+                needs_commit = True
+
+        if needs_commit:
+            conn.commit()
+            cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+            user = cursor.fetchone()
+        return user
 
 
 # START TEMPORARY DISABLE BALANCE LOGIC — MVP PURCHASE FLOW (2026-02-16)
@@ -624,28 +619,26 @@ def get_or_create_user(user_id, username=None):
 
 def add_balance(user_id, amount):
     """Пополняет баланс пользователя на указанную сумму (в рублях)."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        UPDATE users
-        SET balance = balance + ?
-        WHERE user_id = ?
-    ''', (amount, user_id))
-    conn.commit()
-    conn.close()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE users
+            SET balance = balance + ?
+            WHERE user_id = ?
+        ''', (amount, user_id))
+        conn.commit()
 
 
 def get_user_balance(user_id):
     """Возвращает текущий баланс пользователя (в рублях)."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
-    row = cursor.fetchone()
-    conn.close()
-    if not row:
-        return 0
-    balance = row['balance']
-    return balance if balance is not None else 0
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
+        row = cursor.fetchone()
+        if not row:
+            return 0
+        balance = row['balance']
+        return balance if balance is not None else 0
 
 
 def purchase_analysis(user_id, match_id):
@@ -660,77 +653,74 @@ def purchase_analysis(user_id, match_id):
     """
     from config import ANALYSIS_PRICE_RUB
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    price = ANALYSIS_PRICE_RUB
+    with get_db() as conn:
+        cursor = conn.cursor()
+        price = ANALYSIS_PRICE_RUB
 
-    try:
-        # Лочим БД на запись, чтобы два параллельных клика не создали двойную покупку.
-        cursor.execute('BEGIN IMMEDIATE')
+        try:
+            cursor.execute('BEGIN IMMEDIATE')
 
-        cursor.execute('SELECT 1 FROM matches WHERE id = ?', (match_id,))
-        match = cursor.fetchone()
-        if not match:
-            conn.rollback()
-            return False, "Матч не найден"
+            cursor.execute('SELECT 1 FROM matches WHERE id = ?', (match_id,))
+            match = cursor.fetchone()
+            if not match:
+                conn.rollback()
+                return False, "Матч не найден"
 
-        cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
-        user = cursor.fetchone()
-        if not user:
-            conn.rollback()
-            return False, "Пользователь не найден"
+            cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
+            user = cursor.fetchone()
+            if not user:
+                conn.rollback()
+                return False, "Пользователь не найден"
 
-        cursor.execute(
-            '''
-            SELECT id FROM purchases
-            WHERE user_id = ? AND match_id = ? AND status = 'paid'
-            LIMIT 1
-            ''',
-            (user_id, match_id)
-        )
-        if cursor.fetchone():
-            conn.rollback()
-            return False, "Анализ уже приобретен"
+            cursor.execute(
+                '''
+                SELECT id FROM purchases
+                WHERE user_id = ? AND match_id = ? AND status = 'paid'
+                LIMIT 1
+                ''',
+                (user_id, match_id)
+            )
+            if cursor.fetchone():
+                conn.rollback()
+                return False, "Анализ уже приобретен"
 
-        if user['balance'] < price:
-            conn.rollback()
-            return False, (
-                f"Недостаточно средств. Нужно: {price} руб., "
-                f"у вас: {user['balance']} руб."
+            if user['balance'] < price:
+                conn.rollback()
+                return False, (
+                    f"Недостаточно средств. Нужно: {price} руб., "
+                    f"у вас: {user['balance']} руб."
+                )
+
+            cursor.execute(
+                '''
+                UPDATE users
+                SET balance = balance - ?,
+                    total_analysis_bought = total_analysis_bought + 1
+                WHERE user_id = ? AND balance >= ?
+                ''',
+                (price, user_id, price)
+            )
+            if cursor.rowcount == 0:
+                conn.rollback()
+                return False, "Недостаточно средств."
+
+            purchase_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            cursor.execute(
+                '''
+                INSERT INTO purchases (user_id, match_id, purchase_date, status, amount)
+                VALUES (?, ?, ?, 'paid', ?)
+                ''',
+                (user_id, match_id, purchase_date, price * 100)
             )
 
-        cursor.execute(
-            '''
-            UPDATE users
-            SET balance = balance - ?,
-                total_analysis_bought = total_analysis_bought + 1
-            WHERE user_id = ? AND balance >= ?
-            ''',
-            (price, user_id, price)
-        )
-        if cursor.rowcount == 0:
+            conn.commit()
+            return True, "Покупка успешна"
+        except sqlite3.IntegrityError:
             conn.rollback()
-            return False, "Недостаточно средств."
-
-        purchase_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        cursor.execute(
-            '''
-            INSERT INTO purchases (user_id, match_id, purchase_date, status, amount)
-            VALUES (?, ?, ?, 'paid', ?)
-            ''',
-            (user_id, match_id, purchase_date, price * 100)
-        )
-
-        conn.commit()
-        return True, "Покупка успешна"
-    except sqlite3.IntegrityError:
-        conn.rollback()
-        return False, "Анализ уже приобретен"
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+            return False, "Анализ уже приобретен"
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def _parse_dt_safe(raw: str):
@@ -750,71 +740,68 @@ def acquire_generation_job(match_id, owner=None, stale_after_seconds=300):
     Returns:
         bool: True если lock захвачен текущим процессом.
     """
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    now = datetime.now()
-    now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+    with get_db() as conn:
+        cursor = conn.cursor()
+        now = datetime.now()
+        now_str = now.strftime('%Y-%m-%d %H:%M:%S')
 
-    try:
-        cursor.execute('BEGIN IMMEDIATE')
-        cursor.execute(
-            '''
-            SELECT status, updated_at
-            FROM generation_jobs
-            WHERE match_id = ?
-            ''',
-            (match_id,)
-        )
-        row = cursor.fetchone()
-
-        if not row:
+        try:
+            cursor.execute('BEGIN IMMEDIATE')
             cursor.execute(
                 '''
-                INSERT INTO generation_jobs (match_id, status, owner, updated_at, error)
-                VALUES (?, 'running', ?, ?, NULL)
+                SELECT status, updated_at
+                FROM generation_jobs
+                WHERE match_id = ?
                 ''',
-                (match_id, owner, now_str)
+                (match_id,)
+            )
+            row = cursor.fetchone()
+
+            if not row:
+                cursor.execute(
+                    '''
+                    INSERT INTO generation_jobs (match_id, status, owner, updated_at, error)
+                    VALUES (?, 'running', ?, ?, NULL)
+                    ''',
+                    (match_id, owner, now_str)
+                )
+                conn.commit()
+                return True
+
+            status = (row['status'] or '').lower()
+            updated_at = _parse_dt_safe(row['updated_at'])
+            is_stale = (
+                updated_at is None
+                or (now - updated_at).total_seconds() > int(stale_after_seconds)
+            )
+
+            if status == 'running' and not is_stale:
+                conn.rollback()
+                return False
+
+            cursor.execute(
+                '''
+                UPDATE generation_jobs
+                SET status = 'running',
+                    owner = ?,
+                    updated_at = ?,
+                    error = NULL
+                WHERE match_id = ?
+                ''',
+                (owner, now_str, match_id)
             )
             conn.commit()
             return True
-
-        status = (row['status'] or '').lower()
-        updated_at = _parse_dt_safe(row['updated_at'])
-        is_stale = (
-            updated_at is None
-            or (now - updated_at).total_seconds() > int(stale_after_seconds)
-        )
-
-        if status == 'running' and not is_stale:
+        except Exception:
             conn.rollback()
             return False
-
-        cursor.execute(
-            '''
-            UPDATE generation_jobs
-            SET status = 'running',
-                owner = ?,
-                updated_at = ?,
-                error = NULL
-            WHERE match_id = ?
-            ''',
-            (owner, now_str, match_id)
-        )
-        conn.commit()
-        return True
-    except Exception:
-        conn.rollback()
-        return False
-    finally:
-        conn.close()
 
 
 def finish_generation_job(match_id, status='done', error=None):
     """Завершает lock генерации для match_id."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    try:
+    with get_db() as conn:
+        cursor = conn.cursor()
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         cursor.execute(
             '''
             INSERT INTO generation_jobs (match_id, status, owner, updated_at, error)
@@ -828,8 +815,6 @@ def finish_generation_job(match_id, status='done', error=None):
             (match_id, status, now_str, error)
         )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def wait_for_match_analysis(match_id, timeout_seconds=90, poll_interval=0.5):
@@ -868,84 +853,101 @@ def create_balance_topup(user_id, amount_rub=0):
     created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     expires_at = (datetime.now() + timedelta(minutes=30)).strftime('%Y-%m-%d %H:%M:%S')
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO balance_topups
-        (user_id, amount_rub, amount_kopeks, token, status, created_at, expires_at)
-        VALUES (?, ?, ?, ?, 'pending', ?, ?)
-    ''', (user_id, amount_rub, amount_kopeks, token, created_at, expires_at))
-    conn.commit()
-    conn.close()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO balance_topups
+            (user_id, amount_rub, amount_kopeks, token, status, created_at, expires_at)
+            VALUES (?, ?, ?, ?, 'pending', ?, ?)
+        ''', (user_id, amount_rub, amount_kopeks, token, created_at, expires_at))
+        conn.commit()
     return token
 
 
 def update_topup_instruction_message(token, message_id):
     """Сохраняет message_id инструкции пополнения для последующего редактирования."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        'UPDATE balance_topups SET instruction_message_id = ? WHERE token = ?',
-        (message_id, token)
-    )
-    conn.commit()
-    conn.close()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            'UPDATE balance_topups SET instruction_message_id = ? WHERE token = ?',
+            (message_id, token)
+        )
+        conn.commit()
 
 
 def update_topup_return_target(token, match_id=None, match_source='browse'):
     """Сохраняет цель возврата к матчу после пополнения (для автозачёта listener'ом)."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        '''
-        UPDATE balance_topups
-        SET return_match_id = ?, return_match_source = ?
-        WHERE token = ?
-        ''',
-        (match_id, match_source if match_id else None, token)
-    )
-    conn.commit()
-    conn.close()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            UPDATE balance_topups
+            SET return_match_id = ?, return_match_source = ?
+            WHERE token = ?
+            ''',
+            (match_id, match_source if match_id else None, token)
+        )
+        conn.commit()
 
 
 def get_topup_by_token(token):
     """Возвращает pending запись пополнения по token."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    cursor.execute('''
-        SELECT * FROM balance_topups
-        WHERE token = ? AND status = 'pending' AND expires_at > ?
-    ''', (token, now))
-    row = cursor.fetchone()
-    conn.close()
-    return row
+    with get_db() as conn:
+        cursor = conn.cursor()
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute('''
+            SELECT * FROM balance_topups
+            WHERE token = ? AND status = 'pending' AND expires_at > ?
+        ''', (token, now))
+        return cursor.fetchone()
 
 
 def expire_pending_topups():
     """Переводит истёкшие pending пополнения в expired и удаляет expired старше 12ч."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    cursor.execute('''
-        UPDATE balance_topups
-        SET status = 'expired'
-        WHERE status = 'pending' AND expires_at <= ?
-    ''', (now,))
-    expired_count = cursor.rowcount
+    with get_db() as conn:
+        cursor = conn.cursor()
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute('''
+            UPDATE balance_topups
+            SET status = 'expired'
+            WHERE status = 'pending' AND expires_at <= ?
+        ''', (now,))
+        expired_count = cursor.rowcount
 
-    # Удаляем expired записи старше 12 часов
-    cutoff = (datetime.now() - timedelta(hours=12)).strftime('%Y-%m-%d %H:%M:%S')
-    cursor.execute('''
-        DELETE FROM balance_topups
-        WHERE status = 'expired' AND expires_at <= ?
-    ''', (cutoff,))
-    deleted_count = cursor.rowcount
+        cutoff = (datetime.now() - timedelta(hours=12)).strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute('''
+            DELETE FROM balance_topups
+            WHERE status = 'expired' AND expires_at <= ?
+        ''', (cutoff,))
+        deleted_count = cursor.rowcount
 
-    conn.commit()
-    conn.close()
+        conn.commit()
     if deleted_count > 0:
         logger.info(f"Удалено старых expired topups: {deleted_count}")
+    return expired_count
+
+
+def expire_old_pending_purchases(max_age_minutes=60):
+    """Переводит старые pending покупки в expired по возрасту created_at."""
+    cutoff = (
+        datetime.now() - timedelta(minutes=max(0, int(max_age_minutes)))
+    ).strftime('%Y-%m-%d %H:%M:%S')
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            UPDATE purchases
+            SET status = 'expired'
+            WHERE status = 'pending' AND created_at < ?
+            ''',
+            (cutoff,)
+        )
+        expired_count = cursor.rowcount
+        conn.commit()
+
+    if expired_count > 0:
+        logger.info(f"Переведено в expired pending purchases: {expired_count}")
     return expired_count
 
 
@@ -956,52 +958,45 @@ def get_pending_topup_by_user(user_id):
     Используется чтобы повторно показать тот же код при повторном
     входе в меню пополнения — пользователь не теряет свой токен.
     """
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    cursor.execute('''
-        SELECT * FROM balance_topups
-        WHERE user_id = ? AND status = 'pending' AND expires_at > ?
-        ORDER BY created_at DESC
-        LIMIT 1
-    ''', (user_id, now))
-    row = cursor.fetchone()
-    conn.close()
-    return row
+    with get_db() as conn:
+        cursor = conn.cursor()
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute('''
+            SELECT * FROM balance_topups
+            WHERE user_id = ? AND status = 'pending' AND expires_at > ?
+            ORDER BY created_at DESC
+            LIMIT 1
+        ''', (user_id, now))
+        return cursor.fetchone()
 
 
 def reset_user_balance(user_id):
     """Обнуляет баланс пользователя (админская операция)."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('UPDATE users SET balance = 0 WHERE user_id = ?', (user_id,))
-    affected = cursor.rowcount
-    conn.commit()
-    conn.close()
-    return affected > 0
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('UPDATE users SET balance = 0 WHERE user_id = ?', (user_id,))
+        affected = cursor.rowcount
+        conn.commit()
+        return affected > 0
 
 
 def get_any_topup_by_token(token):
     """Возвращает любую запись пополнения по token (pending или paid)."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM balance_topups WHERE token = ?', (token,))
-    row = cursor.fetchone()
-    conn.close()
-    return row
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM balance_topups WHERE token = ?', (token,))
+        return cursor.fetchone()
 
 
 def is_donation_event_used(donation_event_id):
     """Проверяет, был ли уже засчитан донат с данным donation_event_id."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        'SELECT id FROM balance_topups WHERE donation_event_id = ?',
-        (str(donation_event_id),)
-    )
-    row = cursor.fetchone()
-    conn.close()
-    return row is not None
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT id FROM balance_topups WHERE donation_event_id = ?',
+            (str(donation_event_id),)
+        )
+        return cursor.fetchone() is not None
 
 
 def complete_balance_topup(topup_id, donation_event_id, received_amount_rub=None):
@@ -1011,180 +1006,119 @@ def complete_balance_topup(topup_id, donation_event_id, received_amount_rub=None
     received_amount_rub: фактически полученная сумма (для гибких топапов
     с amount_rub=0). Если None — используется amount_rub из записи топапа.
     """
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    with get_db() as conn:
+        cursor = conn.cursor()
 
-    cursor.execute(
-        'SELECT user_id, amount_rub FROM balance_topups WHERE id = ?',
-        (topup_id,)
-    )
-    topup = cursor.fetchone()
-    if not topup:
-        conn.close()
-        return False
+        cursor.execute(
+            'SELECT user_id, amount_rub FROM balance_topups WHERE id = ?',
+            (topup_id,)
+        )
+        topup = cursor.fetchone()
+        if not topup:
+            return False
 
-    # Определяем сколько реально зачислить
-    amount_to_credit = (
-        received_amount_rub
-        if received_amount_rub is not None
-        else topup['amount_rub']
-    )
+        amount_to_credit = (
+            received_amount_rub
+            if received_amount_rub is not None
+            else topup['amount_rub']
+        )
 
-    # Обновляем статус и фактическую сумму в записи топапа
-    cursor.execute('''
-        UPDATE balance_topups
-        SET status = 'paid', donation_event_id = ?, amount_rub = ?
-        WHERE id = ?
-    ''', (donation_event_id, amount_to_credit, topup_id))
+        cursor.execute('''
+            UPDATE balance_topups
+            SET status = 'paid', donation_event_id = ?, amount_rub = ?
+            WHERE id = ?
+        ''', (donation_event_id, amount_to_credit, topup_id))
 
-    # Пополняем баланс (COALESCE защищает от NULL у старых пользователей)
-    cursor.execute('''
-        UPDATE users SET balance = COALESCE(balance, 0) + ?
-        WHERE user_id = ?
-    ''', (amount_to_credit, topup['user_id']))
+        cursor.execute('''
+            UPDATE users SET balance = COALESCE(balance, 0) + ?
+            WHERE user_id = ?
+        ''', (amount_to_credit, topup['user_id']))
 
-    conn.commit()
-    conn.close()
-    return True
+        conn.commit()
+        return True
 
 
 def has_purchased_analysis(user_id, match_id):
     """Проверяет, есть ли оплаченная покупка (status='paid') для данного матча."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT id FROM purchases
-        WHERE user_id = ? AND match_id = ? AND status = 'paid'
-    ''', (user_id, match_id))
-    purchase = cursor.fetchone()
-    conn.close()
-    return purchase is not None
-
-
-def has_pending_purchase(user_id, match_id):
-    """Проверяет, есть ли pending покупка для данного матча."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT id, token, expires_at FROM purchases
-        WHERE user_id = ? AND match_id = ? AND status = 'pending'
-    ''', (user_id, match_id))
-    purchase = cursor.fetchone()
-    conn.close()
-    return purchase
-
-
-def update_instruction_message_id(purchase_id, message_id):
-    """Сохраняет message_id инструкции для последующего удаления."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        UPDATE purchases
-        SET instruction_message_id = ?
-        WHERE id = ?
-    ''', (message_id, purchase_id))
-    conn.commit()
-    conn.close()
-
-
-def get_purchase_by_token(token):
-    """Получает purchase по token (для listener)."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT id, user_id, match_id, amount, status, donation_event_id, instruction_message_id
-        FROM purchases
-        WHERE token = ? AND status = 'pending'
-    ''', (token,))
-    purchase = cursor.fetchone()
-    conn.close()
-    return purchase
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id FROM purchases
+            WHERE user_id = ? AND match_id = ? AND status = 'paid'
+        ''', (user_id, match_id))
+        return cursor.fetchone() is not None
 
 
 def get_user_stats(user_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT balance, total_analysis_bought
-        FROM users
-        WHERE user_id = ?
-    ''', (user_id,))
-    stats = cursor.fetchone()
-    # Отдельный запрос для количества покупок
-    if stats:
-        cursor.execute('SELECT COUNT(*) as purchased_count FROM purchases WHERE user_id = ?', (user_id,))
-        purchase_count = cursor.fetchone()
-        result = {
-            'balance': stats['balance'],
-            'total_analysis_bought': stats['total_analysis_bought'],
-            'purchased_count': purchase_count['purchased_count'] if purchase_count else 0
-        }
-    else:
-        result = None
-    conn.close()
-    return result
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT balance, total_analysis_bought
+            FROM users
+            WHERE user_id = ?
+        ''', (user_id,))
+        stats = cursor.fetchone()
+        if stats:
+            cursor.execute('SELECT COUNT(*) as purchased_count FROM purchases WHERE user_id = ?', (user_id,))
+            purchase_count = cursor.fetchone()
+            return {
+                'balance': stats['balance'],
+                'total_analysis_bought': stats['total_analysis_bought'],
+                'purchased_count': purchase_count['purchased_count'] if purchase_count else 0
+            }
+        return None
 
 
 def get_all_users():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM users ORDER BY created_at DESC')
-    users = cursor.fetchall()
-    conn.close()
-    return users
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM users ORDER BY created_at DESC')
+        return cursor.fetchall()
 
 
 # Функции для администраторов
 def add_admin(user_id, username, added_by):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute('''
-            INSERT OR REPLACE INTO admins (user_id, username, added_by)
-            VALUES (?, ?, ?)
-        ''', (user_id, username, added_by))
-        conn.commit()
-        return True
-    except Exception:
-        return False
-    finally:
-        conn.close()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                INSERT OR REPLACE INTO admins (user_id, username, added_by)
+                VALUES (?, ?, ?)
+            ''', (user_id, username, added_by))
+            conn.commit()
+            return True
+        except Exception:
+            return False
 
 
 def remove_admin(user_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM admins WHERE user_id = ?', (user_id,))
-    conn.commit()
-    conn.close()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM admins WHERE user_id = ?', (user_id,))
+        conn.commit()
 
 
 def is_admin(user_id):
-    # Системные админы из конфигурации/кода всегда имеют права
     if user_id in _get_system_admin_ids():
         return True
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT user_id FROM admins WHERE user_id = ?', (user_id,))
-    result = cursor.fetchone()
-    conn.close()
-    return result is not None
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT user_id FROM admins WHERE user_id = ?', (user_id,))
+        return cursor.fetchone() is not None
 
 
 def get_all_admins():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT a.user_id, a.username, a.added_at,
-               u.username as added_by_username
-        FROM admins a
-        LEFT JOIN users u ON a.added_by = u.user_id
-        ORDER BY a.added_at DESC
-    ''')
-    admins = cursor.fetchall()
-    conn.close()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT a.user_id, a.username, a.added_at,
+                   u.username as added_by_username
+            FROM admins a
+            LEFT JOIN users u ON a.added_by = u.user_id
+            ORDER BY a.added_at DESC
+        ''')
+        admins = list(cursor.fetchall())
 
-    # Добавляем системных админов в выдачу (на случай, если init_db еще не запускался).
     existing_ids = {admin['user_id'] for admin in admins}
     for admin_id in _get_system_admin_ids():
         if admin_id not in existing_ids:
@@ -1200,33 +1134,28 @@ def get_all_admins():
 def cleanup_old_purchases():
     """Удалить старые покупки (анализы хранятся 1 день после матча)"""
     import os
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
-    # Дата отсечки: вчера
     cutoff_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
 
-    # Получаем пути к PNG файлам для старых матчей перед удалением
-    cursor.execute('''
-        SELECT analysis_png_path FROM matches
-        WHERE match_date < ? AND analysis_png_path IS NOT NULL
-    ''', (cutoff_date,))
-    png_paths = [row['analysis_png_path'] for row in cursor.fetchall()]
+    with get_db() as conn:
+        cursor = conn.cursor()
 
-    # Находим и удаляем покупки для матчей старше cutoff_date
-    cursor.execute('''
-        DELETE FROM purchases
-        WHERE match_id IN (
-            SELECT id FROM matches
-            WHERE match_date < ?
-        )
-    ''', (cutoff_date,))
+        cursor.execute('''
+            SELECT analysis_png_path FROM matches
+            WHERE match_date < ? AND analysis_png_path IS NOT NULL
+        ''', (cutoff_date,))
+        png_paths = [row['analysis_png_path'] for row in cursor.fetchall()]
 
-    deleted_count = cursor.rowcount
-    conn.commit()
-    conn.close()
+        cursor.execute('''
+            DELETE FROM purchases
+            WHERE match_id IN (
+                SELECT id FROM matches
+                WHERE match_date < ?
+            )
+        ''', (cutoff_date,))
 
-    # Удаляем PNG файлы
+        deleted_count = cursor.rowcount
+        conn.commit()
+
     deleted_png = 0
     for png_path in png_paths:
         if png_path and os.path.exists(png_path):
@@ -1249,39 +1178,35 @@ def delete_finished_matches_without_purchases():
     Удаляет также соответствующие PNG файлы анализов.
     """
     import os
-    conn = get_db_connection()
-    cursor = conn.cursor()
 
-    # Получаем пути к PNG файлов перед удалением матчей
-    cursor.execute('''
-        SELECT analysis_png_path FROM matches
-        WHERE (is_active = 0 OR match_date < date('now', '-1 day'))
-        AND id NOT IN (SELECT DISTINCT match_id FROM purchases)
-        AND analysis_png_path IS NOT NULL
-    ''')
-    png_paths = [row['analysis_png_path'] for row in cursor.fetchall()]
+    with get_db() as conn:
+        cursor = conn.cursor()
 
-    # 1. Удаляем деактивированные матчи без покупок
-    cursor.execute('''
-        DELETE FROM matches
-        WHERE is_active = 0
-        AND id NOT IN (SELECT DISTINCT match_id FROM purchases)
-    ''')
-    deleted_inactive = cursor.rowcount
+        cursor.execute('''
+            SELECT analysis_png_path FROM matches
+            WHERE (is_active = 0 OR match_date < date('now', '-1 day'))
+            AND id NOT IN (SELECT DISTINCT match_id FROM purchases)
+            AND analysis_png_path IS NOT NULL
+        ''')
+        png_paths = [row['analysis_png_path'] for row in cursor.fetchall()]
 
-    # 2. Удаляем старые матчи (старше 1 дня) без покупок
-    cutoff_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-    cursor.execute('''
-        DELETE FROM matches
-        WHERE match_date < ?
-        AND id NOT IN (SELECT DISTINCT match_id FROM purchases)
-    ''', (cutoff_date,))
-    deleted_old = cursor.rowcount
+        cursor.execute('''
+            DELETE FROM matches
+            WHERE is_active = 0
+            AND id NOT IN (SELECT DISTINCT match_id FROM purchases)
+        ''')
+        deleted_inactive = cursor.rowcount
 
-    conn.commit()
-    conn.close()
+        cutoff_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        cursor.execute('''
+            DELETE FROM matches
+            WHERE match_date < ?
+            AND id NOT IN (SELECT DISTINCT match_id FROM purchases)
+        ''', (cutoff_date,))
+        deleted_old = cursor.rowcount
 
-    # Удаляем PNG файлы
+        conn.commit()
+
     deleted_png = 0
     for png_path in png_paths:
         if png_path and os.path.exists(png_path):
@@ -1302,17 +1227,14 @@ def get_matches_by_date_filtered(sport, match_date):
     Получить матчи по дате с фильтрацией прошедших.
     Не показывать матчи которые прошли более 3 часов назад.
     """
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
-    # Получаем все активные матчи на дату
-    cursor.execute('''
-        SELECT * FROM matches
-        WHERE sport = ? AND match_date = ? AND is_active = 1 AND coverage_ok = 1
-        ORDER BY match_time
-    ''', (sport, match_date))
-    matches = cursor.fetchall()
-    conn.close()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT * FROM matches
+            WHERE sport = ? AND match_date = ? AND is_active = 1 AND coverage_ok = 1
+            ORDER BY match_time
+        ''', (sport, match_date))
+        matches = cursor.fetchall()
 
     # Фильтруем по времени - не показываем матчи старше 3 часов
     now = datetime.now()

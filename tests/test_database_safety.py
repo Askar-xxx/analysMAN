@@ -2,6 +2,7 @@
 import os
 import sqlite3
 import tempfile
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import database
@@ -169,6 +170,72 @@ def test_init_db_deduplicates_legacy_paid_purchases_before_unique_index():
 
             assert paid_count == 1
             assert unique_index is not None
+    finally:
+        try:
+            os.unlink(db_path)
+        except Exception:
+            pass
+
+
+def test_expire_old_pending_purchases_marks_only_stale_rows():
+    """Old pending purchases must expire without affecting fresh or paid rows."""
+    db_path = _create_temp_db()
+    try:
+        conn_factory = _mk_conn_factory(db_path)
+        with patch("database.get_db_connection", new=conn_factory):
+            database.init_db()
+
+            user_id = 10003
+            database.get_or_create_user(user_id, "cleanup")
+            match_id = database.add_match(
+                sport="football",
+                team1="Old",
+                team2="Fresh",
+                match_date="2026-03-01",
+                match_time="19:00",
+            )
+
+            stale_created_at = (datetime.now() - timedelta(minutes=121)).strftime("%Y-%m-%d %H:%M:%S")
+            fresh_created_at = (datetime.now() - timedelta(minutes=15)).strftime("%Y-%m-%d %H:%M:%S")
+
+            conn = conn_factory()
+            conn.execute(
+                """
+                INSERT INTO purchases (user_id, match_id, purchase_date, created_at, status, amount, token)
+                VALUES (?, ?, ?, ?, 'pending', 100, 'STALE123')
+                """,
+                (user_id, match_id, stale_created_at, stale_created_at),
+            )
+            conn.execute(
+                """
+                INSERT INTO purchases (user_id, match_id, purchase_date, created_at, status, amount, token)
+                VALUES (?, ?, ?, ?, 'pending', 100, 'FRESH123')
+                """,
+                (user_id, match_id, fresh_created_at, fresh_created_at),
+            )
+            conn.execute(
+                """
+                INSERT INTO purchases (user_id, match_id, purchase_date, created_at, status, amount, token)
+                VALUES (?, ?, ?, ?, 'paid', 100, 'PAID123')
+                """,
+                (user_id, match_id, stale_created_at, stale_created_at),
+            )
+            conn.commit()
+            conn.close()
+
+            expired_count = database.expire_old_pending_purchases(max_age_minutes=60)
+
+            conn = conn_factory()
+            statuses = {
+                row["token"]: row["status"]
+                for row in conn.execute("SELECT token, status FROM purchases").fetchall()
+            }
+            conn.close()
+
+            assert expired_count == 1
+            assert statuses["STALE123"] == "expired"
+            assert statuses["FRESH123"] == "pending"
+            assert statuses["PAID123"] == "paid"
     finally:
         try:
             os.unlink(db_path)

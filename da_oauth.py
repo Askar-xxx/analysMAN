@@ -178,6 +178,40 @@ def save_tokens_to_env(tokens):
     logger.info(f"✅ Токены сохранены в {env_path}")
 
 
+def refresh_access_token():
+    """
+    Обновляет DA_ACCESS_TOKEN через refresh_token.
+
+    Сохраняет новые токены в .env и обновляет config в рантайме.
+    Возвращает новый access_token.
+    """
+    import config
+
+    if not config.DA_REFRESH_TOKEN:
+        raise ValueError("DA_REFRESH_TOKEN не настроен — перезапустите da_oauth.py")
+
+    response = requests.post(
+        "https://www.donationalerts.com/oauth/token",
+        data={
+            "grant_type": "refresh_token",
+            "client_id": config.DA_CLIENT_ID,
+            "client_secret": config.DA_CLIENT_SECRET,
+            "refresh_token": config.DA_REFRESH_TOKEN,
+        }
+    )
+    response.raise_for_status()
+    token_data = response.json()
+
+    save_tokens_to_env(token_data)
+
+    # Обновляем в рантайме
+    config.DA_ACCESS_TOKEN = token_data['access_token']
+    config.DA_REFRESH_TOKEN = token_data['refresh_token']
+
+    logger.info("DA токены обновлены через refresh_token")
+    return token_data['access_token']
+
+
 if __name__ == '__main__':
     """
     Запуск OAuth авторизации вручную.
