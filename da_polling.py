@@ -7,14 +7,15 @@ Polling listener для DonationAlerts (вместо WebSocket).
 """
 import asyncio
 import logging
+import re
 import requests
 import database
-import config
-from healthcheck_utils import remove_heartbeat, touch_heartbeat
-from logging_utils import setup_logging
-from utils import extract_token_from_message
+from config import DA_ACCESS_TOKEN
 
-setup_logging('da_polling')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Храним ID последнего обработанного доната
@@ -32,13 +33,12 @@ def get_recent_donations(limit=10):
         list: Список донатов
     """
     headers = {
-        'Authorization': f'Bearer {config.DA_ACCESS_TOKEN}'
+        'Authorization': f'Bearer {DA_ACCESS_TOKEN}'
     }
 
     response = requests.get(
         f'https://www.donationalerts.com/api/v1/alerts/donations?limit={limit}',
-        headers=headers,
-        timeout=15
+        headers=headers
     )
     response.raise_for_status()
     data = response.json()
@@ -65,30 +65,134 @@ async def process_donation(donation_data):
         logger.info(f"📥 Обработка доната ID={donation_id} от {username}: {amount_str} руб.")
 
         amount_rub = float(amount_str)
+        amount_kopeks = int(amount_rub * 100)
 
         # Извлекаем token из комментария
-        token = extract_token_from_message(message)
-        if not token:
+        token_match = re.search(r'\b([A-Z0-9]{12})\b', message.upper())
+        if not token_match:
             logger.warning(f"Token не найден в сообщении: '{message}'")
             return False
+
+        token = token_match.group(1)
         logger.info(f"🔑 Извлечён token: {token}")
 
-        # Актуальный сценарий: DonationAlerts используется только для пополнения баланса.
+        # === 1. Ищем pending purchase (прямая покупка анализа) ===
+        purchase = database.get_purchase_by_token(token)
+
+        if purchase:
+            return await _handle_purchase_donation(
+                purchase, donation_id, amount_kopeks
+            )
+
+        # === 2. Ищем в balance_topups (пополнение баланса) ===
         topup = database.get_topup_by_token(token)
 
         if topup:
             return await _handle_topup_donation(topup, donation_id, amount_rub)
 
-        # Не найдено нигде — проверяем идемпотентность
+        # === 3. Не найдено нигде — проверяем идемпотентность ===
         if database.is_donation_event_used(str(donation_id)):
             logger.info(f"Donation {donation_id} уже засчитан ранее (идемпотентность)")
             return True
 
-        logger.warning(f"Token {token} не найден в balance_topups")
+        logger.warning(f"Token {token} не найден ни в purchases, ни в balance_topups")
         return False
 
     except Exception as e:
         logger.error(f"❌ Ошибка обработки доната: {e}", exc_info=True)
+        return False
+
+
+async def _handle_purchase_donation(purchase, donation_id, amount_kopeks):
+    """Обрабатывает донат для прямой покупки анализа (purchases)."""
+    purchase_id = purchase['id']
+    user_id = purchase['user_id']
+    match_id = purchase['match_id']
+    expected_amount = purchase['amount']
+    instruction_message_id = purchase['instruction_message_id']
+
+    logger.info(f"✅ Найден purchase ID={purchase_id}, user={user_id}, match={match_id}")
+
+    # Проверяем сумму
+    if amount_kopeks != expected_amount:
+        logger.warning(f"⚠️ Сумма не совпадает: получено {amount_kopeks}, ожидалось {expected_amount}")
+
+        from telegram import Bot
+        from config import TOKEN
+        bot = Bot(token=TOKEN)
+
+        expected_rub = expected_amount / 100
+        received_rub = amount_kopeks / 100
+
+        try:
+            await bot.send_message(
+                chat_id=user_id,
+                text=(
+                    "❌ <b>Недостаточно средств</b>\n\n"
+                    f"Получено: <b>{received_rub:.0f} руб.</b>\n"
+                    f"Требуется: <b>{expected_rub:.0f} руб.</b>\n\n"
+                    "Ваш заказ остаётся активным. Пожалуйста, отправьте донат "
+                    f"на правильную сумму (<b>{expected_rub:.0f} руб.</b>) с тем же кодом."
+                ),
+                parse_mode='HTML'
+            )
+        except Exception as e:
+            logger.error(f"Не удалось отправить уведомление о недостаточной сумме: {e}")
+
+        return False
+
+    logger.info(f"💰 Сумма совпадает: {amount_kopeks} копеек")
+
+    match = database.get_match_by_id(match_id)
+    if not match:
+        logger.error(f"❌ Матч {match_id} не найден в БД")
+        return False
+
+    match_dict = dict(match) if not isinstance(match, dict) else match
+
+    logger.info(f"🤖 Запуск генерации анализа для матча {match_id}...")
+
+    from webhook_server import generate_and_send_analysis
+    success = await generate_and_send_analysis(
+        user_id, match_id, match_dict, instruction_message_id
+    )
+
+    if success:
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE purchases
+            SET status = 'paid', donation_event_id = ?
+            WHERE id = ?
+        ''', (str(donation_id), purchase_id))
+        conn.commit()
+        conn.close()
+
+        logger.info(f"✅ Purchase {purchase_id} оплачен и анализ отправлен.")
+        return True
+    else:
+        logger.error(f"❌ Ошибка генерации анализа для purchase {purchase_id}")
+
+        from telegram import Bot
+        from config import TOKEN
+        bot = Bot(token=TOKEN)
+
+        try:
+            await bot.send_message(
+                chat_id=user_id,
+                text=(
+                    "❌ <b>Ошибка генерации анализа</b>\n\n"
+                    f"🏆 Матч: <b>{match_dict['team1']} vs {match_dict['team2']}</b>\n\n"
+                    "К сожалению, произошла ошибка при создании анализа. "
+                    "Ваш заказ остаётся активным — попробуйте получить анализ через "
+                    "раздел «Мои анализы» через несколько минут.\n\n"
+                    "Если проблема повторится, обратитесь в поддержку."
+                ),
+                parse_mode='HTML'
+            )
+        except Exception as e:
+            logger.error(f"Не удалось отправить уведомление об ошибке: {e}")
+
         return False
 
 
@@ -122,9 +226,9 @@ async def _handle_topup_donation(topup, donation_id, amount_rub):
 
     text = (
         f"✅ <b>Баланс пополнен!</b>\n\n"
-        f"💰 Зачислено: <b>+{received_rub} руб.</b> ({received_rub} {analyses_word})\n"
-        f"💳 Ваш баланс: <b>{new_balance} руб.</b>\n\n"
-        "Выберите матч для покупки анализа!"
+        f"💰 Пополнено: <b>+{received_rub} 💎</b> ({received_rub} {analyses_word})\n"
+        f"💳 Ваш баланс: <b>{new_balance} 💎</b>\n\n"
+        "Выберите матч для приобретения анализа!"
     )
 
     from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
@@ -178,6 +282,28 @@ async def _handle_topup_donation(topup, donation_id, amount_rub):
     return True
 
 
+def _is_transient_http_error(exc):
+    """Проверяет, является ли HTTP ошибка временной (5xx)."""
+    return exc.response is not None and exc.response.status_code >= 500
+
+
+def _log_network_error(msg, count, threshold):
+    """Логирует сетевую ошибку: WARNING при единичных, ERROR при затяжных."""
+    if count == threshold:
+        logger.error(
+            f"❌ {msg} (DA недоступен уже {count} опросов подряд, "
+            f"~{count * 15} сек)"
+        )
+    elif count % (threshold * 4) == 0:
+        # Напоминание каждые ~20 опросов после первого алёрта
+        logger.error(
+            f"❌ {msg} (DA всё ещё недоступен: {count} ошибок подряд, "
+            f"~{count * 15 // 60} мин)"
+        )
+    else:
+        logger.warning(f"⚠️ {msg} (попытка {count})")
+
+
 async def poll_donations():
     """
     Периодически опрашивает API на предмет новых донатов.
@@ -191,16 +317,20 @@ async def poll_donations():
 
     poll_interval = 15  # Опрос каждые 15 секунд
     processed_ids = set()  # Храним обработанные ID
+    consecutive_net_errors = 0  # Счётчик сетевых ошибок подряд
+    NET_ERROR_ESCALATE_AFTER = 5  # ERROR-алёрт только после N ошибок подряд (~75 сек)
 
     while True:
         try:
-            touch_heartbeat('da_polling')
-        except Exception as e:
-            logger.warning("Не удалось обновить heartbeat da_polling в начале цикла: %s", e)
-
-        try:
             # Получаем последние донаты
             donations = get_recent_donations(limit=10)
+
+            # Сбрасываем счётчик — запрос прошёл успешно
+            if consecutive_net_errors > 0:
+                logger.info(
+                    f"✅ DA API снова доступен (было {consecutive_net_errors} ошибок подряд)"
+                )
+                consecutive_net_errors = 0
 
             if not donations:
                 logger.debug("Нет новых донатов")
@@ -250,15 +380,23 @@ async def poll_donations():
                     logger.info("DA токен успешно обновлён")
                 except Exception as refresh_err:
                     logger.error(f"Не удалось обновить DA токен: {refresh_err}")
+            elif _is_transient_http_error(e):
+                consecutive_net_errors += 1
+                _log_network_error(
+                    f"HTTP ошибка polling: {e}",
+                    consecutive_net_errors, NET_ERROR_ESCALATE_AFTER,
+                )
             else:
                 logger.error(f"❌ HTTP ошибка polling: {e}", exc_info=True)
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout) as e:
+            consecutive_net_errors += 1
+            _log_network_error(
+                f"Ошибка polling: {e}",
+                consecutive_net_errors, NET_ERROR_ESCALATE_AFTER,
+            )
         except Exception as e:
             logger.error(f"❌ Ошибка polling: {e}", exc_info=True)
-
-        try:
-            touch_heartbeat('da_polling')
-        except Exception as e:
-            logger.warning("Не удалось обновить heartbeat da_polling перед sleep: %s", e)
 
         # Ждём перед следующим опросом
         await asyncio.sleep(poll_interval)
@@ -266,16 +404,12 @@ async def poll_donations():
 
 async def main():
     """Главная функция polling listener"""
-    if not config.DA_ACCESS_TOKEN:
+    if not DA_ACCESS_TOKEN:
         logger.error("❌ DA_ACCESS_TOKEN не настроен в config.py")
         logger.error("Запустите сначала: python da_oauth.py")
         return
 
     logger.info("🚀 Запуск polling listener...")
-    try:
-        touch_heartbeat('da_polling')
-    except Exception as e:
-        logger.warning("Не удалось создать стартовый heartbeat da_polling: %s", e)
     await poll_donations()
 
 
@@ -290,5 +424,3 @@ if __name__ == '__main__':
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("\n👋 Остановка polling listener...")
-    finally:
-        remove_heartbeat('da_polling')
