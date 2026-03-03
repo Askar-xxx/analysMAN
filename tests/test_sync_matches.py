@@ -388,6 +388,97 @@ class TestCoverageCheck:
         finally:
             os.unlink(db_path)
 
+    @patch('match_data_fetcher.MatchDataFetcher.fetch_match_data')
+    @patch('analysis_formatter.build_table_data')
+    def test_coverage_check_rechecks_old_hidden_match(
+        self,
+        mock_build_table_data,
+        mock_fetch_match_data
+    ):
+        db_path = _create_test_db()
+        future_date = (datetime.now().date() + timedelta(days=1)).strftime('%Y-%m-%d')
+        stale_checked_at = (
+            datetime.now() - timedelta(hours=4)
+        ).strftime('%Y-%m-%d %H:%M:%S')
+        try:
+            match_id = _insert_match(
+                db_path,
+                api_event_id='cov-recheck-old-1',
+                match_date=future_date,
+                coverage_ok=0
+            )
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                'UPDATE matches SET coverage_checked_at = ? WHERE id = ?',
+                (stale_checked_at, match_id)
+            )
+            conn.commit()
+            conn.close()
+
+            mock_fetch_match_data.return_value = {}
+            mock_build_table_data.return_value = {
+                'raw_coverage_rows_count': 6,
+                'raw_missing_cells_count': 0,
+            }
+
+            results = run_coverage_check(db_path=db_path, sleep_seconds=0)
+
+            conn = sqlite3.connect(db_path)
+            row = conn.execute(
+                'SELECT coverage_ok, coverage_checked_at FROM matches WHERE id = ?',
+                (match_id,)
+            ).fetchone()
+            conn.close()
+
+            assert results['checked'] == 1
+            assert results['ok'] == 1
+            assert results['hidden'] == 0
+            assert row[0] == 1
+            assert row[1] is not None
+            assert row[1] != stale_checked_at
+        finally:
+            os.unlink(db_path)
+
+    @patch('match_data_fetcher.MatchDataFetcher.fetch_match_data')
+    @patch('analysis_formatter.build_table_data')
+    def test_coverage_check_rechecks_hidden_match_without_timestamp(
+        self,
+        mock_build_table_data,
+        mock_fetch_match_data
+    ):
+        db_path = _create_test_db()
+        future_date = (datetime.now().date() + timedelta(days=1)).strftime('%Y-%m-%d')
+        try:
+            match_id = _insert_match(
+                db_path,
+                api_event_id='cov-recheck-null-1',
+                match_date=future_date,
+                coverage_ok=0
+            )
+
+            mock_fetch_match_data.return_value = {}
+            mock_build_table_data.return_value = {
+                'raw_coverage_rows_count': 6,
+                'raw_missing_cells_count': 0,
+            }
+
+            results = run_coverage_check(db_path=db_path, sleep_seconds=0)
+
+            conn = sqlite3.connect(db_path)
+            row = conn.execute(
+                'SELECT coverage_ok, coverage_checked_at FROM matches WHERE id = ?',
+                (match_id,)
+            ).fetchone()
+            conn.close()
+
+            assert results['checked'] == 1
+            assert results['ok'] == 1
+            assert results['hidden'] == 0
+            assert row[0] == 1
+            assert row[1] is not None
+        finally:
+            os.unlink(db_path)
+
 
 class TestStorefrontCoverageFilter:
     """Тесты фильтрации витрины по coverage_ok."""

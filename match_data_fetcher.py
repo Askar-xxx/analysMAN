@@ -601,7 +601,7 @@ class MatchDataFetcher:
 
                     # Fallback: если после фильтрации 0 матчей, вернуть топ-3 самых свежих
                     if not h2h_matches and matches_before_date_filter:
-                        logger.warning("H2H фильтрация вернула 0 матчей, используем топ-3 из всех")
+                        logger.info("H2H фильтрация вернула 0 матчей, используем топ-3 из всех")
                         h2h_matches = sorted(
                             matches_before_date_filter,
                             key=lambda x: x['date'],
