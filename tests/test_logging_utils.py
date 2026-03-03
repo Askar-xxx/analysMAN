@@ -1,4 +1,5 @@
 import logging
+import sys
 from unittest.mock import Mock
 
 import logging_utils
@@ -69,6 +70,44 @@ def test_telegram_log_handler_debounces_and_truncates(monkeypatch):
     assert sent_messages[0][1]['text'].startswith('⚠️ [ERROR] test_logging_utils: ')
     assert sent_messages[0][1]['text'].split(': ', 1)[1] == 'x' * 500
     assert '[CRITICAL]' in sent_messages[1][1]['text']
+
+
+def test_telegram_log_handler_includes_exception_details(monkeypatch):
+    sent_messages = []
+    response = Mock()
+    response.raise_for_status.return_value = None
+
+    def fake_post(url, json, timeout):
+        sent_messages.append((url, json, timeout))
+        return response
+
+    monkeypatch.setattr(logging_utils.requests, 'post', fake_post)
+    monkeypatch.setattr(logging_utils.time, 'monotonic', lambda: 100.0)
+
+    handler = logging_utils.TelegramLogHandler(
+        token='test-token',
+        chat_id=123456,
+        min_interval_seconds=0,
+    )
+
+    try:
+        raise RuntimeError('boom')
+    except RuntimeError:
+        record = logging.LogRecord(
+            name='alerts.test',
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=10,
+            msg='handler failed',
+            args=(),
+            exc_info=sys.exc_info(),
+        )
+
+    handler.emit(record)
+
+    text = sent_messages[0][1]['text']
+    assert 'RuntimeError: boom' in text
+    assert 'handler failed' in text
 
 
 def test_setup_logging_creates_rotating_file(tmp_path):

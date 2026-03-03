@@ -1,4 +1,5 @@
 import logging
+import traceback
 import threading
 import time
 from logging.handlers import RotatingFileHandler
@@ -59,8 +60,30 @@ class TelegramLogHandler(logging.Handler):
     @staticmethod
     def _build_message(record):
         module_name = record.module or record.name
-        message = record.getMessage().replace('\n', ' ').strip()[:500]
-        return f'⚠️ [{record.levelname}] {module_name}: {message}'
+        message = record.getMessage().replace('\n', ' ').strip()
+
+        if record.exc_info:
+            exc_type, exc_value, _ = record.exc_info
+            exc_name = exc_type.__name__ if exc_type else 'Exception'
+            exc_text = f'{exc_name}: {exc_value}'.strip()
+            if exc_text and exc_text not in message:
+                message = f'{message} | {exc_text}' if message else exc_text
+        elif record.exc_text:
+            exc_text = str(record.exc_text).replace('\n', ' ').strip()
+            if exc_text and exc_text not in message:
+                message = f'{message} | {exc_text}' if message else exc_text
+
+        message = message[:500]
+        lines = [f'⚠️ [{record.levelname}] {module_name}: {message}']
+
+        if record.exc_info:
+            formatted = traceback.format_exception(*record.exc_info)
+            if formatted:
+                tail = ''.join(formatted[-2:]).replace('\n', ' ').strip()[:700]
+                if tail:
+                    lines.append(tail)
+
+        return '\n'.join(lines)
 
 
 def _mark_handler(handler):

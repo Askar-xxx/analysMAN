@@ -69,19 +69,6 @@ def _init_db_tables(conn):
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    # Таблица teams (кэш lookupteam)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS teams (
-            team_id TEXT PRIMARY KEY,
-            name TEXT,
-            short_name TEXT,
-            badge_url TEXT,
-            sport TEXT DEFAULT 'football',
-            raw_json TEXT,
-            source TEXT,
-            cached_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
 
     # Таблица sync_meta (метаданные синхронизации)
     cursor.execute('''
@@ -383,56 +370,6 @@ def get_matches_by_date(sport, match_date):
         return cursor.fetchall()
 
 
-# НОВАЯ ФУНКЦИЯ: Проверка структуры БД
-def check_database_structure():
-    """Проверить и исправить структуру базы данных"""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        print("Проверка структуры базы данных...")
-        cursor.execute("PRAGMA table_info(matches)")
-        columns = cursor.fetchall()
-        print("Таблица 'matches':")
-        required_columns = {
-            'id': 'INTEGER PRIMARY KEY',
-            'sport': 'TEXT',
-            'team1': 'TEXT',
-            'team2': 'TEXT',
-            'match_date': 'TEXT',
-            'match_time': 'TEXT',
-            'league': 'TEXT',
-            'venue': 'TEXT',
-            'api_event_id': 'TEXT',
-            'status': 'TEXT',
-            'analysis_text': 'TEXT',
-            'price': 'INTEGER',
-            'is_active': 'BOOLEAN',
-            'created_at': 'TEXT'
-        }
-        existing_columns = {}
-        for col in columns:
-            existing_columns[col[1]] = col[2]
-            print(f"  - {col[1]}: {col[2]}")
-        missing_columns = []
-        for col_name, col_type in required_columns.items():
-            if col_name not in existing_columns:
-                missing_columns.append((col_name, col_type))
-        if missing_columns:
-            print("\nОтсутствующие столбцы:")
-            for col_name, col_type in missing_columns:
-                print(f"  - {col_name}: {col_type}")
-            print("\nДобавление недостающих столбцов...")
-            for col_name, col_type in missing_columns:
-                try:
-                    cursor.execute(f'ALTER TABLE matches ADD COLUMN {col_name} {col_type}')
-                    print(f"Добавлен столбец: {col_name}")
-                except Exception as e:
-                    print(f"Ошибка при добавлении {col_name}: {e}")
-        else:
-            print("Все необходимые столбцы присутствуют")
-        conn.commit()
-        return len(missing_columns) == 0
-
-
 def get_purchased_matches_by_user(user_id):
     """Получить все купленные матчи пользователя (только оплаченные)"""
     with get_db() as conn:
@@ -445,6 +382,125 @@ def get_purchased_matches_by_user(user_id):
             ORDER BY m.match_date DESC, m.match_time DESC
         ''', (user_id,))
         return cursor.fetchall()
+
+
+def get_user_full_info(user_id):
+    """Возвращает пользователя, 5 последних покупок и 5 последних пополнений."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT user_id, username, balance, total_analysis_bought, created_at
+            FROM users
+            WHERE user_id = ?
+            ''',
+            (user_id,)
+        )
+        user = cursor.fetchone()
+        if not user:
+            return None
+
+        cursor.execute(
+            '''
+            SELECT id, match_id, status, created_at, purchase_date, token, amount
+            FROM purchases
+            WHERE user_id = ?
+            ORDER BY COALESCE(created_at, purchase_date) DESC, id DESC
+            LIMIT 5
+            ''',
+            (user_id,)
+        )
+        purchases = cursor.fetchall()
+
+        cursor.execute(
+            '''
+            SELECT id, amount_rub, status, token, created_at, expires_at, donation_event_id
+            FROM balance_topups
+            WHERE user_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 5
+            ''',
+            (user_id,)
+        )
+        topups = cursor.fetchall()
+
+    return {
+        'user': user,
+        'purchases': purchases,
+        'topups': topups,
+    }
+
+
+def find_users(search_query, limit=10):
+    """Ищет пользователей по user_id или части username."""
+    raw_query = str(search_query or '').strip()
+    if not raw_query:
+        return []
+
+    safe_limit = max(1, min(int(limit or 10), 20))
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        if raw_query.isdigit():
+            cursor.execute(
+                '''
+                SELECT user_id, username, balance, total_analysis_bought, created_at
+                FROM users
+                WHERE user_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                ''',
+                (int(raw_query), safe_limit)
+            )
+            return cursor.fetchall()
+
+        normalized_query = raw_query.lstrip('@')
+        like_query = f"%{normalized_query}%"
+        cursor.execute(
+            '''
+            SELECT user_id, username, balance, total_analysis_bought, created_at
+            FROM users
+            WHERE username IS NOT NULL AND username LIKE ?
+            ORDER BY
+                CASE WHEN username = ? THEN 0 ELSE 1 END,
+                created_at DESC
+            LIMIT ?
+            ''',
+            (like_query, normalized_query, safe_limit)
+        )
+        return cursor.fetchall()
+
+
+def get_last_paid_purchase_by_user(user_id):
+    """Возвращает последнюю paid-покупку пользователя вместе с данными матча."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT
+                p.id,
+                p.user_id,
+                p.match_id,
+                p.status,
+                p.created_at,
+                p.purchase_date,
+                p.amount,
+                m.team1,
+                m.team2,
+                m.match_date,
+                m.match_time,
+                m.league,
+                COALESCE(m.price, 150) AS price
+            FROM purchases p
+            LEFT JOIN matches m ON m.id = p.match_id
+            WHERE p.user_id = ? AND p.status = 'paid'
+            ORDER BY COALESCE(p.created_at, p.purchase_date) DESC, p.id DESC
+            LIMIT 1
+            ''',
+            (user_id,)
+        )
+        return cursor.fetchone()
 
 
 def get_purchased_matches_by_sport(user_id, sport):
@@ -544,6 +600,36 @@ def update_match_analysis(match_id, analysis_text, png_path=None):
         conn.commit()
 
 
+def clear_match_analysis(match_id):
+    """Сбрасывает analysis_text и analysis_png_path, возвращает старый png_path."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT analysis_png_path
+            FROM matches
+            WHERE id = ?
+            ''',
+            (match_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        old_png_path = row['analysis_png_path']
+        cursor.execute(
+            '''
+            UPDATE matches
+            SET analysis_text = NULL,
+                analysis_png_path = NULL
+            WHERE id = ?
+            ''',
+            (match_id,)
+        )
+        conn.commit()
+        return old_png_path
+
+
 def delete_match(match_id):
     with get_db() as conn:
         cursor = conn.cursor()
@@ -602,20 +688,6 @@ def get_or_create_user(user_id, username=None):
             user = cursor.fetchone()
         return user
 
-
-# START TEMPORARY DISABLE BALANCE LOGIC — MVP PURCHASE FLOW (2026-02-16)
-# def add_balance(user_id, amount):
-#     conn = get_db_connection()
-#     cursor = conn.cursor()
-#     cursor.execute('''
-#         UPDATE users
-#         SET balance = balance + ?
-#         WHERE user_id = ?
-#     ''', (amount, user_id))
-#     conn.commit()
-#     conn.close()
-# END TEMPORARY DISABLE BALANCE LOGIC
-# TODO: Restore after MVP — see mvp_scan_report.md
 
 def add_balance(user_id, amount):
     """Пополняет баланс пользователя на указанную сумму (в рублях)."""
@@ -718,6 +790,79 @@ def purchase_analysis(user_id, match_id):
         except sqlite3.IntegrityError:
             conn.rollback()
             return False, "Анализ уже приобретен"
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def refund_purchase(purchase_id):
+    """
+    Возвращает средства за paid-покупку на баланс пользователя.
+
+    Returns:
+        tuple:
+            (True, user_id, amount) при успехе
+            (False, reason) при ошибке
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('BEGIN IMMEDIATE')
+            cursor.execute(
+                '''
+                SELECT
+                    p.user_id,
+                    p.match_id,
+                    p.status,
+                    COALESCE(m.price, 150) AS refund_amount
+                FROM purchases p
+                LEFT JOIN matches m ON m.id = p.match_id
+                WHERE p.id = ?
+                ''',
+                (purchase_id,)
+            )
+            purchase = cursor.fetchone()
+            if not purchase:
+                conn.rollback()
+                return False, "Покупка не найдена"
+
+            status = (purchase['status'] or '').lower()
+            if status != 'paid':
+                conn.rollback()
+                if status == 'refunded':
+                    return False, "Покупка уже возвращена"
+                return False, f"Возврат невозможен: статус {purchase['status'] or 'unknown'}"
+
+            user_id = purchase['user_id']
+            amount = int(purchase['refund_amount'] or 150)
+
+            cursor.execute(
+                '''
+                UPDATE purchases
+                SET status = 'refunded'
+                WHERE id = ? AND status = 'paid'
+                ''',
+                (purchase_id,)
+            )
+            if cursor.rowcount == 0:
+                conn.rollback()
+                return False, "Покупка уже обработана другим процессом"
+
+            cursor.execute(
+                '''
+                UPDATE users
+                SET balance = COALESCE(balance, 0) + ?
+                WHERE user_id = ?
+                ''',
+                (amount, user_id)
+            )
+            if cursor.rowcount == 0:
+                conn.rollback()
+                return False, "Пользователь покупки не найден"
+
+            conn.commit()
+            return True, user_id, amount
         except Exception:
             conn.rollback()
             raise
@@ -925,6 +1070,34 @@ def expire_pending_topups():
     if deleted_count > 0:
         logger.info(f"Удалено старых expired topups: {deleted_count}")
     return expired_count
+
+
+def get_all_pending_topups():
+    """Возвращает все актуальные pending topups с username, отсортированные по expires_at."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute(
+            '''
+            SELECT
+                bt.id,
+                bt.user_id,
+                u.username,
+                bt.amount_rub,
+                bt.amount_kopeks,
+                bt.token,
+                bt.status,
+                bt.created_at,
+                bt.expires_at,
+                bt.donation_event_id
+            FROM balance_topups bt
+            LEFT JOIN users u ON u.user_id = bt.user_id
+            WHERE bt.status = 'pending' AND bt.expires_at > ?
+            ORDER BY bt.expires_at ASC, bt.created_at ASC, bt.id ASC
+            ''',
+            (now,)
+        )
+        return cursor.fetchall()
 
 
 def expire_old_pending_purchases(max_age_minutes=60):

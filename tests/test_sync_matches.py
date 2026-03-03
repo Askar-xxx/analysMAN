@@ -98,19 +98,6 @@ CREATE_MATCHES_SQL = '''
     )
 '''
 
-CREATE_TEAMS_SQL = '''
-    CREATE TABLE IF NOT EXISTS teams (
-        team_id TEXT PRIMARY KEY,
-        name TEXT,
-        short_name TEXT,
-        badge_url TEXT,
-        sport TEXT DEFAULT 'football',
-        raw_json TEXT,
-        source TEXT,
-        cached_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )
-'''
-
 
 def _create_test_db():
     """Создать временную тестовую БД."""
@@ -118,7 +105,6 @@ def _create_test_db():
     os.close(fd)
     conn = sqlite3.connect(db_path)
     conn.execute(CREATE_MATCHES_SQL)
-    conn.execute(CREATE_TEAMS_SQL)
     conn.commit()
     conn.close()
     return db_path
