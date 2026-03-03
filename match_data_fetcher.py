@@ -617,7 +617,7 @@ class MatchDataFetcher:
             return h2h_matches[:10], is_current_season
 
         except Exception as e:
-            logger.error(f"Ошибка _fetch_h2h: {e}")
+            logger.warning(f"Ошибка _fetch_h2h: {e}")
             return [], True
 
     def _fetch_standings(self, league_id: int, season: str) -> dict:
@@ -744,7 +744,7 @@ class MatchDataFetcher:
             return matches
 
         except Exception as e:
-            logger.error(f"Ошибка _fetch_team_last_matches: {e}")
+            logger.warning(f"Ошибка _fetch_team_last_matches: {e}")
             return []
 
     def _fetch_event_details(self, event_id: int) -> Optional[dict]:
@@ -785,7 +785,7 @@ class MatchDataFetcher:
             }
 
         except Exception as e:
-            logger.error(f"Ошибка _fetch_event_details: {e}")
+            logger.warning(f"Ошибка _fetch_event_details: {e}")
             return None
 
     @staticmethod
@@ -858,7 +858,7 @@ class MatchDataFetcher:
             except ValueError as e:
                 logger.warning(f"Cup events: не удалось распарсить JSON ({endpoint}): {e}")
             except Exception as e:
-                logger.error(f"Ошибка _fetch_cup_matches_by_season ({endpoint}): {e}")
+                logger.warning(f"Ошибка _fetch_cup_matches_by_season ({endpoint}): {e}")
 
         return []
 
@@ -948,7 +948,7 @@ class MatchDataFetcher:
                 'stadium_location': team.get('strStadiumLocation', ''),
             }
         except Exception as e:
-            logger.error(f"Ошибка _fetch_team_details: {e}")
+            logger.warning(f"Ошибка _fetch_team_details: {e}")
             return None
 
     @staticmethod
@@ -1119,7 +1119,7 @@ class MatchDataFetcher:
             return data['lineup']
 
         except Exception as e:
-            logger.error(f"Ошибка _fetch_lineup: {e}")
+            logger.warning(f"Ошибка _fetch_lineup: {e}")
             return []
 
     def _fetch_timeline(self, event_id: int) -> List[dict]:
@@ -1150,7 +1150,7 @@ class MatchDataFetcher:
             return data['timeline']
 
         except Exception as e:
-            logger.error(f"Ошибка _fetch_timeline: {e}")
+            logger.warning(f"Ошибка _fetch_timeline: {e}")
             return []
 
     @staticmethod
@@ -1250,7 +1250,7 @@ class MatchDataFetcher:
             return parsed
 
         except Exception as e:
-            logger.error(f"Ошибка _fetch_event_stats: {e}")
+            logger.warning(f"Ошибка _fetch_event_stats: {e}")
             return {}
 
 
