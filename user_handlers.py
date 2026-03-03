@@ -1047,7 +1047,7 @@ async def handle_show_table(
             pass
 
     except Exception as e:
-        logger.error(f"Ошибка отправки таблицы: {e}", exc_info=True)
+        logger.warning(f"Ошибка отправки таблицы: {e}")
         await safe_edit_message(
             query,
             "❌ Не удалось показать таблицу. Попробуйте снова.",

@@ -279,7 +279,7 @@ async def _handle_topup_donation(topup, donation_id, amount_rub):
                 reply_markup=keyboard
             )
         except Exception as e:
-            logger.error(f"Ошибка отправки уведомления пользователю {user_id}: {e}")
+            logger.warning(f"Ошибка отправки уведомления пользователю {user_id}: {e}")
 
     return True
 
