@@ -108,7 +108,7 @@ python sync_matches.py --dry-run             # Preview without saving
 **DonationAlerts integration:**
 
 - `da_oauth.py` — OAuth авторизация. Скоупы: oauth-donation-subscribe, oauth-donation-index, oauth-user-show. Локальный Flask на :8080 для callback. Сохраняет токены в config.py.
-- `da_polling.py` — Polling listener. Опрашивает `GET /api/v1/alerts/donations` каждые 15 сек. Обрабатывает пополнения баланса (balance_topups). Автообновление DA токена при 401.
+- `da_polling.py` — Polling listener. Опрашивает `GET /api/v1/alerts/donations` каждые 15 сек. Обрабатывает пополнения баланса (balance_topups). Автообновление DA токена при 401. Сетевые ошибки логируются как WARNING, ERROR только после 5 ошибок подряд (~75 сек).
 - `webhook_server.py` — Flask сервер (:5000). `generate_and_send_analysis()` — генерация и отправка анализа через Telegram Bot API. Используется как модуль из listener'ов.
 - `migrate_db_da.py` — Миграция БД: добавляет поля token, status, amount, expires_at, donation_event_id в purchases.
 
