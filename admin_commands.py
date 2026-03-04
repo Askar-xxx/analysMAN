@@ -60,6 +60,13 @@ def _format_remaining_time(raw_value):
     return f"{seconds}с"
 
 
+def _mask_token(token):
+    t = str(token or '—')
+    if len(t) < 8:
+        return t
+    return escape(t[:4] + "…" + t[-4:])
+
+
 def _truncate_text(value, limit=80):
     text = str(value or '').strip()
     if len(text) <= limit:
@@ -70,10 +77,16 @@ def _truncate_text(value, limit=80):
 def _format_match_brief(match_like):
     if not match_like:
         return "неизвестный матч"
-    team1 = str(match_like.get('team1') or '?')
-    team2 = str(match_like.get('team2') or '?')
-    match_date = str(match_like.get('match_date') or '—')
-    match_time = str(match_like.get('match_time') or '—')
+    if hasattr(match_like, 'keys'):
+        team1 = str(match_like['team1']) if 'team1' in match_like.keys() and match_like['team1'] else '?'
+        team2 = str(match_like['team2']) if 'team2' in match_like.keys() and match_like['team2'] else '?'
+        match_date = str(match_like['match_date']) if 'match_date' in match_like.keys() and match_like['match_date'] else '—'
+        match_time = str(match_like['match_time']) if 'match_time' in match_like.keys() and match_like['match_time'] else '—'
+    else:
+        team1 = str(match_like.get('team1') or '?')
+        team2 = str(match_like.get('team2') or '?')
+        match_date = str(match_like.get('match_date') or '—')
+        match_time = str(match_like.get('match_time') or '—')
     return f"{team1} vs {team2} ({match_date} {match_time})"
 
 
@@ -263,7 +276,7 @@ async def clean_all_matches_command(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
         return
 
-    if not context.args or context.args[0].strip().upper() != "CONFIRM":
+    if not context.args or context.args[0].strip() != "CONFIRM":
         await update.message.reply_text(
             "⚠️ Команда разрушительная и требует подтверждения.\n\n"
             "Использование:\n"
@@ -773,7 +786,7 @@ async def userinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         topup_lines.append(
             f"• #{topup['id']} | {topup['amount_rub']} RUB | "
             f"{escape(str(topup['status'] or '—'))} | "
-            f"{escape(str(topup['token'] or '—'))} | {_format_datetime(topup['created_at'])}"
+            f"{_mask_token(topup['token'])} | {_format_datetime(topup['created_at'])}"
         )
     if not topup_lines:
         topup_lines.append("• Нет пополнений")
@@ -844,7 +857,7 @@ async def topups_pending_command(update: Update, context: ContextTypes.DEFAULT_T
         lines.append(
             f"• user_id=<code>{topup['user_id']}</code> | {_format_username(topup['username'])}\n"
             f"  сумма: <b>{int(topup['amount_rub'] or 0)} RUB</b> | "
-            f"token: <code>{escape(str(topup['token'] or '—'))}</code>\n"
+            f"token: <code>{_mask_token(topup['token'])}</code>\n"
             f"  создано: {_format_datetime(topup['created_at'])} | "
             f"осталось: {_format_remaining_time(topup['expires_at'])}"
         )

@@ -207,10 +207,8 @@ def main():
 
     # Импортируем и настраиваем обработчики
     from user_handlers import setup_user_handlers
-    from payment_handlers import setup_payment_handlers
     from admin_commands import setup_admin_handlers
     setup_user_handlers(application)
-    setup_payment_handlers(application)
     setup_admin_handlers(application)
     application.add_error_handler(error_handler)
 
