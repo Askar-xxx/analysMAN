@@ -78,10 +78,26 @@ def _format_match_brief(match_like):
     if not match_like:
         return "неизвестный матч"
     if hasattr(match_like, 'keys'):
-        team1 = str(match_like['team1']) if 'team1' in match_like.keys() and match_like['team1'] else '?'
-        team2 = str(match_like['team2']) if 'team2' in match_like.keys() and match_like['team2'] else '?'
-        match_date = str(match_like['match_date']) if 'match_date' in match_like.keys() and match_like['match_date'] else '—'
-        match_time = str(match_like['match_time']) if 'match_time' in match_like.keys() and match_like['match_time'] else '—'
+        team1 = (
+            str(match_like['team1'])
+            if 'team1' in match_like.keys() and match_like['team1']
+            else '?'
+        )
+        team2 = (
+            str(match_like['team2'])
+            if 'team2' in match_like.keys() and match_like['team2']
+            else '?'
+        )
+        match_date = (
+            str(match_like['match_date'])
+            if 'match_date' in match_like.keys() and match_like['match_date']
+            else '—'
+        )
+        match_time = (
+            str(match_like['match_time'])
+            if 'match_time' in match_like.keys() and match_like['match_time']
+            else '—'
+        )
     else:
         team1 = str(match_like.get('team1') or '?')
         team2 = str(match_like.get('team2') or '?')

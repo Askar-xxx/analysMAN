@@ -4,7 +4,6 @@ import asyncio
 import os
 import sqlite3
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock
 
@@ -169,16 +168,21 @@ def test_stats_command_reports_counts(sqlite_db, monkeypatch, tmp_path):
 
     with admin_commands.database.get_db_connection() as conn:
         conn.execute(
-            "INSERT INTO users (user_id, username, balance, total_analysis_bought, created_at) VALUES (1, 'tester', 10, 2, '2026-03-03 19:00:00')"
+            "INSERT INTO users (user_id, username, balance, total_analysis_bought, created_at) "
+            "VALUES (1, 'tester', 10, 2, '2026-03-03 19:00:00')"
         )
         conn.execute(
-            "INSERT INTO matches (team1, team2, match_date, match_time, league, sport, analysis_text, analysis_png_path) VALUES ('A', 'B', '2026-03-03', '21:00', 'League', 'football', 'text', 'analysis_cache/table.webp')"
+            "INSERT INTO matches (team1, team2, match_date, match_time, league, sport, analysis_text, analysis_png_path) "
+            "VALUES ('A', 'B', '2026-03-03', '21:00', 'League', 'football', "
+            "'text', 'analysis_cache/table.webp')"
         )
         conn.execute(
-            "INSERT INTO purchases (user_id, match_id, purchase_date, created_at, status) VALUES (1, 1, '2026-03-03 19:05:00', '2026-03-03 19:05:00', 'paid')"
+            "INSERT INTO purchases (user_id, match_id, purchase_date, created_at, status) "
+            "VALUES (1, 1, '2026-03-03 19:05:00', '2026-03-03 19:05:00', 'paid')"
         )
         conn.execute(
-            "INSERT INTO balance_topups (user_id, amount_rub, status, token, created_at, expires_at) VALUES (1, 100, 'pending', 'tok-1', '2026-03-03 19:10:00', '2026-03-03 20:10:00')"
+            "INSERT INTO balance_topups (user_id, amount_rub, status, token, created_at, expires_at) "
+            "VALUES (1, 100, 'pending', 'tok-1', '2026-03-03 19:10:00', '2026-03-03 20:10:00')"
         )
         conn.commit()
 
@@ -193,7 +197,8 @@ def test_stats_command_reports_counts(sqlite_db, monkeypatch, tmp_path):
 def test_balance_commands_happy_path(sqlite_db, monkeypatch):
     with admin_commands.database.get_db_connection() as conn:
         conn.execute(
-            "INSERT INTO users (user_id, username, balance, total_analysis_bought, created_at) VALUES (5, 'anglesym', 3, 0, '2026-03-03 19:00:00')"
+            "INSERT INTO users (user_id, username, balance, total_analysis_bought, created_at) "
+            "VALUES (5, 'anglesym', 3, 0, '2026-03-03 19:00:00')"
         )
         conn.commit()
 
@@ -228,17 +233,22 @@ def test_clear_commands_happy_paths(sqlite_db, monkeypatch, tmp_path):
 
     with admin_commands.database.get_db_connection() as conn:
         conn.execute(
-            "INSERT INTO users (user_id, username, balance, total_analysis_bought, created_at) VALUES (7, 'buyer', 0, 2, '2026-03-03 19:00:00')"
+            "INSERT INTO users (user_id, username, balance, total_analysis_bought, created_at) "
+            "VALUES (7, 'buyer', 0, 2, '2026-03-03 19:00:00')"
         )
         conn.execute(
-            "INSERT INTO matches (id, team1, team2, match_date, match_time, league, sport, analysis_text, analysis_png_path) VALUES (1, 'A', 'B', '2026-03-03', '20:00', 'League', 'football', 'text', ?)",
+            "INSERT INTO matches (id, team1, team2, match_date, match_time, league, sport, analysis_text, analysis_png_path) "
+            "VALUES (1, 'A', 'B', '2026-03-03', '20:00', 'League', "
+            "'football', 'text', ?)",
             (str(png_path),),
         )
         conn.execute(
-            "INSERT INTO purchases (user_id, match_id, purchase_date, created_at, status) VALUES (7, 1, '2026-03-03 19:05:00', '2026-03-03 19:05:00', 'paid')"
+            "INSERT INTO purchases (user_id, match_id, purchase_date, created_at, status) "
+            "VALUES (7, 1, '2026-03-03 19:05:00', '2026-03-03 19:05:00', 'paid')"
         )
         conn.execute(
-            "INSERT INTO balance_topups (user_id, amount_rub, status, token, created_at, expires_at) VALUES (7, 100, 'pending', 'tok', '2026-03-03 19:10:00', '2026-03-03 20:10:00')"
+            "INSERT INTO balance_topups (user_id, amount_rub, status, token, created_at, expires_at) "
+            "VALUES (7, 100, 'pending', 'tok', '2026-03-03 19:10:00', '2026-03-03 20:10:00')"
         )
         conn.commit()
 
@@ -248,7 +258,8 @@ def test_clear_commands_happy_paths(sqlite_db, monkeypatch, tmp_path):
 
     with admin_commands.database.get_db_connection() as conn:
         conn.execute(
-            "INSERT INTO purchases (user_id, match_id, purchase_date, created_at, status) VALUES (7, 1, '2026-03-03 19:05:00', '2026-03-03 19:05:00', 'paid')"
+            "INSERT INTO purchases (user_id, match_id, purchase_date, created_at, status) "
+            "VALUES (7, 1, '2026-03-03 19:05:00', '2026-03-03 19:05:00', 'paid')"
         )
         conn.commit()
 
@@ -451,10 +462,12 @@ def test_regen_commands_route_correct_match_ids(monkeypatch):
 def test_matchinfo_command_renders_match_and_purchases(sqlite_db, monkeypatch):
     with admin_commands.database.get_db_connection() as conn:
         conn.execute(
-            "INSERT INTO users (user_id, username, balance, total_analysis_bought, created_at) VALUES (9, 'buyer', 0, 1, '2026-03-03 19:00:00')"
+            "INSERT INTO users (user_id, username, balance, total_analysis_bought, created_at) "
+            "VALUES (9, 'buyer', 0, 1, '2026-03-03 19:00:00')"
         )
         conn.execute(
-            "INSERT INTO purchases (id, user_id, match_id, purchase_date, created_at, status) VALUES (45, 9, 83, '2026-03-03 19:23:00', '2026-03-03 19:23:00', 'paid')"
+            "INSERT INTO purchases (id, user_id, match_id, purchase_date, created_at, status) "
+            "VALUES (45, 9, 83, '2026-03-03 19:23:00', '2026-03-03 19:23:00', 'paid')"
         )
         conn.commit()
 
@@ -498,11 +511,14 @@ def test_clean_matches_and_clean_all_matches_commands(sqlite_db, monkeypatch, tm
 
     with admin_commands.database.get_db_connection() as conn:
         conn.execute(
-            "INSERT INTO matches (team1, team2, match_date, match_time, league, sport, analysis_text, analysis_png_path) VALUES ('A', 'B', '2026-03-03', '20:00', 'League', 'football', 'text', ?)",
+            "INSERT INTO matches (team1, team2, match_date, match_time, league, sport, analysis_text, analysis_png_path) "
+            "VALUES ('A', 'B', '2026-03-03', '20:00', 'League', "
+            "'football', 'text', ?)",
             (str(linked_png),),
         )
         conn.execute(
-            "INSERT INTO purchases (user_id, match_id, purchase_date, created_at, status) VALUES (1, 1, '2026-03-03 19:05:00', '2026-03-03 19:05:00', 'paid')"
+            "INSERT INTO purchases (user_id, match_id, purchase_date, created_at, status) "
+            "VALUES (1, 1, '2026-03-03 19:05:00', '2026-03-03 19:05:00', 'paid')"
         )
         conn.commit()
 
