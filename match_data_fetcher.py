@@ -4,7 +4,7 @@ On-demand fetcher для обогащения матчей данными H2H/st
 """
 import logging
 import requests
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from typing import Dict, List, Optional
 import time
 from threading import Lock
@@ -60,6 +60,9 @@ class MatchDataFetcher:
             'Accept': 'application/json',
         })
         self.session.verify = THESPORTSDB_VERIFY_TLS
+        self._season_schedule_cache: Dict[tuple, List[dict]] = {}
+        self._season_schedule_cache_ts: Dict[tuple, float] = {}
+        self._season_schedule_cache_ttl: Dict[tuple, float] = {}
         if not THESPORTSDB_VERIFY_TLS:
             urllib3.disable_warnings(InsecureRequestWarning)
 
@@ -159,6 +162,7 @@ class MatchDataFetcher:
         """
         result = {
             'h2h': [],
+            'h2h_season_source': 'search',
             'standings': {},
             'team1_form': [],
             'team2_form': [],
@@ -211,15 +215,34 @@ class MatchDataFetcher:
         # 2. H2H (с фильтрацией по season из шага 1)
         if include_h2h:
             try:
-                h2h, h2h_is_current_season = self._fetch_h2h(
-                    team1, team2, season=season, league_id=league_id
-                )
+                h2h = []
+                h2h_is_current_season = True
+                h2h_season_source = 'search'
+
+                if league_id and season:
+                    season_h2h, schedule_data_ok = self._fetch_season_h2h_via_schedule(
+                        league_id, season, team1, team2
+                    )
+                    if season_h2h:
+                        h2h = season_h2h
+                        h2h_is_current_season = True
+                        h2h_season_source = 'schedule'
+                    else:
+                        h2h, _ = self._fetch_h2h(team1, team2)
+                        h2h_is_current_season = False
+                        h2h_season_source = 'schedule_confirmed' if schedule_data_ok else 'error'
+                else:
+                    h2h, h2h_is_current_season = self._fetch_h2h(
+                        team1, team2, season=season, league_id=league_id
+                    )
+
+                result['h2h_season_source'] = h2h_season_source
                 if h2h:
                     result['h2h'] = h2h
                     result['h2h_is_current_season'] = h2h_is_current_season
                     logger.info(
                         f"H2H получен: {len(h2h)} матчей "
-                        f"(текущий сезон: {h2h_is_current_season})"
+                        f"(текущий сезон: {h2h_is_current_season}, источник: {h2h_season_source})"
                     )
             except Exception as e:
                 error_msg = f"Ошибка получения H2H: {e}"
@@ -545,6 +568,9 @@ class MatchDataFetcher:
                 for event in rows or []:
                     if event.get('strStatus') not in ['Match Finished', 'FT']:
                         continue
+                    event_league_id = event.get('idLeague')
+                    if league_id and event_league_id and str(event_league_id) != str(league_id):
+                        continue
                     finished.append({
                         'event_id': event.get('idEvent', ''),
                         'date': event.get('dateEvent', ''),
@@ -619,6 +645,115 @@ class MatchDataFetcher:
         except Exception as e:
             logger.warning(f"Ошибка _fetch_h2h: {e}")
             return [], True
+
+    @staticmethod
+    def _compute_cache_ttl(events: list) -> float:
+        """
+        Адаптивный TTL кэша расписания сезона:
+        - Есть матч сегодня с нефинальным статусом → 20 минут
+        - Есть матч завершённый в последние 48ч → 1 час
+        - Всё старое → 6 часов
+        """
+        today = str(date.today())
+        final_statuses = {'Match Finished', 'FT'}
+
+        for event in events:
+            if event.get('strStatus') not in final_statuses:
+                if event.get('dateEvent') == today:
+                    return 20 * 60  # 20 минут
+
+        cutoff = datetime.now() - timedelta(hours=48)
+        for event in events:
+            if event.get('strStatus') in final_statuses:
+                try:
+                    event_dt = datetime.strptime(event['dateEvent'], '%Y-%m-%d')
+                    if event_dt >= cutoff:
+                        return 1 * 3600  # 1 час
+                except (KeyError, ValueError):
+                    pass
+
+        return 6 * 3600  # 6 часов
+
+    def _fetch_season_h2h_via_schedule(
+        self,
+        league_id: str,
+        season: str,
+        team1: str,
+        team2: str
+    ) -> tuple[list, bool]:
+        """
+        Найти встречи пары в сезоне через полное расписание лиги.
+
+        Возвращает (matches, data_ok):
+          - matches: список матчей пары (может быть пустым)
+          - data_ok: True если запрос прошёл успешно
+                     False если запрос упал/таймаут
+        """
+        cache_key = (str(league_id), str(season))
+        cached_ts = self._season_schedule_cache_ts.get(cache_key, 0.0)
+        cached_ttl = self._season_schedule_cache_ttl.get(cache_key, 0.0)
+        cache_expired = (time.time() - cached_ts) > cached_ttl
+        season_events = None if cache_expired else self._season_schedule_cache.get(cache_key)
+
+        if season_events is None:
+            try:
+                response = self._get_with_retry(
+                    "eventsseason.php",
+                    params={'id': league_id, 's': season},
+                    timeout=10
+                )
+                if response.status_code != 200:
+                    logger.warning(
+                        "Season H2H schedule: статус %s для league %s season %s",
+                        response.status_code, league_id, season
+                    )
+                    return [], False
+
+                data = response.json()
+                season_events = data.get('events', []) if isinstance(data, dict) else []
+                ttl = self._compute_cache_ttl(season_events)
+                self._season_schedule_cache[cache_key] = season_events
+                self._season_schedule_cache_ts[cache_key] = time.time()
+                self._season_schedule_cache_ttl[cache_key] = ttl
+                logger.debug(
+                    "Season schedule кэш обновлён: league %s season %s, TTL %.0f мин",
+                    league_id, season, ttl / 60
+                )
+            except Exception as e:
+                logger.warning(
+                    "Ошибка _fetch_season_h2h_via_schedule для league %s season %s: %s",
+                    league_id, season, e
+                )
+                return [], False
+
+        team1_name = (team1 or '').strip()
+        team2_name = (team2 or '').strip()
+        matches = []
+
+        for event in season_events or []:
+            home_team = (event.get('strHomeTeam') or '').strip()
+            away_team = (event.get('strAwayTeam') or '').strip()
+            is_target_pair = (
+                (home_team == team1_name and away_team == team2_name)
+                or (home_team == team2_name and away_team == team1_name)
+            )
+            if not is_target_pair:
+                continue
+            if event.get('strStatus') not in ['Match Finished', 'FT']:
+                continue
+
+            matches.append({
+                'event_id': event.get('idEvent', ''),
+                'date': event.get('dateEvent', ''),
+                'home_team': home_team,
+                'away_team': away_team,
+                'home_score': event.get('intHomeScore', ''),
+                'away_score': event.get('intAwayScore', ''),
+                'score': f"{event.get('intHomeScore', '?')}:{event.get('intAwayScore', '?')}"
+            })
+
+        matches.sort(key=lambda item: item.get('date') or '', reverse=True)
+        return matches, True
 
     def _fetch_standings(self, league_id: int, season: str) -> dict:
         """

@@ -194,13 +194,16 @@ def extract_h2h_history(enriched_data: dict) -> List[str]:
 
     # Проверяем флаг: матчи из текущего сезона или fallback
     is_current_season = enriched_data.get('h2h_is_current_season', True)
+    h2h_season_source = enriched_data.get('h2h_season_source', 'search')
 
     if is_current_season and len(h2h_matches) == 1:
         result.append("В текущем сезоне пока только 1 очная встреча:")
         result.append("")  # Пустая строка для отступа
     elif not is_current_season:
-        # Добавляем заголовок о прошлых сезонах
-        result.append("В текущем сезоне команды не встречались")
+        if h2h_season_source == 'schedule_confirmed':
+            result.append("В этом сезоне лиги команды ещё не встречались.")
+        else:
+            result.append("Данные о встречах в текущем сезоне не найдены.")
         result.append("Последние встречи из прошлых сезонов:")
         result.append("")  # Пустая строка для отступа
 

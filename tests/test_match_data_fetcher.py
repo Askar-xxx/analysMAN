@@ -327,7 +327,12 @@ class TestMatchDataFetcher:
         }
 
         # Моки для всех API вызовов
-        with patch.object(fetcher, '_fetch_h2h', return_value=([{'date': '2025-08-25', 'score': '2:1'}], True)), \
+        with patch.object(
+            fetcher,
+            '_fetch_season_h2h_via_schedule',
+            return_value=([{'date': '2025-08-25', 'score': '2:1'}], True)
+        ), \
+             patch.object(fetcher, '_fetch_h2h', return_value=([{'date': '2025-08-25', 'score': '2:1'}], True)), \
              patch.object(fetcher, '_fetch_event_details', return_value={'league_id': '4328', 'season': '2025-2026'}), \
              patch.object(fetcher, '_fetch_standings', return_value={'table': [{'name': 'Arsenal', 'rank': 1}]}), \
              patch.object(fetcher, '_fetch_team_last_matches', return_value=[{'date': '2026-02-10', 'score': '2:1'}]):
@@ -336,10 +341,35 @@ class TestMatchDataFetcher:
 
             assert len(result['h2h']) == 1
             assert result['h2h_is_current_season'] is True
+            assert result['h2h_season_source'] == 'schedule'
             assert 'table' in result['standings']
             assert len(result['team1_form']) == 1
             assert len(result['team2_form']) == 1
             assert len(result['errors']) == 0
+
+    def test_fetch_match_data_with_schedule_confirmed_fallback(self):
+        """Если schedule подтверждает отсутствие матчей в сезоне, используем историю прошлых сезонов."""
+        fetcher = MatchDataFetcher(api_key="test_key")
+
+        match = {
+            'team1': 'Rayo Vallecano',
+            'team2': 'Atletico Madrid',
+            'home_team_id': '1',
+            'away_team_id': '2',
+            'api_event_id': '1001'
+        }
+
+        with patch.object(fetcher, '_fetch_season_h2h_via_schedule', return_value=([], True)), \
+             patch.object(fetcher, '_fetch_h2h', return_value=([{'date': '2024-09-22', 'score': '1:1'}], True)), \
+             patch.object(fetcher, '_fetch_event_details', return_value={'league_id': '4335', 'season': '2025-2026'}), \
+             patch.object(fetcher, '_fetch_standings', return_value={}), \
+             patch.object(fetcher, '_fetch_team_last_matches', return_value=[]):
+
+            result = fetcher.fetch_match_data(match)
+
+            assert len(result['h2h']) == 1
+            assert result['h2h_is_current_season'] is False
+            assert result['h2h_season_source'] == 'schedule_confirmed'
 
 
 class TestBuildEnrichedContext:
@@ -438,6 +468,7 @@ class TestBuildEnrichedContext:
                 }
             ],
             'h2h_is_current_season': False,  # Флаг fallback
+            'h2h_season_source': 'schedule_confirmed',
             'standings': {},
             'team1_form': [],
             'team2_form': []
@@ -446,9 +477,32 @@ class TestBuildEnrichedContext:
         context = build_enriched_context(match, data)
 
         assert "ИСТОРИЯ ЛИЧНЫХ ВСТРЕЧ" in context
-        assert "В текущем сезоне команды не встречались" in context
+        assert "В этом сезоне лиги команды ещё не встречались." in context
         assert "Последние встречи из прошлых сезонов" in context
         assert "2024-09-22: Rayo Vallecano 1:1 Atletico Madrid" in context
+
+    def test_build_context_h2h_error_text(self):
+        """При ошибке schedule показываем нейтральный текст про отсутствие данных."""
+        match = {'team1': 'Bournemouth', 'team2': 'Brentford', 'league': 'Premier League'}
+        data = {
+            'h2h': [
+                {
+                    'date': '2024-09-14', 'home_team': 'Brentford',
+                    'away_team': 'Bournemouth', 'score': '2:1'
+                }
+            ],
+            'h2h_is_current_season': False,
+            'h2h_season_source': 'error',
+            'standings': {},
+            'team1_form': [],
+            'team2_form': []
+        }
+
+        context = build_enriched_context(match, data)
+
+        assert "Данные о встречах в текущем сезоне не найдены." in context
+        assert "Последние встречи из прошлых сезонов" in context
+        assert "2024-09-14: Brentford 2:1 Bournemouth" in context
 
 
 class TestHelperFunctions:
@@ -474,34 +528,76 @@ class TestHelperFunctions:
         with pytest.raises(ValueError):
             _get_season_date_range("2025", "4328")
 
+    def test_compute_cache_ttl_live_today(self):
+        """Живой матч сегодня → TTL 20 минут."""
+        from datetime import date
+        today = str(date.today())
+        events = [
+            {'dateEvent': today, 'strStatus': '2H'},
+            {'dateEvent': '2025-09-01', 'strStatus': 'Match Finished'},
+        ]
+        ttl = MatchDataFetcher._compute_cache_ttl(events)
+        assert ttl == 20 * 60
+
+    def test_compute_cache_ttl_recent_finished(self):
+        """Матч завершён в последние 48ч → TTL 1 час."""
+        from datetime import date, timedelta
+        yesterday = str(date.today() - timedelta(days=1))
+        events = [
+            {'dateEvent': yesterday, 'strStatus': 'Match Finished'},
+            {'dateEvent': '2025-09-01', 'strStatus': 'Match Finished'},
+        ]
+        ttl = MatchDataFetcher._compute_cache_ttl(events)
+        assert ttl == 1 * 3600
+
+    def test_compute_cache_ttl_old_data(self):
+        """Все матчи старые → TTL 6 часов."""
+        events = [
+            {'dateEvent': '2025-09-01', 'strStatus': 'Match Finished'},
+            {'dateEvent': '2025-10-15', 'strStatus': 'FT'},
+        ]
+        ttl = MatchDataFetcher._compute_cache_ttl(events)
+        assert ttl == 6 * 3600
+
     def test_fetch_h2h_with_season_filter(self):
         """H2H фильтруется по текущему сезону."""
         fetcher = MatchDataFetcher(api_key="test_key")
 
-        # Мок: 5 матчей (3 в сезоне 2025-26, 2 в 2024-25)
+        # Мок: 6 матчей (3 в нужной лиге и сезоне, 2 из прошлых сезонов, 1 из кубка)
         mock_response = {
             "event": [
                 {
                     "dateEvent": "2025-10-20", "strStatus": "FT", "strHomeTeam": "Arsenal",
-                    "strAwayTeam": "Chelsea", "intHomeScore": 2, "intAwayScore": 1
+                    "strAwayTeam": "Chelsea", "intHomeScore": 2, "intAwayScore": 1,
+                    "idLeague": "4328"
                 },
                 {
                     "dateEvent": "2026-03-15", "strStatus": "FT", "strHomeTeam": "Chelsea",
-                    "strAwayTeam": "Arsenal", "intHomeScore": 1, "intAwayScore": 1
+                    "strAwayTeam": "Arsenal", "intHomeScore": 1, "intAwayScore": 1,
+                    "idLeague": "4328"
                 },
                 {
                     # Прошлый сезон
                     "dateEvent": "2024-08-10", "strStatus": "FT", "strHomeTeam": "Arsenal",
-                    "strAwayTeam": "Chelsea", "intHomeScore": 3, "intAwayScore": 0
+                    "strAwayTeam": "Chelsea", "intHomeScore": 3, "intAwayScore": 0,
+                    "idLeague": "4328"
                 },
                 {
                     "dateEvent": "2026-01-05", "strStatus": "FT", "strHomeTeam": "Chelsea",
-                    "strAwayTeam": "Arsenal", "intHomeScore": 2, "intAwayScore": 2
+                    "strAwayTeam": "Arsenal", "intHomeScore": 2, "intAwayScore": 2,
+                    "idLeague": "4328"
                 },
                 {
                     # Прошлый сезон
                     "dateEvent": "2024-05-30", "strStatus": "FT", "strHomeTeam": "Arsenal",
-                    "strAwayTeam": "Chelsea", "intHomeScore": 1, "intAwayScore": 0
+                    "strAwayTeam": "Chelsea", "intHomeScore": 1, "intAwayScore": 0,
+                    "idLeague": "4328"
+                },
+                {
+                    # Тот же соперник, но другая лига (кубок) — должен быть исключён
+                    "dateEvent": "2025-09-25", "strStatus": "FT", "strHomeTeam": "Arsenal",
+                    "strAwayTeam": "Chelsea", "intHomeScore": 1, "intAwayScore": 0,
+                    "idLeague": "4481"
                 },
             ]
         }
@@ -521,6 +617,70 @@ class TestHelperFunctions:
             assert result[0]['date'] == "2025-10-20"
             assert result[1]['date'] == "2026-03-15"
             assert result[2]['date'] == "2026-01-05"
+
+    def test_fetch_season_h2h_via_schedule_uses_cache_and_filters_pair(self):
+        """Schedule H2H берёт только нужную пару и не делает повторный HTTP-запрос при cache hit."""
+        fetcher = MatchDataFetcher(api_key="test_key")
+
+        mock_response = {
+            "events": [
+                {
+                    "idEvent": "1",
+                    "dateEvent": "2026-02-10",
+                    "strStatus": "FT",
+                    "strHomeTeam": "Arsenal",
+                    "strAwayTeam": "Chelsea",
+                    "intHomeScore": 2,
+                    "intAwayScore": 1
+                },
+                {
+                    "idEvent": "2",
+                    "dateEvent": "2025-11-01",
+                    "strStatus": "Match Finished",
+                    "strHomeTeam": "Chelsea",
+                    "strAwayTeam": "Arsenal",
+                    "intHomeScore": 0,
+                    "intAwayScore": 0
+                },
+                {
+                    "idEvent": "3",
+                    "dateEvent": "2025-12-01",
+                    "strStatus": "FT",
+                    "strHomeTeam": "Arsenal",
+                    "strAwayTeam": "Liverpool",
+                    "intHomeScore": 3,
+                    "intAwayScore": 1
+                },
+                {
+                    "idEvent": "4",
+                    "dateEvent": "2026-04-01",
+                    "strStatus": "NS",
+                    "strHomeTeam": "Arsenal",
+                    "strAwayTeam": "Chelsea",
+                    "intHomeScore": None,
+                    "intAwayScore": None
+                },
+            ]
+        }
+
+        with patch.object(fetcher, '_get_with_retry') as mock_get:
+            mock_get.return_value.status_code = 200
+            mock_get.return_value.json.return_value = mock_response
+
+            result, data_ok = fetcher._fetch_season_h2h_via_schedule(
+                "4328", "2025-2026", "Arsenal", "Chelsea"
+            )
+            cached_result, cached_data_ok = fetcher._fetch_season_h2h_via_schedule(
+                "4328", "2025-2026", "Arsenal", "Chelsea"
+            )
+
+            assert data_ok is True
+            assert cached_data_ok is True
+            assert mock_get.call_count == 1
+            assert len(result) == 2
+            assert result[0]['date'] == "2026-02-10"
+            assert result[1]['date'] == "2025-11-01"
+            assert cached_result == result
 
     def test_fetch_h2h_without_season_filter(self):
         """H2H без фильтрации возвращает все матчи."""
