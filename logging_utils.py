@@ -1,4 +1,5 @@
 import logging
+import os
 import traceback
 import threading
 import time
@@ -91,6 +92,14 @@ def _mark_handler(handler):
     return handler
 
 
+def _should_attach_telegram_handler():
+    """Отключает Telegram-алерты во время pytest, чтобы тесты не слали сообщения в прод-чат."""
+    if os.environ.get('PYTEST_CURRENT_TEST'):
+        return False
+    raw = str(os.environ.get('DISABLE_TELEGRAM_ALERTS', '')).strip().lower()
+    return raw not in {'1', 'true', 'yes', 'on'}
+
+
 def setup_logging(name, level=logging.INFO, log_dir=None, token=None, alert_chat_id=None):
     """Настраивает консольный, файловый и Telegram handler для root logger."""
     root_logger = logging.getLogger()
@@ -123,12 +132,12 @@ def setup_logging(name, level=logging.INFO, log_dir=None, token=None, alert_chat
     file_handler.setLevel(level)
     file_handler.setFormatter(formatter)
 
-    telegram_handler = _mark_handler(
-        TelegramLogHandler(token=token, chat_id=alert_chat_id)
-    )
-    telegram_handler.setFormatter(formatter)
-
     root_logger.addHandler(console_handler)
     root_logger.addHandler(file_handler)
-    root_logger.addHandler(telegram_handler)
+    if _should_attach_telegram_handler():
+        telegram_handler = _mark_handler(
+            TelegramLogHandler(token=token, chat_id=alert_chat_id)
+        )
+        telegram_handler.setFormatter(formatter)
+        root_logger.addHandler(telegram_handler)
     return root_logger

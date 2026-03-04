@@ -110,6 +110,19 @@ def test_telegram_log_handler_includes_exception_details(monkeypatch):
     assert 'handler failed' in text
 
 
+def test_should_attach_telegram_handler_disabled_under_pytest(monkeypatch):
+    monkeypatch.setenv('PYTEST_CURRENT_TEST', 'tests/test_logging_utils.py::test_case')
+
+    assert logging_utils._should_attach_telegram_handler() is False
+
+
+def test_should_attach_telegram_handler_disabled_by_env_flag(monkeypatch):
+    monkeypatch.delenv('PYTEST_CURRENT_TEST', raising=False)
+    monkeypatch.setenv('DISABLE_TELEGRAM_ALERTS', '1')
+
+    assert logging_utils._should_attach_telegram_handler() is False
+
+
 def test_setup_logging_creates_rotating_file(tmp_path):
     _cleanup_managed_handlers()
 
@@ -129,5 +142,46 @@ def test_setup_logging_creates_rotating_file(tmp_path):
         log_file = tmp_path / 'unit_logging.log'
         assert log_file.exists()
         assert 'file logging smoke test' in log_file.read_text(encoding='utf-8')
+    finally:
+        _cleanup_managed_handlers()
+
+
+def test_setup_logging_skips_telegram_handler_under_pytest(tmp_path, monkeypatch):
+    _cleanup_managed_handlers()
+    monkeypatch.setenv('PYTEST_CURRENT_TEST', 'tests/test_logging_utils.py::test_case')
+
+    try:
+        logger = logging_utils.setup_logging(
+            'unit_logging_pytest',
+            log_dir=tmp_path,
+            token='real-token-would-be-here',
+            alert_chat_id=123456,
+        )
+
+        assert not any(
+            isinstance(handler, logging_utils.TelegramLogHandler)
+            for handler in logger.handlers
+        )
+    finally:
+        _cleanup_managed_handlers()
+
+
+def test_setup_logging_skips_telegram_handler_when_disabled_by_env(tmp_path, monkeypatch):
+    _cleanup_managed_handlers()
+    monkeypatch.delenv('PYTEST_CURRENT_TEST', raising=False)
+    monkeypatch.setenv('DISABLE_TELEGRAM_ALERTS', 'true')
+
+    try:
+        logger = logging_utils.setup_logging(
+            'unit_logging_env_opt_out',
+            log_dir=tmp_path,
+            token='real-token-would-be-here',
+            alert_chat_id=123456,
+        )
+
+        assert not any(
+            isinstance(handler, logging_utils.TelegramLogHandler)
+            for handler in logger.handlers
+        )
     finally:
         _cleanup_managed_handlers()

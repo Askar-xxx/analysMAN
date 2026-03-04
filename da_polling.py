@@ -72,11 +72,12 @@ async def process_donation(donation_data):
         # Извлекаем token из комментария
         token_match = re.search(r'\b([A-Z0-9]{12})\b', message.upper())
         if not token_match:
-            logger.warning(f"Token не найден в сообщении: '{message}'")
+            logger.warning(f"Token не найден в сообщении (длина {len(message)} симв.)")
             return False
 
         token = token_match.group(1)
-        logger.info(f"🔑 Извлечён token: {token}")
+        token_mask = token[:4] + "…" + token[-4:]
+        logger.info(f"🔑 Извлечён token: {token_mask}")
 
         # === 1. Ищем pending purchase (прямая покупка анализа) ===
         purchase = database.get_purchase_by_token(token)
@@ -97,7 +98,7 @@ async def process_donation(donation_data):
             logger.info(f"Donation {donation_id} уже засчитан ранее (идемпотентность)")
             return True
 
-        logger.warning(f"Token {token} не найден ни в purchases, ни в balance_topups")
+        logger.warning(f"Token {token_mask} не найден ни в purchases, ни в balance_topups")
         return False
 
     except Exception as e:

@@ -192,11 +192,6 @@ def test_main_registers_global_error_handler(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "payment_handlers",
-        types.SimpleNamespace(setup_payment_handlers=lambda app: None),
-    )
-    monkeypatch.setitem(
-        sys.modules,
         "admin_commands",
         types.SimpleNamespace(setup_admin_handlers=lambda app: None),
     )
