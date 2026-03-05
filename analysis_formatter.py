@@ -625,6 +625,20 @@ def extract_last_match_events(enriched_data: dict, is_home: bool) -> str:
     substitutions = events.get('subs') or []
     cards = events.get('cards') or []
 
+    # Фильтрация плейсхолдерных имён
+    placeholder_re = re.compile(r'^(Substitution \d+|Unknown|None)$', re.IGNORECASE)
+
+    def _filter_placeholder_subs(subs: list) -> list:
+        filtered = []
+        for item in subs:
+            parts = item.split(' → ')
+            if any(placeholder_re.match(p.strip()) for p in parts):
+                continue
+            filtered.append(item)
+        return filtered
+
+    substitutions = _filter_placeholder_subs(substitutions)
+
     lines = []
     if substitutions:
         lines.append("Замены по ходу:")
