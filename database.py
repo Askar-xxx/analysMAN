@@ -1358,15 +1358,17 @@ def delete_finished_matches_without_purchases():
     """
     import os
 
+    cutoff_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+
     with get_db() as conn:
         cursor = conn.cursor()
 
         cursor.execute('''
             SELECT analysis_png_path FROM matches
-            WHERE (is_active = 0 OR match_date < date('now', '-1 day'))
+            WHERE (is_active = 0 OR match_date < ?)
             AND id NOT IN (SELECT DISTINCT match_id FROM purchases)
             AND analysis_png_path IS NOT NULL
-        ''')
+        ''', (cutoff_date,))
         png_paths = [row['analysis_png_path'] for row in cursor.fetchall()]
 
         cursor.execute('''
@@ -1376,7 +1378,6 @@ def delete_finished_matches_without_purchases():
         ''')
         deleted_inactive = cursor.rowcount
 
-        cutoff_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
         cursor.execute('''
             DELETE FROM matches
             WHERE match_date < ?

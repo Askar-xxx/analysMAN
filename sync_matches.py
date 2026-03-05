@@ -127,28 +127,25 @@ class SportsDBSyncer:
     """Синхронизатор матчей из TheSportsDB"""
 
     def __init__(self, db_path: str = "sports_bot.db", mode: str = "top3",
-                 limit: int = 3, batch_size: int = 15,
-                 min_coverage_rows: int = 0,
-                 max_missing_cells: int = 1):
+                 limit: int = 3, batch_size: int = 15):
         self.db_path = db_path
         self.api = RateLimitedAPI()
         self.mode = mode
         self.limit = limit
         self.batch_size = batch_size
-        self.min_coverage_rows = max(0, int(min_coverage_rows))
-        self.max_missing_cells = max(0, int(max_missing_cells))
         self.source = "TheSportsDB"
-        # 3 популярных лиги (premium)
+        # Big-5 лиг (premium)
         self.top_leagues = [
             {'id': '4328', 'name': 'Premier League'},
             {'id': '4335', 'name': 'La Liga'},
             {'id': '4331', 'name': 'Bundesliga'},
+            {'id': '4332', 'name': 'Serie A'},
+            {'id': '4334', 'name': 'Ligue 1'},
         ]
-        # 3 кубка
+        # 2 кубка (4482 убран — это FA Cup, не UECL)
         self.cups = [
             {'id': '4480', 'name': 'UEFA Champions League'},
             {'id': '4481', 'name': 'UEFA Europa League'},
-            {'id': '4482', 'name': 'UEFA Europa Conference League'},
         ]
         # Окно синхронизации: 3 дня (сегодня + завтра + послезавтра)
         self.sync_days = 3
@@ -159,22 +156,6 @@ class SportsDBSyncer:
             matches = self.get_top3_matches()
         else:
             matches = self.get_week_matches()
-
-        if self.min_coverage_rows > 0:
-            max_needed = self.limit if self.mode == "top3" else None
-            filtered = self._filter_by_min_coverage(
-                matches,
-                min_rows=self.min_coverage_rows,
-                max_missing_cells=self.max_missing_cells,
-                max_needed=max_needed
-            )
-            if filtered:
-                matches = filtered
-            else:
-                logger.warning(
-                    "Мягкий фильтр качества вернул 0 матчей, "
-                    "используем исходную выборку без фильтра"
-                )
 
         if self.mode == "top3":
             return matches[:self.limit]
@@ -197,12 +178,8 @@ class SportsDBSyncer:
 
         all_tournaments = self.top_leagues + self.cups
 
+        # Собираем кандидатов из ВСЕХ турниров (без раннего выхода)
         for league in all_tournaments:
-            if (
-                self.min_coverage_rows <= 0
-                and len(all_matches) >= self.limit
-            ):
-                break
             try:
                 logger.info(f"Получение матчей из: {league['name']}")
                 data = self.api.make_request(
@@ -211,11 +188,6 @@ class SportsDBSyncer:
                 if not data or 'events' not in data or not data['events']:
                     continue
                 for event in data['events']:
-                    if (
-                        self.min_coverage_rows <= 0
-                        and len(all_matches) >= self.limit
-                    ):
-                        break
                     match = self._parse_event(event)
                     if not match:
                         continue
@@ -230,77 +202,9 @@ class SportsDBSyncer:
                 logger.error(f"Ошибка для {league['name']}: {e}")
                 continue
         unique = self._remove_duplicates(all_matches)
+        # Сортируем по дате/времени (ближайшие первые)
         unique.sort(key=lambda x: (x['match_date'], x['match_time']))
         return unique
-
-    def _filter_by_min_coverage(
-        self,
-        matches: List[Dict],
-        min_rows: int = 6,
-        max_missing_cells: int = 1,
-        max_needed: Optional[int] = None
-    ) -> List[Dict]:
-        """
-        Мягкий фильтр качества: пропускаем матч если в адаптивной карточке
-        меньше min_rows заполненных строк.
-        """
-        if not matches:
-            return matches
-
-        from match_data_fetcher import MatchDataFetcher
-        from analysis_formatter import build_table_data
-
-        logger.info(
-            f"Мягкий фильтр качества: минимум {min_rows} строк из карточки "
-            f"(проверка {len(matches)} матчей)..."
-        )
-
-        fetcher = MatchDataFetcher()
-        filtered = []
-
-        for i, match in enumerate(matches, start=1):
-            try:
-                # Лёгкий режим: без lineups и без домашних позиций (дорогие вызовы).
-                enriched_data = fetcher.fetch_match_data(
-                    match,
-                    include_h2h=True,
-                    include_standings=True,
-                    include_lineups=True,
-                    include_domestic_positions=False,
-                    include_last_match_events=True,
-                    include_event_stats=False,
-                    include_cup_context=False,
-                    lineup_scan_limit=2
-                )
-                table_data = build_table_data(match, enriched_data)
-                rows_count, missing_cells = _extract_coverage_metrics(table_data)
-
-                if rows_count >= min_rows and missing_cells <= max_missing_cells:
-                    filtered.append(match)
-                    if max_needed and len(filtered) >= max_needed:
-                        logger.info(
-                            f"Достигнут лимит матчей после мягкого фильтра: {max_needed}"
-                        )
-                        break
-                else:
-                    logger.info(
-                        "Пропуск по мягкому фильтру: "
-                        f"{match['team1']} vs {match['team2']} | rows={rows_count}, missing_cells={missing_cells}"
-                    )
-            except Exception as e:
-                logger.warning(
-                    "Ошибка мягкого фильтра для "
-                    f"{match.get('team1', '?')} vs {match.get('team2', '?')}: {e}"
-                )
-
-            time.sleep(0.8)
-            if i % 5 == 0:
-                logger.info(f"Проверено {i}/{len(matches)} матчей мягкого фильтра")
-
-        logger.info(
-            f"Мягкий фильтр завершён: {len(filtered)} из {len(matches)} матчей"
-        )
-        return filtered
 
     def get_week_matches(self) -> List[Dict]:
         """Получить ВСЕ матчи из всех лиг и кубков на ближайшие 3 дня"""
@@ -878,22 +782,15 @@ def main():
     print(f"Синхронизация матчей (режим: {args.mode})")
     print("=" * 60)
     if args.mode == 'top3':
-        print(f"Top-{args.limit} матчей из 3 лиг + 3 кубков")
+        print(f"Top-{args.limit} матчей из 5 лиг + 2 кубков")
     else:
-        print("3 топ-лиги + 3 кубка (bulk)")
-    if args.min_coverage_rows > 0:
-        print(
-            f"Включён мягкий фильтр: минимум {args.min_coverage_rows} "
-            "заполненных строк в карточке"
-        )
+        print("5 топ-лиг + 2 кубка (bulk)")
     print("На 3 дня вперед")
     print("Время показано в МСК (UTC+3)")
     print("=" * 60)
     syncer = SportsDBSyncer(
         db_path=args.db, mode=args.mode,
-        limit=args.limit, batch_size=args.batch_size,
-        min_coverage_rows=args.min_coverage_rows,
-        max_missing_cells=args.max_missing_cells
+        limit=args.limit, batch_size=args.batch_size
     )
     print("Поиск матчей...")
     matches = syncer.sync()

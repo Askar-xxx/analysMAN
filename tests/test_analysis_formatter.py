@@ -10,8 +10,12 @@ from analysis_formatter import (  # noqa: E402
     extract_tournament_position,
     extract_current_form,
     extract_stats_trends,
+    extract_h2h_history,
+    extract_lineup_changes,
     _has_meaningful_value,
     _normalize_league_display,
+    _normalize_team_id,
+    _ru_plural,
 )
 
 
@@ -55,11 +59,12 @@ def test_adaptive_rows_hide_empty_blocks():
     assert "Форма дома/на выезде" in labels
     assert "Статистические тренды" in labels
 
-    # Пустые блоки скрыты
-    assert "Турнирное положение" not in labels
-    assert "Составы" not in labels
-    assert "История встреч" not in labels
-    assert table_data['coverage_rows_count'] == 3
+    # Core rows остаются даже при пустых данных (с placeholder)
+    assert "Турнирное положение" in labels
+    assert "История встреч" in labels
+    # Optional rows скрыты
+    assert "Изменения состава" not in labels
+    assert "События последнего матча" not in labels
 
 
 def test_cup_profile_rows_are_used():
@@ -116,8 +121,9 @@ def test_cup_rows_hidden_if_empty():
     table_data = build_table_data(match, enriched)
     labels = [row['label'] for row in table_data['rows']]
 
-    assert "Лиговая позиция" not in labels
-    assert "Кубковый путь" not in labels
+    # Core cup rows остаются с placeholder
+    assert "Лиговая позиция" in labels
+    assert "Кубковый путь" in labels
 
 
 def test_lineups_are_formatted_as_header_and_bullets():
@@ -157,9 +163,9 @@ def test_lineups_are_formatted_as_header_and_bullets():
     }
 
     table_data = build_table_data(match, enriched)
-    lineups_row = next(row for row in table_data['rows'] if row['label'] == 'Составы')
+    lineups_row = next(row for row in table_data['rows'] if row['label'] == 'Изменения состава')
 
-    assert "Изменения в старте:" in lineups_row['left']
+    assert "Изменения состава (посл. матч vs предыдущий):" in lineups_row['left']
     assert "• " in lineups_row['left']
     assert "Замена:" not in lineups_row['left']
     assert lineups_row['right'] == "Состав без изменений"
@@ -410,3 +416,291 @@ class TestNormalizeLeagueDisplay:
     def test_no_round_pattern_unchanged(self):
         result = _normalize_league_display('Cup Final', is_cup=True)
         assert result == 'Cup Final'
+
+
+def test_current_form_limited_to_5():
+    """Форма не должна превышать 5 символов даже при 7 матчах."""
+    enriched = {
+        'team1_form': [
+            _form_row(f'2026-02-{20-i}', 'Team A', 'Rival', 2, 1, 100+i)
+            for i in range(7)
+        ]
+    }
+    result = extract_current_form(enriched, 'Team A', is_home=True)
+    form_letters = result.split(' ')[0]
+    assert len(form_letters) <= 5
+
+
+def test_core_rows_not_hidden_when_empty():
+    """Core rows показываются с placeholder даже при пустых данных."""
+    match = {
+        'team1': 'Team A', 'team2': 'Team B',
+        'match_date': '2026-02-26', 'league': 'Premier League'
+    }
+    enriched = {
+        'standings': {}, 'h2h': [],
+        'team1_form': [], 'team2_form': [],
+    }
+    table_data = build_table_data(match, enriched)
+    labels = [row['label'] for row in table_data['rows']]
+    assert 'Турнирное положение' in labels
+    assert 'Текущая форма' in labels
+    assert 'История встреч' in labels
+    assert 'Статистические тренды' in labels
+    # Optional скрыты
+    assert 'Изменения состава' not in labels
+    assert 'События последнего матча' not in labels
+    # Core rows с placeholder
+    tp_row = next(r for r in table_data['rows'] if r['label'] == 'Турнирное положение')
+    assert tp_row['left'] == 'Недостаточно данных'
+
+
+def test_stats_trends_uses_team_ids():
+    """Тренды корректно определяют сторону по team_id при alias-именах."""
+    enriched = {
+        'team1_trends_form': [
+            {
+                'date': '2026-02-20', 'home_team': 'Paris SG',
+                'away_team': 'Lyon', 'home_score': 3, 'away_score': 1,
+                'home_team_id': '100', 'away_team_id': '200',
+            }
+        ]
+    }
+    result = extract_stats_trends(enriched, 'PSG', is_home=True, team_id='100')
+    assert '1/1' in result  # забивают в 1 из 1
+    assert '3' not in result.split('\n')[0]  # первая строка — окно
+
+
+def test_h2h_single_match_wording():
+    """H2H с 1 матчем текущего сезона имеет корректную формулировку."""
+    enriched = {
+        'h2h': [{'date': '2025-10-01', 'home_team': 'A', 'away_team': 'B', 'score': '1:0'}],
+        'h2h_is_current_season': True,
+    }
+    result = extract_h2h_history(enriched)
+    assert 'В этом сезоне лиги сыграна 1 очная встреча:' in result
+
+
+def test_h2h_multiple_matches_wording():
+    """H2H с 2+ матчами текущего сезона."""
+    enriched = {
+        'h2h': [
+            {'date': '2026-01-15', 'home_team': 'A', 'away_team': 'B', 'score': '2:1'},
+            {'date': '2025-10-01', 'home_team': 'B', 'away_team': 'A', 'score': '0:0'},
+        ],
+        'h2h_is_current_season': True,
+    }
+    result = extract_h2h_history(enriched)
+    assert 'Очные встречи в сезоне лиги: 2' in result
+
+
+def test_build_table_data_h2h_uses_match_team_ids_for_aliases():
+    """H2H in table uses canonical names when API gives aliases (Wolves -> Wolverhampton Wanderers)."""
+    match = {
+        'team1': 'Wolverhampton Wanderers',
+        'team2': 'Liverpool',
+        'home_team_id': '4063',
+        'away_team_id': '133602',
+        'match_date': '2026-02-26',
+        'league': 'Premier League'
+    }
+    enriched = {
+        'standings': {},
+        'team1_form': [],
+        'team2_form': [],
+        'h2h_is_current_season': True,
+        'h2h': [
+            {
+                'date': '2025-09-28',
+                'home_team': 'Wolves',
+                'away_team': 'Liverpool',
+                'home_team_id': '4063',
+                'away_team_id': '133602',
+                'score': '1:2'
+            }
+        ]
+    }
+
+    table_data = build_table_data(match, enriched)
+    history_row = next(row for row in table_data['rows'] if row['label'] == 'История встреч')
+    assert '2025-09-28: Wolverhampton Wanderers 1:2 Liverpool' in history_row['left']
+
+
+def test_build_table_data_h2h_uses_team_meta_aliases_without_ids():
+    """Alias from team meta normalizes H2H rows when match team_id is missing."""
+    match = {
+        'team1': 'Wolverhampton Wanderers',
+        'team2': 'Liverpool',
+        'home_team_id': '4063',
+        'away_team_id': '133602',
+        'match_date': '2026-03-06',
+        'league': 'FA Cup',
+    }
+    enriched = {
+        'standings': {},
+        'team1_form': [],
+        'team2_form': [],
+        'h2h_is_current_season': False,
+        'h2h_season_source': 'schedule_confirmed',
+        'team1_meta': {
+            'team_name': 'Wolverhampton Wanderers',
+            'team_short': 'Wolves',
+            'team_alternate': 'Wolves',
+            'aliases': ['Wolves'],
+        },
+        'h2h': [
+            {'date': '2026-03-03', 'home_team': 'Wolverhampton Wanderers', 'away_team': 'Liverpool',
+             'score': '2:1', 'home_team_id': '4063', 'away_team_id': '133602'},
+            {'date': '2024-09-28', 'home_team': 'Wolves', 'away_team': 'Liverpool', 'score': '1:2'},
+        ],
+    }
+
+    table_data = build_table_data(match, enriched)
+    history_row = next(row for row in table_data['rows'] if row['label'] == 'История встреч')
+    assert '2026-03-03: Wolverhampton Wanderers 2:1 Liverpool' in history_row['left']
+    assert '2024-09-28: Wolverhampton Wanderers 1:2 Liverpool' in history_row['left']
+
+
+def test_ru_plural():
+    """Русские склонения работают корректно."""
+    assert _ru_plural(1, 'очко', 'очка', 'очков') == 'очко'
+    assert _ru_plural(2, 'очко', 'очка', 'очков') == 'очка'
+    assert _ru_plural(5, 'очко', 'очка', 'очков') == 'очков'
+    assert _ru_plural(11, 'очко', 'очка', 'очков') == 'очков'
+    assert _ru_plural(21, 'очко', 'очка', 'очков') == 'очко'
+    assert _ru_plural(43, 'очко', 'очка', 'очков') == 'очка'
+
+
+# ---------------------------------------------------------------------------
+# Confidence filter для составов
+# ---------------------------------------------------------------------------
+
+def test_lineup_changes_ignores_other_team_in_event():
+    """Игроки соперника (strTeam != team_name) в том же event — нормальное поведение, не contamination."""
+    enriched = {
+        'team1_form': [
+            _form_row('2026-02-20', 'Crystal Palace', 'Tottenham', 1, 0, 801),
+            _form_row('2026-02-16', 'Crystal Palace', 'Arsenal', 2, 1, 802),
+        ],
+        'lineup_801': [
+            {'strPlayer': 'Eze', 'strTeam': 'Crystal Palace', 'strSubstitute': 'No', 'idTeam': '200'},
+            {'strPlayer': 'Olise', 'strTeam': 'Crystal Palace', 'strSubstitute': 'No', 'idTeam': '200'},
+            {'strPlayer': 'Son', 'strTeam': 'Tottenham', 'strSubstitute': 'No', 'idTeam': '300'},
+        ],
+        'lineup_802': [
+            {'strPlayer': 'Eze', 'strTeam': 'Crystal Palace', 'strSubstitute': 'No', 'idTeam': '200'},
+            {'strPlayer': 'Zaha', 'strTeam': 'Crystal Palace', 'strSubstitute': 'No', 'idTeam': '200'},
+            {'strPlayer': 'Kane', 'strTeam': 'Tottenham', 'strSubstitute': 'No', 'idTeam': '300'},
+        ],
+    }
+    result = extract_lineup_changes(
+        enriched, 'Crystal Palace', is_home=True,
+        team_id='200', opponent_team_id='300'
+    )
+    # Не должно быть placeholder — это нормальные данные
+    assert 'надёжных данных' not in result
+    assert 'Son' not in result  # Игрок Tottenham не попал в результат
+    assert 'Kane' not in result
+
+
+def test_lineup_changes_detects_contamination():
+    """Contamination: strTeam совпадает с нашей командой, но idTeam — соперника."""
+    enriched = {
+        'team1_form': [
+            _form_row('2026-02-20', 'Crystal Palace', 'Tottenham', 1, 0, 801),
+            _form_row('2026-02-16', 'Crystal Palace', 'Arsenal', 2, 1, 802),
+        ],
+        'lineup_801': [
+            {'strPlayer': 'Eze', 'strTeam': 'Crystal Palace', 'strSubstitute': 'No', 'idTeam': '200'},
+            # Ошибка API: strTeam = Crystal Palace, но idTeam = Tottenham
+            {'strPlayer': 'Son', 'strTeam': 'Crystal Palace', 'strSubstitute': 'No', 'idTeam': '300'},
+        ],
+        'lineup_802': [
+            {'strPlayer': 'Eze', 'strTeam': 'Crystal Palace', 'strSubstitute': 'No', 'idTeam': '200'},
+            {'strPlayer': 'Olise', 'strTeam': 'Crystal Palace', 'strSubstitute': 'No', 'idTeam': '200'},
+        ],
+    }
+    result = extract_lineup_changes(
+        enriched, 'Crystal Palace', is_home=True,
+        team_id='200', opponent_team_id='300'
+    )
+    assert 'надёжных данных' in result
+
+
+def test_lineup_changes_detects_non_own_team_id_even_if_opponent_unknown():
+    """Contamination: strTeam совпадает, но idTeam не равен team_id (и не равен opponent_team_id)."""
+    enriched = {
+        'team1_form': [
+            _form_row('2026-02-20', 'Team A', 'Team X', 1, 0, 901),
+            _form_row('2026-02-16', 'Team A', 'Team Y', 2, 1, 902),
+        ],
+        'lineup_901': [
+            {'strPlayer': 'Own 1', 'strTeam': 'Team A', 'strSubstitute': 'No', 'idTeam': '100'},
+            # Ошибка API: игрок помечен как Team A, но idTeam вообще третьей команды
+            {'strPlayer': 'Noise', 'strTeam': 'Team A', 'strSubstitute': 'No', 'idTeam': '999'},
+        ],
+        'lineup_902': [
+            {'strPlayer': 'Own 1', 'strTeam': 'Team A', 'strSubstitute': 'No', 'idTeam': '100'},
+            {'strPlayer': 'Own 2', 'strTeam': 'Team A', 'strSubstitute': 'No', 'idTeam': '100'},
+        ],
+    }
+    result = extract_lineup_changes(
+        enriched, 'Team A', is_home=True,
+        team_id='100', opponent_team_id='200'
+    )
+    assert 'надёжных данных' in result
+
+
+def test_lineup_changes_degrades_on_low_confidence():
+    """Больше 40% игроков без idTeam и strTeam — low confidence."""
+    enriched = {
+        'team1_form': [
+            _form_row('2026-02-20', 'Team A', 'Rival', 1, 0, 901),
+            _form_row('2026-02-16', 'Team A', 'Rival2', 2, 1, 902),
+        ],
+        'lineup_901': [
+            {'strPlayer': 'P1', 'strTeam': 'Team A', 'strSubstitute': 'No', 'idTeam': '100'},
+            {'strPlayer': 'P2', 'strSubstitute': 'No'},  # no strTeam, no idTeam
+            {'strPlayer': 'P3', 'strSubstitute': 'No'},  # no strTeam, no idTeam
+        ],
+        'lineup_902': [
+            {'strPlayer': 'P1', 'strTeam': 'Team A', 'strSubstitute': 'No', 'idTeam': '100'},
+            {'strPlayer': 'P4', 'strSubstitute': 'No'},
+            {'strPlayer': 'P5', 'strSubstitute': 'No'},
+        ],
+    }
+    result = extract_lineup_changes(
+        enriched, 'Team A', is_home=True,
+        team_id='100', opponent_team_id='200'
+    )
+    assert 'надёжных данных' in result
+
+
+def test_team_id_normalization_for_lineups():
+    """team_id как int, у игроков как str — корректное сравнение."""
+    assert _normalize_team_id(None) == ''
+    assert _normalize_team_id(123) == '123'
+    assert _normalize_team_id(' 456 ') == '456'
+
+    enriched = {
+        'team1_form': [
+            _form_row('2026-02-20', 'Team A', 'Rival', 1, 0, 1001),
+            _form_row('2026-02-16', 'Team A', 'Rival2', 2, 1, 1002),
+        ],
+        'lineup_1001': [
+            {'strPlayer': 'Alice', 'strTeam': 'Team A', 'strSubstitute': 'No', 'idTeam': '100'},
+            {'strPlayer': 'Bob', 'strTeam': 'Team A', 'strSubstitute': 'No', 'idTeam': '100'},
+        ],
+        'lineup_1002': [
+            {'strPlayer': 'Alice', 'strTeam': 'Team A', 'strSubstitute': 'No', 'idTeam': '100'},
+            {'strPlayer': 'Carol', 'strTeam': 'Team A', 'strSubstitute': 'No', 'idTeam': '100'},
+        ],
+    }
+    # team_id как int
+    result = extract_lineup_changes(
+        enriched, 'Team A', is_home=True,
+        team_id=100, opponent_team_id=200
+    )
+    # Должен нормально обработать — не placeholder
+    assert 'надёжных данных' not in result
+    assert 'Bob' in result or 'Carol' in result

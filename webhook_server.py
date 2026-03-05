@@ -15,7 +15,7 @@ from typing import Optional
 from flask import Flask, jsonify
 import asyncio
 import database
-from config import TOKEN
+from config import TOKEN, TABLE_RENDER_CACHE_VERSION
 from telegram.error import BadRequest
 
 # Настройка логирования
@@ -743,7 +743,9 @@ async def generate_and_send_analysis(user_id, match_id, match_dict, instruction_
                         asyncio.to_thread(render_analysis_table, match_dict, table_data),
                         timeout=TABLE_RENDER_TIMEOUT_SEC,
                     )
-                    target_path = f"analysis_cache/analysis_{match_id}_v6.webp"
+                    target_path = (
+                        f"analysis_cache/analysis_{match_id}_v{TABLE_RENDER_CACHE_VERSION}.webp"
+                    )
                     os.makedirs("analysis_cache", exist_ok=True)
                     shutil.copy(temp_png, target_path)
 
