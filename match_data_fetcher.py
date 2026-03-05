@@ -4,6 +4,7 @@ On-demand fetcher для обогащения матчей данными H2H/st
 """
 import logging
 import requests
+import re
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Optional
 import time
@@ -13,7 +14,16 @@ from urllib3.exceptions import InsecureRequestWarning
 from config import THESPORTSDB_KEY, THESPORTSDB_VERIFY_TLS
 
 logger = logging.getLogger(__name__)
-CUP_LEAGUE_IDS = {'4480', '4481', '4482'}
+# Еврокубки + национальные кубки топ-5 лиг
+CUP_LEAGUE_IDS = {
+    '4480',  # UEFA Champions League
+    '4481',  # UEFA Europa League
+    '4482',  # FA Cup (England)
+    '4483',  # Copa del Rey (Spain)
+    '4484',  # Coupe de France (France)
+    '4485',  # DFB-Pokal (Germany)
+    '4506',  # Coppa Italia (Italy)
+}
 
 EVENT_STAT_ALIASES = {
     'ball possession': 'Владение мячом',
@@ -262,28 +272,52 @@ class MatchDataFetcher:
                 logger.error(error_msg)
                 result['errors'].append(error_msg)
 
-        # 4. Form (последние матчи команд)
-        try:
-            if home_team_id:
-                team1_form = self._fetch_team_last_matches(home_team_id)
-                if team1_form:
-                    result['team1_form'] = team1_form
-                    logger.info(f"Form team1 получен: {len(team1_form)} матчей")
-        except Exception as e:
-            error_msg = f"Ошибка получения form team1: {e}"
-            logger.error(error_msg)
-            result['errors'].append(error_msg)
-
-        try:
-            if away_team_id:
-                team2_form = self._fetch_team_last_matches(away_team_id)
-                if team2_form:
-                    result['team2_form'] = team2_form
-                    logger.info(f"Form team2 получен: {len(team2_form)} матчей")
-        except Exception as e:
-            error_msg = f"Ошибка получения form team2: {e}"
-            logger.error(error_msg)
-            result['errors'].append(error_msg)
+        # 4. Form (последние матчи команд) — 10 для трендов, первые 5 для формы
+        # Приоритет: season schedule (больше матчей, точные ID), fallback eventslast
+        for team_prefix, tid in [('team1', home_team_id), ('team2', away_team_id)]:
+            if not tid:
+                continue
+            try:
+                season_form = []
+                if league_id and season:
+                    season_form = self._fetch_team_last_matches_from_season(
+                        tid, league_id, season, limit=10
+                    )
+                if season_form and len(season_form) >= 3:
+                    result[f'{team_prefix}_form'] = season_form[:5]
+                    result[f'{team_prefix}_trends_form'] = season_form
+                    result[f'{team_prefix}_trends_source'] = 'season_schedule'
+                    result[f'{team_prefix}_trends_window'] = len(season_form)
+                    logger.info(
+                        f"Form {team_prefix} из season schedule: {len(season_form)} матчей"
+                    )
+                    # Для кубков: season schedule содержит мало матчей (3-5 раундов),
+                    # для трендов нужны все последние матчи кросс-турнирно
+                    if result.get('is_cup') and len(season_form) < 10:
+                        team_all = self._fetch_team_last_matches(tid, limit=10)
+                        if team_all and len(team_all) > len(season_form):
+                            result[f'{team_prefix}_trends_form'] = team_all
+                            result[f'{team_prefix}_trends_source'] = 'eventslast'
+                            result[f'{team_prefix}_trends_window'] = len(team_all)
+                            logger.info(
+                                f"Trends {team_prefix} расширены из eventslast: "
+                                f"{len(team_all)} матчей (кубок)"
+                            )
+                else:
+                    # Fallback на eventslast
+                    team_all = self._fetch_team_last_matches(tid, limit=10)
+                    if team_all:
+                        result[f'{team_prefix}_form'] = team_all[:5]
+                        result[f'{team_prefix}_trends_form'] = team_all
+                        result[f'{team_prefix}_trends_source'] = 'eventslast'
+                        result[f'{team_prefix}_trends_window'] = len(team_all)
+                        logger.info(
+                            f"Form {team_prefix} из eventslast: {len(team_all)} матчей"
+                        )
+            except Exception as e:
+                error_msg = f"Ошибка получения form {team_prefix}: {e}"
+                logger.error(error_msg)
+                result['errors'].append(error_msg)
 
         # 5. Метаданные команд (страна/локация)
         try:
@@ -305,11 +339,11 @@ class MatchDataFetcher:
             try:
                 if result.get('team1_form'):
                     result['team1_last_match_events'] = self._build_last_match_events(
-                        result['team1_form'][0], team1
+                        result['team1_form'][0], team1, team_id=home_team_id
                     )
                 if result.get('team2_form'):
                     result['team2_last_match_events'] = self._build_last_match_events(
-                        result['team2_form'][0], team2
+                        result['team2_form'][0], team2, team_id=away_team_id
                     )
             except Exception as e:
                 error_msg = f"Ошибка получения событий последнего матча: {e}"
@@ -413,8 +447,10 @@ class MatchDataFetcher:
         # 9. Кубковые данные: путь и домашние позиции команд
         if result['is_cup'] and include_cup_context:
             cup_events = self._fetch_cup_matches_by_season(league_id, season)
-            result['team1_cup_path'] = self._build_cup_path_from_events(cup_events, team1)
-            result['team2_cup_path'] = self._build_cup_path_from_events(cup_events, team2)
+            result['team1_cup_path'] = self._build_cup_path_from_events(
+                cup_events, team1, team_id=home_team_id)
+            result['team2_cup_path'] = self._build_cup_path_from_events(
+                cup_events, team2, team_id=away_team_id)
 
             if include_domestic_positions and season:
                 standings_cache = {}
@@ -427,7 +463,7 @@ class MatchDataFetcher:
 
         return result
 
-    def _build_last_match_events(self, form_match: dict, team_name: str) -> Dict[str, List[str]]:
+    def _build_last_match_events(self, form_match: dict, team_name: str, team_id: str = '') -> Dict[str, List[str]]:
         """
         Собрать ключевые события (замены/карточки) из timeline последнего матча.
 
@@ -458,7 +494,7 @@ class MatchDataFetcher:
         cards: List[str] = []
 
         for event in timeline:
-            if not self._timeline_event_belongs_to_team(event, team_name, is_home_team):
+            if not self._timeline_event_belongs_to_team(event, team_name, is_home_team, team_id):
                 continue
 
             event_type = (event.get('strTimeline') or '').strip().lower()
@@ -504,12 +540,22 @@ class MatchDataFetcher:
         }
 
     @staticmethod
-    def _timeline_event_belongs_to_team(event: dict, team_name: str, is_home_team: bool) -> bool:
+    def _timeline_event_belongs_to_team(
+        event: dict, team_name: str, is_home_team: bool, team_id: str = ''
+    ) -> bool:
         """
         Проверить, относится ли timeline-событие к нужной команде.
 
-        Предпочитаем точный матчинг по strTeam, fallback — по strHome.
+        Приоритет: idTeam → strTeam → strHome.
         """
+        # Матчинг по ID (самый надёжный)
+        if team_id:
+            ev_team_id = str(event.get('idTeam') or '').strip()
+            if ev_team_id and ev_team_id == team_id:
+                return True
+            if ev_team_id:
+                return False
+
         event_team = (event.get('strTeam') or '').strip()
         if event_team:
             return (
@@ -576,6 +622,8 @@ class MatchDataFetcher:
                         'date': event.get('dateEvent', ''),
                         'home_team': event.get('strHomeTeam', ''),
                         'away_team': event.get('strAwayTeam', ''),
+                        'home_team_id': str(event.get('idHomeTeam', '') or ''),
+                        'away_team_id': str(event.get('idAwayTeam', '') or ''),
                         'home_score': event.get('intHomeScore', ''),
                         'away_score': event.get('intAwayScore', ''),
                         'score': f"{event.get('intHomeScore', '?')}:{event.get('intAwayScore', '?')}"
@@ -755,6 +803,79 @@ class MatchDataFetcher:
         matches.sort(key=lambda item: item.get('date') or '', reverse=True)
         return matches, True
 
+    def _fetch_team_last_matches_from_season(
+        self,
+        team_id: int,
+        league_id: str,
+        season: str,
+        limit: int = 10
+    ) -> List[dict]:
+        """
+        Получить последние матчи команды из кэша расписания сезона.
+        Использует тот же _season_schedule_cache что и H2H.
+
+        Returns:
+            Список завершённых матчей команды, отсортированный по дате DESC.
+        """
+        cache_key = (str(league_id), str(season))
+        cached_ts = self._season_schedule_cache_ts.get(cache_key, 0.0)
+        cached_ttl = self._season_schedule_cache_ttl.get(cache_key, 0.0)
+        cache_expired = (time.time() - cached_ts) > cached_ttl
+        season_events = None if cache_expired else self._season_schedule_cache.get(cache_key)
+
+        if season_events is None:
+            try:
+                response = self._get_with_retry(
+                    "eventsseason.php",
+                    params={'id': league_id, 's': season},
+                    timeout=10
+                )
+                if response.status_code != 200:
+                    logger.warning(
+                        "Season form: статус %s для league %s season %s",
+                        response.status_code, league_id, season
+                    )
+                    return []
+
+                data = response.json()
+                season_events = data.get('events', []) if isinstance(data, dict) else []
+                ttl = self._compute_cache_ttl(season_events)
+                self._season_schedule_cache[cache_key] = season_events
+                self._season_schedule_cache_ts[cache_key] = time.time()
+                self._season_schedule_cache_ttl[cache_key] = ttl
+            except Exception as e:
+                logger.warning(
+                    "Ошибка _fetch_team_last_matches_from_season: league %s season %s: %s",
+                    league_id, season, e
+                )
+                return []
+
+        team_id_str = str(team_id)
+        matches = []
+        for event in season_events or []:
+            home_id = str(event.get('idHomeTeam', '') or '')
+            away_id = str(event.get('idAwayTeam', '') or '')
+            if team_id_str not in (home_id, away_id):
+                continue
+            if event.get('strStatus') not in ['Match Finished', 'FT']:
+                continue
+
+            matches.append({
+                'date': event.get('dateEvent', ''),
+                'home_team': event.get('strHomeTeam', ''),
+                'away_team': event.get('strAwayTeam', ''),
+                'home_team_id': home_id,
+                'away_team_id': away_id,
+                'home_score': event.get('intHomeScore', ''),
+                'away_score': event.get('intAwayScore', ''),
+                'score': f"{event.get('intHomeScore', '?')}:{event.get('intAwayScore', '?')}",
+                'league': event.get('strLeague', ''),
+                'event_id': event.get('idEvent', '')
+            })
+
+        matches.sort(key=lambda item: item.get('date') or '', reverse=True)
+        return matches[:limit]
+
     def _fetch_standings(self, league_id: int, season: str) -> dict:
         """
         Получить турнирную таблицу через lookuptable.php.
@@ -814,6 +935,7 @@ class MatchDataFetcher:
             for entry in data['table']:
                 table_entries.append({
                     'name': entry.get('strTeam', ''),
+                    'team_id': str(entry.get('idTeam') or ''),
                     'rank': int(entry.get('intRank', 0)),
                     'played': int(entry.get('intPlayed', 0)),
                     'win': int(entry.get('intWin', 0)),
@@ -869,11 +991,13 @@ class MatchDataFetcher:
                     'date': event.get('dateEvent', ''),
                     'home_team': event.get('strHomeTeam', ''),
                     'away_team': event.get('strAwayTeam', ''),
+                    'home_team_id': str(event.get('idHomeTeam', '') or ''),
+                    'away_team_id': str(event.get('idAwayTeam', '') or ''),
                     'home_score': event.get('intHomeScore', ''),
                     'away_score': event.get('intAwayScore', ''),
                     'score': f"{event.get('intHomeScore', '?')}:{event.get('intAwayScore', '?')}",
                     'league': event.get('strLeague', ''),
-                    'event_id': event.get('idEvent', '')  # Добавлено для получения составов
+                    'event_id': event.get('idEvent', '')
                 })
 
             return matches
@@ -1015,7 +1139,8 @@ class MatchDataFetcher:
         cls,
         cup_events: List[dict],
         team_name: str,
-        limit: int = 3
+        limit: int = 3,
+        team_id: str = ''
     ) -> List[str]:
         """Построить краткий кубковый путь команды по завершённым матчам турнира."""
         if not cup_events:
@@ -1036,11 +1161,20 @@ class MatchDataFetcher:
 
             home = (event.get('strHomeTeam') or '').strip()
             away = (event.get('strAwayTeam') or '').strip()
-            if not (
-                cls._team_name_matches(home, team_name)
-                or cls._team_name_matches(away, team_name)
-            ):
-                continue
+
+            # Матчинг: по ID (строгий) или по имени (если ID недоступен)
+            norm_tid = str(team_id).strip() if team_id else ''
+            if norm_tid:
+                ev_home_id = str(event.get('idHomeTeam') or '').strip()
+                ev_away_id = str(event.get('idAwayTeam') or '').strip()
+                if norm_tid != ev_home_id and norm_tid != ev_away_id:
+                    continue
+            else:
+                if not (
+                    cls._team_name_matches(home, team_name)
+                    or cls._team_name_matches(away, team_name)
+                ):
+                    continue
 
             home_score = event.get('intHomeScore')
             away_score = event.get('intAwayScore')
@@ -1075,10 +1209,29 @@ class MatchDataFetcher:
                 return None
 
             team = teams[0]
+            team_short = team.get('strTeamShort', '')
+            team_alternate = team.get('strAlternate', '')
+            aliases = []
+
+            def _append_alias(value: str):
+                value = str(value or '').strip()
+                if value and value not in aliases:
+                    aliases.append(value)
+
+            for raw in [team_short, team_alternate]:
+                if not raw:
+                    continue
+                _append_alias(raw)
+                for part in re.split(r"[,;|/]", str(raw)):
+                    _append_alias(part)
+
             return {
                 'league_id': team.get('idLeague'),
                 'league_name': team.get('strLeague', ''),
                 'team_name': team.get('strTeam', ''),
+                'team_short': team_short,
+                'team_alternate': team_alternate,
+                'aliases': aliases,
                 'country': team.get('strCountry', ''),
                 'stadium_location': team.get('strStadiumLocation', ''),
             }
@@ -1414,10 +1567,10 @@ def _get_season_date_range(season: str, league_id: str) -> tuple:
         raise ValueError(f"Ошибка парсинга сезона '{season}': {e}")
 
     # Определяем границы по типу турнира
-    # Топ-лиги: Premier League (4328), La Liga (4335), Bundesliga (4331)
-    top_leagues = ['4328', '4335', '4331']
-    # Кубки Европы: Champions League (4480), Europa League (4481), Conference (4482)
-    european_cups = ['4480', '4481', '4482']
+    # Big-5 лиг: EPL (4328), La Liga (4335), Bundesliga (4331), Serie A (4332), Ligue 1 (4334)
+    top_leagues = ['4328', '4335', '4331', '4332', '4334']
+    # Кубки Европы: Champions League (4480), Europa League (4481)
+    european_cups = ['4480', '4481']
 
     if league_id in top_leagues:
         # Топ-лиги: август - май
@@ -1519,6 +1672,8 @@ def build_enriched_context(match: dict, data: dict) -> str:
     sections = []
     team1 = match.get('team1', 'Команда 1')
     team2 = match.get('team2', 'Команда 2')
+    home_team_id = str(match.get('home_team_id') or '')
+    away_team_id = str(match.get('away_team_id') or '')
     is_cup = data.get('is_cup', False)
 
     # === Venue / Time / Round (для intro) ===
@@ -1545,8 +1700,8 @@ def build_enriched_context(match: dict, data: dict) -> str:
             lines.append(f"{team2}: {pos2 or '—'}")
             sections.append('\n'.join(lines))
     else:
-        pos1 = extract_tournament_position(data, team1)
-        pos2 = extract_tournament_position(data, team2)
+        pos1 = extract_tournament_position(data, team1, team_id=home_team_id)
+        pos2 = extract_tournament_position(data, team2, team_id=away_team_id)
         if pos1 or pos2:
             lines = ["=== ТУРНИРНОЕ ПОЛОЖЕНИЕ ==="]
             lines.append(f"{team1}: {pos1 or '—'}")
@@ -1602,7 +1757,12 @@ def build_enriched_context(match: dict, data: dict) -> str:
         sections.append('\n'.join(lines))
 
     # === История личных встреч ===
-    h2h_lines = extract_h2h_history(data)
+    h2h_data = dict(data or {})
+    if home_team_id:
+        h2h_data['_home_team_id'] = home_team_id
+    if away_team_id:
+        h2h_data['_away_team_id'] = away_team_id
+    h2h_lines = extract_h2h_history(h2h_data, team1=team1, team2=team2)
     if h2h_lines:
         sections.append("=== ИСТОРИЯ ЛИЧНЫХ ВСТРЕЧ ===\n" + '\n'.join(h2h_lines))
 

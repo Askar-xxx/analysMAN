@@ -1033,7 +1033,7 @@ async def force_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     def _run_sync_job():
         from sync_matches import SportsDBSyncer, run_coverage_check
 
-        syncer = SportsDBSyncer(mode='top3', limit=15, min_coverage_rows=6)
+        syncer = SportsDBSyncer(mode='top3', limit=15)
         matches = syncer.sync()
         sync_results = syncer.save_matches_to_db(matches)
         coverage_results = run_coverage_check()

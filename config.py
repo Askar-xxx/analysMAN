@@ -79,6 +79,7 @@ DA_PROFILE_URL = os.environ.get('DA_PROFILE_URL', '')
 
 # === Бизнес-параметры ===
 ANALYSIS_PRICE_RUB = float(os.environ.get('ANALYSIS_PRICE_RUB', '150'))
+TABLE_RENDER_CACHE_VERSION = _env_to_int('TABLE_RENDER_CACHE_VERSION', 7)
 
 # === Администратор ===
 _admin_ids_raw = os.environ.get('ADMIN_ID', '')

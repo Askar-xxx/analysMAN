@@ -25,6 +25,8 @@ class TestMatchDataFetcher:
                     "dateEvent": "2025-08-25",
                     "strHomeTeam": "Arsenal",
                     "strAwayTeam": "Chelsea",
+                    "idHomeTeam": "133604",
+                    "idAwayTeam": "133610",
                     "intHomeScore": 2,
                     "intAwayScore": 1,
                     "strStatus": "Match Finished"
@@ -33,6 +35,8 @@ class TestMatchDataFetcher:
                     "dateEvent": "2025-01-12",
                     "strHomeTeam": "Chelsea",
                     "strAwayTeam": "Arsenal",
+                    "idHomeTeam": "133610",
+                    "idAwayTeam": "133604",
                     "intHomeScore": 3,
                     "intAwayScore": 2,
                     "strStatus": "FT"
@@ -50,9 +54,13 @@ class TestMatchDataFetcher:
             assert is_current_season is True  # Без фильтрации = текущий сезон
             assert result[0]['home_team'] == "Arsenal"
             assert result[0]['away_team'] == "Chelsea"
+            assert result[0]['home_team_id'] == "133604"
+            assert result[0]['away_team_id'] == "133610"
             assert result[0]['score'] == "2:1"
             assert result[1]['home_team'] == "Chelsea"
             assert result[1]['away_team'] == "Arsenal"
+            assert result[1]['home_team_id'] == "133610"
+            assert result[1]['away_team_id'] == "133604"
             assert result[1]['score'] == "3:2"
 
     def test_fetch_h2h_no_data(self):
@@ -195,6 +203,36 @@ class TestMatchDataFetcher:
             assert result['season'] == "2025-2026"
             assert result['event_name'] == "Arsenal vs Chelsea"
 
+    def test_fetch_team_details_includes_aliases(self):
+        """Team details include parsed aliases from short/alternate names."""
+        fetcher = MatchDataFetcher(api_key="test_key")
+
+        mock_response = {
+            "teams": [
+                {
+                    "idLeague": "4328",
+                    "strLeague": "Premier League",
+                    "strTeam": "Wolverhampton Wanderers",
+                    "strTeamShort": "Wolves",
+                    "strAlternate": "Wolves, Wolverhampton",
+                    "strCountry": "England",
+                    "strStadiumLocation": "Wolverhampton"
+                }
+            ]
+        }
+
+        with patch.object(fetcher, '_get_with_retry') as mock_get:
+            mock_get.return_value.status_code = 200
+            mock_get.return_value.json.return_value = mock_response
+
+            result = fetcher._fetch_team_details("4063")
+
+            assert result is not None
+            assert result['team_short'] == "Wolves"
+            assert result['team_alternate'] == "Wolves, Wolverhampton"
+            assert "Wolves" in result['aliases']
+            assert "Wolverhampton" in result['aliases']
+
     def test_fetch_cup_matches_by_season_filters_finished_and_season(self):
         """Кубковые матчи фильтруются по завершённости и текущему сезону."""
         fetcher = MatchDataFetcher(api_key="test_key")
@@ -328,14 +366,21 @@ class TestMatchDataFetcher:
 
         # Моки для всех API вызовов
         with patch.object(
-            fetcher,
-            '_fetch_season_h2h_via_schedule',
+            fetcher, '_fetch_season_h2h_via_schedule',
             return_value=([{'date': '2025-08-25', 'score': '2:1'}], True)
-        ), \
-             patch.object(fetcher, '_fetch_h2h', return_value=([{'date': '2025-08-25', 'score': '2:1'}], True)), \
-             patch.object(fetcher, '_fetch_event_details', return_value={'league_id': '4328', 'season': '2025-2026'}), \
-             patch.object(fetcher, '_fetch_standings', return_value={'table': [{'name': 'Arsenal', 'rank': 1}]}), \
-             patch.object(fetcher, '_fetch_team_last_matches', return_value=[{'date': '2026-02-10', 'score': '2:1'}]):
+        ), patch.object(
+            fetcher, '_fetch_h2h',
+            return_value=([{'date': '2025-08-25', 'score': '2:1'}], True)
+        ), patch.object(
+            fetcher, '_fetch_event_details',
+            return_value={'league_id': '4328', 'season': '2025-2026'}
+        ), patch.object(
+            fetcher, '_fetch_standings',
+            return_value={'table': [{'name': 'Arsenal', 'rank': 1}]}
+        ), patch.object(
+            fetcher, '_fetch_team_last_matches',
+            return_value=[{'date': '2026-02-10', 'score': '2:1'}]
+        ):
 
             result = fetcher.fetch_match_data(match)
 
@@ -394,6 +439,68 @@ class TestBuildEnrichedContext:
         assert "2025-08-25: Arsenal 2:1 Chelsea" in context
         assert "2025-01-12: Chelsea 3:2 Arsenal" in context
 
+    def test_build_context_h2h_alias_normalization_without_match_ids(self):
+        """H2H names normalize by aliases from team meta when H2H rows miss team ids."""
+        match = {
+            'team1': 'Wolverhampton Wanderers',
+            'team2': 'Liverpool',
+            'home_team_id': '4063',
+            'away_team_id': '133602',
+            'league': 'FA Cup',
+        }
+        data = {
+            'h2h': [
+                {'date': '2026-03-03', 'home_team': 'Wolverhampton Wanderers', 'away_team': 'Liverpool',
+                 'score': '2:1', 'home_team_id': '4063', 'away_team_id': '133602'},
+                {'date': '2024-09-28', 'home_team': 'Wolves', 'away_team': 'Liverpool', 'score': '1:2'},
+            ],
+            'h2h_is_current_season': False,
+            'h2h_season_source': 'schedule_confirmed',
+            'team1_meta': {
+                'team_name': 'Wolverhampton Wanderers',
+                'team_short': 'Wolves',
+                'team_alternate': 'Wolves',
+                'aliases': ['Wolves'],
+            },
+            'standings': {},
+            'team1_form': [],
+            'team2_form': [],
+        }
+
+        context = build_enriched_context(match, data)
+
+        assert "2026-03-03: Wolverhampton Wanderers 2:1 Liverpool" in context
+        assert "2024-09-28: Wolverhampton Wanderers 1:2 Liverpool" in context
+
+    def test_build_context_h2h_normalizes_alias_by_team_id(self):
+        """Alias names in H2H are normalized to match team names using team ids."""
+        match = {
+            'team1': 'Wolverhampton Wanderers',
+            'team2': 'Liverpool',
+            'home_team_id': '4063',
+            'away_team_id': '133602',
+            'league': 'Premier League',
+        }
+        data = {
+            'h2h': [
+                {
+                    'date': '2025-09-28',
+                    'home_team': 'Wolves',
+                    'away_team': 'Liverpool',
+                    'home_team_id': '4063',
+                    'away_team_id': '133602',
+                    'score': '1:2'
+                }
+            ],
+            'standings': {},
+            'team1_form': [],
+            'team2_form': [],
+        }
+
+        context = build_enriched_context(match, data)
+
+        assert "2025-09-28: Wolverhampton Wanderers 1:2 Liverpool" in context
+
     def test_build_context_with_standings(self):
         """Контекст корректно форматирует standings."""
         match = {'team1': 'Arsenal', 'team2': 'Chelsea', 'league': 'Premier League'}
@@ -414,7 +521,7 @@ class TestBuildEnrichedContext:
 
         assert "ТУРНИРНОЕ ПОЛОЖЕНИЕ" in context
         assert "Arsenal: #1 место (зона ЛЧ), 56 очков после 23 матчей" in context
-        assert "Chelsea: #5 место (зона еврокубков), 43 очков после 23 матчей" in context
+        assert "Chelsea: #5 место (зона еврокубков), 43 очка после 23 матчей" in context
 
     def test_build_context_with_form(self):
         """Контекст корректно форматирует form данные."""
@@ -742,3 +849,64 @@ class TestHelperFunctions:
             assert is_current_season is False  # Флаг fallback
             assert result[0]['date'] == "2024-09-22"  # Самый свежий
             assert result[1]['date'] == "2024-03-10"
+
+    def test_fetch_team_last_matches_from_season(self):
+        """Season schedule фильтрует матчи команды по ID и статусу."""
+        fetcher = MatchDataFetcher(api_key="test_key")
+
+        mock_events = [
+            {'idEvent': '1', 'dateEvent': '2026-02-20', 'strHomeTeam': 'Arsenal',
+             'strAwayTeam': 'Liverpool', 'idHomeTeam': '133604', 'idAwayTeam': '133602',
+             'intHomeScore': '2', 'intAwayScore': '1', 'strStatus': 'Match Finished',
+             'strLeague': 'Premier League'},
+            {'idEvent': '2', 'dateEvent': '2026-02-15', 'strHomeTeam': 'Chelsea',
+             'strAwayTeam': 'Arsenal', 'idHomeTeam': '133610', 'idAwayTeam': '133604',
+             'intHomeScore': '0', 'intAwayScore': '1', 'strStatus': 'Match Finished',
+             'strLeague': 'Premier League'},
+            {'idEvent': '3', 'dateEvent': '2026-03-01', 'strHomeTeam': 'Arsenal',
+             'strAwayTeam': 'Wolves', 'idHomeTeam': '133604', 'idAwayTeam': '133614',
+             'intHomeScore': None, 'intAwayScore': None, 'strStatus': 'Not Started',
+             'strLeague': 'Premier League'},
+            {'idEvent': '4', 'dateEvent': '2026-02-10', 'strHomeTeam': 'Man City',
+             'strAwayTeam': 'Liverpool', 'idHomeTeam': '133613', 'idAwayTeam': '133602',
+             'intHomeScore': '3', 'intAwayScore': '3', 'strStatus': 'Match Finished',
+             'strLeague': 'Premier League'},
+        ]
+
+        mock_response = type('MockResponse', (), {
+            'status_code': 200,
+            'json': lambda self: {'events': mock_events}
+        })()
+
+        with patch.object(fetcher, '_get_with_retry', return_value=mock_response):
+            result = fetcher._fetch_team_last_matches_from_season(
+                team_id=133604, league_id='4328', season='2025-2026', limit=10
+            )
+
+        # Только Arsenal матчи со статусом finished, отсортированы по дате DESC
+        assert len(result) == 2
+        assert result[0]['date'] == '2026-02-20'
+        assert result[1]['date'] == '2026-02-15'
+        assert result[0]['home_team_id'] == '133604'
+        assert result[1]['away_team_id'] == '133604'
+
+    def test_form_matches_include_team_ids(self):
+        """Матчи из eventslast содержат home_team_id/away_team_id."""
+        fetcher = MatchDataFetcher(api_key="test_key")
+
+        mock_response = type('MockResponse', (), {
+            'status_code': 200,
+            'json': lambda self: {'results': [{
+                'dateEvent': '2026-02-20', 'strHomeTeam': 'Arsenal',
+                'strAwayTeam': 'Liverpool', 'idHomeTeam': '133604',
+                'idAwayTeam': '133602', 'intHomeScore': '2',
+                'intAwayScore': '1', 'strLeague': 'PL', 'idEvent': '99',
+            }]}
+        })()
+
+        with patch.object(fetcher, '_get_with_retry', return_value=mock_response):
+            result = fetcher._fetch_team_last_matches(133604, limit=5)
+
+        assert len(result) == 1
+        assert result[0]['home_team_id'] == '133604'
+        assert result[0]['away_team_id'] == '133602'

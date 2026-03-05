@@ -4,6 +4,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
 import database
 import keyboards
+from config import TABLE_RENDER_CACHE_VERSION
 from utils import (
     safe_edit_message,
     safe_answer_callback,
@@ -30,7 +31,6 @@ logger = logging.getLogger(__name__)
 
 CALLBACK_DEBOUNCE_SECONDS = 0.35
 CONFIRM_CODE_DEBOUNCE_SECONDS = 2.5
-TABLE_RENDER_CACHE_VERSION = 6
 
 
 def _is_callback_spam(context, callback_data: str) -> bool:
@@ -921,17 +921,24 @@ def _ensure_analysis_table_png(match_id: int, match_dict: dict, enriched_data: d
 
     cached_png_path = match_dict.get('analysis_png_path')
     version_suffix = f"_v{TABLE_RENDER_CACHE_VERSION}.webp"
-    renderer_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "image_renderer.py")
-    renderer_mtime = 0.0
-    try:
-        renderer_mtime = os.path.getmtime(renderer_path)
-    except OSError:
-        pass
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    render_dependencies = (
+        "image_renderer.py",
+        "analysis_formatter.py",
+        "match_data_fetcher.py",
+    )
+    deps_mtime = 0.0
+    for dep in render_dependencies:
+        dep_path = os.path.join(base_dir, dep)
+        try:
+            deps_mtime = max(deps_mtime, os.path.getmtime(dep_path))
+        except OSError:
+            continue
 
     if cached_png_path and os.path.exists(cached_png_path):
         cached_mtime = os.path.getmtime(cached_png_path)
         is_current_cache_version = str(cached_png_path).endswith(version_suffix)
-        if is_current_cache_version and cached_mtime >= renderer_mtime:
+        if is_current_cache_version and cached_mtime >= deps_mtime:
             return cached_png_path, (enriched_data or {})
         logger.info(
             "[PNG] Кэш устарел или неактуальной версии (%s) — перегенерируем",
