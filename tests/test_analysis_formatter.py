@@ -57,7 +57,7 @@ def test_adaptive_rows_hide_empty_blocks():
 
     assert "Текущая форма" in labels
     assert "Форма дома/на выезде" in labels
-    assert "Статистические тренды" in labels
+    assert any(label.startswith("Статистические тренды") for label in labels)
 
     # Core rows остаются даже при пустых данных (с placeholder)
     assert "Турнирное положение" in labels
@@ -165,10 +165,11 @@ def test_lineups_are_formatted_as_header_and_bullets():
     table_data = build_table_data(match, enriched)
     lineups_row = next(row for row in table_data['rows'] if row['label'] == 'Изменения состава')
 
-    assert "Изменения состава (посл. матч vs предыдущий):" in lineups_row['left']
+    assert "Изменения состава (" not in lineups_row['left']
+    assert "Источник: старт" in lineups_row['left']
     assert "• " in lineups_row['left']
     assert "Замена:" not in lineups_row['left']
-    assert lineups_row['right'] == "Состав без изменений"
+    assert lineups_row['right'].startswith("Состав без изменений")
 
 
 def test_last_match_events_row_is_rendered():
@@ -446,7 +447,7 @@ def test_core_rows_not_hidden_when_empty():
     assert 'Турнирное положение' in labels
     assert 'Текущая форма' in labels
     assert 'История встреч' in labels
-    assert 'Статистические тренды' in labels
+    assert any(label.startswith('Статистические тренды') for label in labels)
     # Optional скрыты
     assert 'Изменения состава' not in labels
     assert 'События последнего матча' not in labels
@@ -467,8 +468,8 @@ def test_stats_trends_uses_team_ids():
         ]
     }
     result = extract_stats_trends(enriched, 'PSG', is_home=True, team_id='100')
-    assert '1/1' in result  # забивают в 1 из 1
-    assert '3' not in result.split('\n')[0]  # первая строка — окно
+    assert '100%' in result
+    assert '1/1' not in result
 
 
 def test_h2h_single_match_wording():
@@ -674,6 +675,32 @@ def test_lineup_changes_degrades_on_low_confidence():
         team_id='100', opponent_team_id='200'
     )
     assert 'надёжных данных' in result
+
+
+def test_lineup_changes_marks_partial_source_instead_of_hiding():
+    """При неполном старте показываем изменения с пометкой, а не скрываем блок."""
+    enriched = {
+        'team1_form': [
+            _form_row('2026-02-20', 'Team A', 'Rival', 1, 0, 1001),
+            _form_row('2026-02-16', 'Team A', 'Rival2', 2, 1, 1002),
+        ],
+        # Новый матч: доступно только 10 игроков старта
+        'lineup_1001': [
+            {'strPlayer': f'N{i}', 'strTeam': 'Team A', 'strSubstitute': 'No', 'idTeam': '100'}
+            for i in range(1, 11)
+        ],
+        # Предыдущий матч: 11 игроков старта
+        'lineup_1002': [
+            {'strPlayer': f'O{i}', 'strTeam': 'Team A', 'strSubstitute': 'No', 'idTeam': '100'}
+            for i in range(1, 12)
+        ],
+    }
+    result = extract_lineup_changes(
+        enriched, 'Team A', is_home=True, team_id='100', opponent_team_id='200'
+    )
+    assert "Изменения состава" not in result
+    assert "Источник: старт" in result
+    assert "надёжных данных" not in result
 
 
 def test_team_id_normalization_for_lineups():

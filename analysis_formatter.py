@@ -394,16 +394,30 @@ def extract_stats_trends(enriched_data: dict, team_name: str, is_home: bool,
     avg_scored = total_scored / total if total > 0 else 0
     avg_conceded = total_conceded / total if total > 0 else 0
 
-    match_word = _ru_plural(total, 'матч', 'матча', 'матчей')
     lines = [
-        f"• Окно: последние {total} {match_word}",
-        f"• Забивают в {scored_count}/{total} ({scored_pct:.0f}%) последних матчей",
-        f"• Пропускают в {conceded_count}/{total} ({conceded_pct:.0f}%) последних матчей",
+        f"• Забивают в {scored_pct:.0f}% последних матчей",
+        f"• Пропускают в {conceded_pct:.0f}% последних матчей",
         f"• В среднем {avg_scored:.2f} гола за матч",
         f"• Пропускают {avg_conceded:.2f} в среднем"
     ]
 
     return "\n".join(lines)
+
+
+def _get_stats_trends_window(enriched_data: dict, is_home: bool) -> int:
+    """Возвращает окно матчей для блока статистических трендов."""
+    window_key = 'team1_trends_window' if is_home else 'team2_trends_window'
+    try:
+        window = int(enriched_data.get(window_key) or 0)
+        if window > 0:
+            return window
+    except Exception:
+        pass
+
+    trends_key = 'team1_trends_form' if is_home else 'team2_trends_form'
+    form_key = 'team1_form' if is_home else 'team2_form'
+    form_matches = enriched_data.get(trends_key) or enriched_data.get(form_key, [])
+    return len(form_matches) if form_matches else 0
 
 
 def _normalize_team_id(value) -> str:
@@ -467,6 +481,7 @@ def _compare_lineups(lineup1: List[dict], lineup2: List[dict], team_name: str,
         opponent_count = 0
         unknown_count = 0
         total = 0
+        own_count = 0
         for p in lineup:
             if p.get('strSubstitute') != 'No':
                 continue
@@ -476,14 +491,15 @@ def _compare_lineups(lineup1: List[dict], lineup2: List[dict], team_name: str,
             total += 1
             if cls == 'own':
                 own_players.add(p.get('strPlayer', ''))
+                own_count += 1
             elif cls == 'opponent':
                 opponent_count += 1
             else:
                 unknown_count += 1
-        return own_players, opponent_count, unknown_count, total
+        return own_players, opponent_count, unknown_count, total, own_count
 
-    starters1, opp1, unk1, tot1 = get_starters(lineup1)
-    starters2, opp2, unk2, tot2 = get_starters(lineup2)
+    starters1, opp1, unk1, tot1, own1 = get_starters(lineup1)
+    starters2, opp2, unk2, tot2, own2 = get_starters(lineup2)
 
     total_players = tot1 + tot2
     total_opponent = opp1 + opp2
@@ -517,6 +533,11 @@ def _compare_lineups(lineup1: List[dict], lineup2: List[dict], team_name: str,
     added = starters2 - starters1
 
     changes = []
+    is_partial_source = own1 < 11 or own2 < 11
+    availability_note = (
+        f"• Источник: старт {own2}/11 (последний), {own1}/11 (предыдущий)"
+        if is_partial_source else ""
+    )
 
     # Показываем списки выбывших и добавленных (без ложных "стрелочек замен")
     if removed:
@@ -527,8 +548,18 @@ def _compare_lineups(lineup1: List[dict], lineup2: List[dict], team_name: str,
         changes.append(f"• Вернулись в старт: {added_list}")
 
     if not changes:
+        if is_partial_source:
+            return (
+                "Состав без изменений (по доступным данным)\n"
+                + availability_note
+            )
         return "Состав без изменений"
-    return "Изменения состава (посл. матч vs предыдущий):\n" + "\n".join(changes)
+
+    lines = []
+    if availability_note:
+        lines.append(availability_note)
+    lines.extend(changes)
+    return "\n".join(lines)
 
 
 def extract_lineup_changes(enriched_data: dict, team_name: str, is_home: bool,
@@ -803,6 +834,14 @@ def build_table_data(match: dict, enriched_data: dict) -> dict:
             'colspan': False
         })
 
+    left_trends_window = _get_stats_trends_window(enriched_data, is_home=True)
+    right_trends_window = _get_stats_trends_window(enriched_data, is_home=False)
+    trends_window = max(left_trends_window, right_trends_window)
+    stats_trends_label = 'Статистические тренды'
+    if trends_window > 0:
+        trends_word = _ru_plural(trends_window, 'игра', 'игры', 'игр')
+        stats_trends_label = f"{stats_trends_label}\nОкно: последние {trends_window} {trends_word}"
+
     rows.extend([
         {
             'label': 'Текущая форма',
@@ -835,7 +874,7 @@ def build_table_data(match: dict, enriched_data: dict) -> dict:
             'colspan': True
         },
         {
-            'label': 'Статистические тренды',
+            'label': stats_trends_label,
             'left': data['stats_trends']['left'],
             'right': data['stats_trends']['right'],
             'colspan': False
@@ -870,7 +909,7 @@ def build_table_data(match: dict, enriched_data: dict) -> dict:
     adaptive_rows = []
     for row, left_has_data, right_has_data in row_states:
         label = row.get('label', '')
-        is_core = label in CORE_LABELS
+        is_core = label in CORE_LABELS or any(label.startswith(f"{core}\n") for core in CORE_LABELS)
         if row.get('colspan'):
             if left_has_data:
                 adaptive_rows.append(row)
