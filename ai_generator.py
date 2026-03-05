@@ -1052,6 +1052,149 @@ async def generate_match_analysis(match_data: dict) -> str:
     return analysis_text
 
 
+# --- QA валидация текста анализа vs контекст ---
+
+# Паттерны "не встречались" в тексте
+_NO_H2H_PATTERNS = re.compile(
+    r'не встречались|не играли между собой|ещё не было очных|'
+    r'не проводили очных|первая очная встреча|впервые встречаются|'
+    r'ранее не пересекались',
+    re.IGNORECASE
+)
+
+# Паттерн для извлечения позиции из enriched_context: "#5 место"
+_POSITION_RE = re.compile(r'#(\d+)\s*место')
+
+# Паттерн для извлечения счёта H2H из текста: "2:0", "1:1"
+_SCORE_RE = re.compile(r'\b(\d{1,2}):(\d{1,2})\b')
+
+
+def _validate_text_vs_context(
+    analysis_text: str, enriched_context: str, match_data: dict
+) -> list:
+    """
+    Rule-based QA: проверяет текст анализа на рассинхрон с enriched_context.
+
+    Returns:
+        Список dict: {'level': 'CRITICAL'|'WARNING', 'rule': str, 'detail': str}
+    """
+    problems = []
+    if not enriched_context:
+        return problems
+
+    # 1. H2H desync — текст пишет "не встречались", но в контексте есть H2H
+    has_h2h_section = '=== ИСТОРИЯ ЛИЧНЫХ ВСТРЕЧ ===' in enriched_context
+    has_h2h_matches = False
+    if has_h2h_section:
+        # Проверяем что секция содержит реальные матчи (строки со счётом)
+        h2h_start = enriched_context.index('=== ИСТОРИЯ ЛИЧНЫХ ВСТРЕЧ ===')
+        h2h_block = enriched_context[h2h_start:]
+        # Обрезаем до следующей секции
+        next_section = h2h_block.find('\n===', 4)
+        if next_section > 0:
+            h2h_block = h2h_block[:next_section]
+        has_h2h_matches = bool(_SCORE_RE.search(h2h_block))
+
+    if has_h2h_matches and _NO_H2H_PATTERNS.search(analysis_text):
+        problems.append({
+            'level': 'CRITICAL',
+            'rule': 'h2h_desync',
+            'detail': 'Текст пишет "не встречались", но в контексте есть H2H матчи'
+        })
+
+    # 2. Позиция в таблице — сравниваем позиции из контекста с текстом
+    team1 = match_data.get('team1', '')
+    team2 = match_data.get('team2', '')
+
+    for team_name in (team1, team2):
+        if not team_name:
+            continue
+        # Ищем позицию в enriched_context для этой команды
+        team_lower = team_name.lower()
+        ctx_lower = enriched_context.lower()
+        team_idx = ctx_lower.find(team_lower)
+        if team_idx < 0:
+            continue
+        # Ищем "#N место" в ближайших 200 символах после имени команды
+        nearby = enriched_context[team_idx:team_idx + 200]
+        ctx_pos_match = _POSITION_RE.search(nearby)
+        if not ctx_pos_match:
+            continue
+        ctx_position = int(ctx_pos_match.group(1))
+
+        # Ищем в тексте упоминание позиции рядом с именем команды
+        for m in _POSITION_RE.finditer(analysis_text):
+            text_position = int(m.group(1))
+            # Проверяем что рядом есть имя команды (в окне ±150 символов)
+            start = max(0, m.start() - 150)
+            end = min(len(analysis_text), m.end() + 150)
+            window = analysis_text[start:end].lower()
+            if team_lower in window and text_position != ctx_position:
+                problems.append({
+                    'level': 'WARNING',
+                    'rule': 'position_desync',
+                    'detail': f'{team_name}: текст #{text_position}, контекст #{ctx_position}'
+                })
+
+    # 3. Форма desync — серия поражений vs хорошая форма
+    form_patterns_bad = re.compile(
+        r'серия? поражений|проигрывают подряд|без побед.*подряд', re.IGNORECASE
+    )
+    form_patterns_good = re.compile(
+        r'серия? побед|выигрывают подряд|победная серия', re.IGNORECASE
+    )
+    # Извлекаем форму из контекста (WWWWD и т.д.)
+    form_re = re.compile(r'Текущая форма.*?([WDL]{3,5})', re.IGNORECASE)
+    for fm in form_re.finditer(enriched_context):
+        form_str = fm.group(1).upper()
+        wins = form_str.count('W')
+        losses = form_str.count('L')
+        if wins >= 3 and form_patterns_bad.search(analysis_text):
+            problems.append({
+                'level': 'WARNING',
+                'rule': 'form_desync',
+                'detail': f'Форма {form_str} (хорошая), но текст пишет о серии поражений'
+            })
+        if losses >= 3 and form_patterns_good.search(analysis_text):
+            problems.append({
+                'level': 'WARNING',
+                'rule': 'form_desync',
+                'detail': f'Форма {form_str} (плохая), но текст пишет о серии побед'
+            })
+
+    # 4. Галлюцинация счёта — счёт из текста должен быть в контексте
+    if has_h2h_matches:
+        # Собираем все счета из H2H блока контекста
+        h2h_start_idx = enriched_context.index('=== ИСТОРИЯ ЛИЧНЫХ ВСТРЕЧ ===')
+        h2h_ctx = enriched_context[h2h_start_idx:]
+        next_sect = h2h_ctx.find('\n===', 4)
+        if next_sect > 0:
+            h2h_ctx = h2h_ctx[:next_sect]
+        context_scores = set()
+        for sm in _SCORE_RE.finditer(h2h_ctx):
+            context_scores.add(f"{sm.group(1)}:{sm.group(2)}")
+
+        # Ищем в тексте упоминания счёта в контексте H2H-обсуждения
+        h2h_keywords = re.compile(
+            r'личн|встреч|очн|h2h|прошл.*матч|последн.*матч',
+            re.IGNORECASE
+        )
+        for sm in _SCORE_RE.finditer(analysis_text):
+            score = f"{sm.group(1)}:{sm.group(2)}"
+            # Проверяем что рядом есть H2H-контекст
+            start = max(0, sm.start() - 100)
+            end = min(len(analysis_text), sm.end() + 100)
+            window = analysis_text[start:end]
+            if h2h_keywords.search(window) and score not in context_scores:
+                problems.append({
+                    'level': 'WARNING',
+                    'rule': 'hallucinated_score',
+                    'detail': f'Счёт {score} упомянут в H2H контексте текста, но отсутствует в данных'
+                })
+
+    return problems
+
+
 async def generate_match_text_analysis(
     match_data: dict, enriched_context: str
 ) -> str:
@@ -1133,7 +1276,7 @@ async def generate_match_text_analysis(
             {"role": "user", "content": prompt}
         ],
         max_tokens=1600,
-        temperature=0.7
+        temperature=0.4
     )
 
     # Диагностика ответа DeepSeek — максимально безопасная
@@ -1161,6 +1304,49 @@ async def generate_match_text_analysis(
     analysis_text = raw_text
     analysis_text = _normalize_kickoff_time_mentions(analysis_text, match_time_msk)
     analysis_text = _ensure_section_emojis(analysis_text)
+
+    # QA валидация: проверяем текст на рассинхрон с контекстом
+    qa_problems = _validate_text_vs_context(analysis_text, enriched_context, match_data)
+    has_critical = any(p['level'] == 'CRITICAL' for p in qa_problems)
+    for p in qa_problems:
+        logger.warning("QA_%s: [%s] %s", p['level'], p['rule'], p['detail'])
+
+    if has_critical:
+        # Перегенерация с усиленным промптом
+        logger.info("QA: обнаружены CRITICAL проблемы, перегенерация с усиленным промптом")
+        h2h_reminder = (
+            "\n\nВНИМАНИЕ: в данных есть ИСТОРИЯ ЛИЧНЫХ ВСТРЕЧ с конкретными результатами. "
+            "НЕ пиши что команды не встречались. Используй ТОЛЬКО факты из данных."
+        )
+        retry_response = await client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": prompt + h2h_reminder}
+            ],
+            max_tokens=1600,
+            temperature=0.3
+        )
+        retry_content = None
+        try:
+            retry_content = retry_response.choices[0].message.content
+        except (IndexError, AttributeError):
+            pass
+        if retry_content and retry_content.strip():
+            retry_text = retry_content.strip()
+            retry_text = _normalize_kickoff_time_mentions(retry_text, match_time_msk)
+            retry_text = _ensure_section_emojis(retry_text)
+            retry_problems = _validate_text_vs_context(retry_text, enriched_context, match_data)
+            retry_critical = any(p['level'] == 'CRITICAL' for p in retry_problems)
+            if not retry_critical:
+                logger.info("QA: перегенерация исправила CRITICAL проблемы")
+                analysis_text = retry_text
+            else:
+                logger.error("QA: CRITICAL проблемы остались после перегенерации")
+                for p in retry_problems:
+                    if p['level'] == 'CRITICAL':
+                        logger.error("QA_CRITICAL_RETRY: [%s] %s", p['rule'], p['detail'])
+
     psych_section_source = "model"
     psych_reasons: list[str] = []
 

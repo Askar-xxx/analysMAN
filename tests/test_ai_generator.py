@@ -20,6 +20,7 @@ from ai_generator import (  # noqa: E402
     _remove_section,
     _count_sentences,
     render_psychological_fallback,
+    _validate_text_vs_context,
 )
 
 
@@ -690,3 +691,61 @@ class TestBuildMatchContext:
         """Пустой dict возвращает пустую строку."""
         context = _build_match_context({})
         assert context == ''
+
+
+class TestValidateTextVsContext:
+    """Тесты QA валидации текста анализа vs enriched_context."""
+
+    H2H_CONTEXT = (
+        "=== ИСТОРИЯ ЛИЧНЫХ ВСТРЕЧ ===\n"
+        "В этом сезоне лиги сыграна 1 очная встреча:\n\n"
+        "2025-10-05: Arsenal 2:1 Chelsea\n\n"
+        "=== ДРУГОЙ БЛОК ===\nДанные."
+    )
+    MATCH_DATA = {'team1': 'Arsenal', 'team2': 'Chelsea'}
+
+    def test_h2h_desync_critical(self):
+        """Текст 'не встречались' + контекст с H2H -> CRITICAL."""
+        text = "Команды ещё не встречались в этом сезоне, поэтому трудно прогнозировать."
+        problems = _validate_text_vs_context(text, self.H2H_CONTEXT, self.MATCH_DATA)
+        critical = [p for p in problems if p['level'] == 'CRITICAL']
+        assert len(critical) >= 1
+        assert critical[0]['rule'] == 'h2h_desync'
+
+    def test_h2h_correct_no_problems(self):
+        """Текст корректно упоминает H2H -> пусто."""
+        text = "В первом круге Arsenal обыграл Chelsea со счётом 2:1."
+        problems = _validate_text_vs_context(text, self.H2H_CONTEXT, self.MATCH_DATA)
+        critical = [p for p in problems if p['level'] == 'CRITICAL']
+        assert len(critical) == 0
+
+    def test_position_desync_warning(self):
+        """Текст с позицией #5, контекст #6 -> WARNING."""
+        context = (
+            "Arsenal\n#6 место (зона еврокубков), 40 очков\n\n"
+            "=== ДРУГОЙ БЛОК ===\n"
+        )
+        text = "Arsenal занимает #5 место в таблице и борется за еврокубки."
+        problems = _validate_text_vs_context(text, context, self.MATCH_DATA)
+        warnings = [p for p in problems if p['rule'] == 'position_desync']
+        assert len(warnings) >= 1
+
+    def test_hallucinated_score_warning(self):
+        """Текст с выдуманным счётом в H2H контексте -> WARNING."""
+        text = "В последней очной встрече Arsenal победил 3:0, что вселяет уверенность."
+        problems = _validate_text_vs_context(text, self.H2H_CONTEXT, self.MATCH_DATA)
+        warnings = [p for p in problems if p['rule'] == 'hallucinated_score']
+        assert len(warnings) >= 1
+
+    def test_empty_context_no_problems(self):
+        """Пустой контекст -> никаких проблем."""
+        problems = _validate_text_vs_context("Любой текст.", "", self.MATCH_DATA)
+        assert problems == []
+
+    def test_no_h2h_section_no_critical(self):
+        """Если в контексте нет H2H секции, 'не встречались' не является ошибкой."""
+        context = "=== ФОРМА ===\nДанные формы."
+        text = "Команды ещё не встречались в этом сезоне."
+        problems = _validate_text_vs_context(text, context, self.MATCH_DATA)
+        critical = [p for p in problems if p['level'] == 'CRITICAL']
+        assert len(critical) == 0
