@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from profile_ranking import compute_catalog_score, compute_profile_score, select_profile_matches
 from sync_matches import SportsDBSyncer

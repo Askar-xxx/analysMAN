@@ -93,6 +93,8 @@ def _build_match(
     }
 
 # SQL для создания тестовой схемы
+
+
 CREATE_MATCHES_SQL = '''
     CREATE TABLE IF NOT EXISTS matches (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
