@@ -196,7 +196,7 @@ def test_handle_check_topup_reports_not_found_donation(monkeypatch):
     assert "пока не найдена" in safe_edit.await_args_list[-1].args[1].lower()
 
 
-def test_handle_check_topup_rejects_insufficient_amount(monkeypatch):
+def test_handle_check_topup_hides_insufficient_amount_fallback(monkeypatch):
     query = FakeQuery("check_topup_TOKN1234ABCD")
     context = FakeContext()
     safe_edit = AsyncMock()
@@ -220,7 +220,9 @@ def test_handle_check_topup_rejects_insufficient_amount(monkeypatch):
 
     run_async(user_handlers.handle_check_topup(query, 42, "TOKN1234ABCD", context))
 
-    assert "недостаточная сумма" in safe_edit.await_args_list[-1].args[1].lower()
+    text = safe_edit.await_args_list[-1].args[1].lower()
+    assert "пока не зачислено" in text
+    assert "недостаточная сумма" not in text
 
 
 def test_handle_check_topup_completes_successfully(monkeypatch):

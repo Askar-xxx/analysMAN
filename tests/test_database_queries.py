@@ -197,6 +197,53 @@ def test_get_matches_by_date_filtered_hides_old_or_uncovered_matches(helpers, mo
     assert uncovered not in result_ids
 
 
+def test_get_visible_profile_candidates_respects_window_and_visibility(helpers, monkeypatch):
+    frozen_now = datetime(2026, 3, 4, 12, 0, 0)
+
+    class FrozenDateTime:
+        @staticmethod
+        def now():
+            return frozen_now
+
+        @staticmethod
+        def strptime(value, fmt):
+            return datetime.strptime(value, fmt)
+
+    monkeypatch.setattr(database, "datetime", FrozenDateTime)
+
+    today = frozen_now.strftime("%Y-%m-%d")
+    tomorrow = (frozen_now + timedelta(days=1)).strftime("%Y-%m-%d")
+    third_day = (frozen_now + timedelta(days=2)).strftime("%Y-%m-%d")
+    far_day = (frozen_now + timedelta(days=3)).strftime("%Y-%m-%d")
+    future_today = helpers["create_match"](team1="Today", team2="Soon", match_date=today, match_time="13:00", api_event_id="profile-1")
+    recent_live = helpers["create_match"](team1="Live", team2="Now", match_date=today, match_time="10:30", api_event_id="profile-2")
+    stale = helpers["create_match"](team1="Too", team2="Old", match_date=today, match_time="08:00", api_event_id="profile-3")
+    tomorrow_match = helpers["create_match"](team1="Next", team2="Day", match_date=tomorrow, match_time="16:00", api_event_id="profile-4")
+    third_day_match = helpers["create_match"](team1="Third", team2="Day", match_date=third_day, match_time="18:00", api_event_id="profile-5")
+    far_match = helpers["create_match"](team1="Far", team2="Away", match_date=far_day, match_time="18:00", api_event_id="profile-6")
+    hidden = helpers["create_match"](team1="No", team2="Coverage", match_date=today, match_time="15:00", api_event_id="profile-7")
+    inactive = helpers["create_match"](team1="No", team2="Active", match_date=today, match_time="15:30", api_event_id="profile-8")
+    basketball = helpers["create_match"](team1="Ball", team2="Hoop", sport="basketball", match_date=today, match_time="14:00", api_event_id="profile-9")
+
+    for match_id in (future_today, recent_live, stale, tomorrow_match, third_day_match, far_match, hidden, inactive, basketball):
+        helpers["update_match"](match_id, coverage_ok=1)
+    helpers["update_match"](hidden, coverage_ok=0)
+    helpers["update_match"](inactive, is_active=0)
+
+    results = database.get_visible_profile_candidates(now=frozen_now)
+    result_ids = [row["id"] for row in results]
+
+    assert future_today in result_ids
+    assert recent_live in result_ids
+    assert tomorrow_match in result_ids
+    assert third_day_match in result_ids
+    assert stale not in result_ids
+    assert far_match not in result_ids
+    assert hidden not in result_ids
+    assert inactive not in result_ids
+    assert basketball not in result_ids
+
+
 def test_purchase_query_helpers(helpers):
     user = helpers["create_user"](201, "buyer", balance=0)
     match_paid = helpers["create_match"](team1="Paid", team2="Match", api_event_id="paid-1")
@@ -278,12 +325,14 @@ def test_topup_helpers(helpers):
 
 def test_match_crud_helpers_and_cleanup(helpers, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    active_date = datetime.now().strftime("%Y-%m-%d")
+    fallback_date = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
     new_id, is_new = database.sync_match_from_api(
         {
             "sport": "football",
             "team1": "Sync",
             "team2": "Created",
-            "match_date": "2026-03-04",
+            "match_date": active_date,
             "match_time": "21:00",
             "league": "Cup",
             "api_event_id": "api-100",
@@ -295,7 +344,7 @@ def test_match_crud_helpers_and_cleanup(helpers, tmp_path, monkeypatch):
             "sport": "football",
             "team1": "Sync",
             "team2": "Created",
-            "match_date": "2026-03-04",
+            "match_date": active_date,
             "match_time": "21:00",
             "league": "Cup",
             "api_event_id": "api-100",
@@ -306,7 +355,7 @@ def test_match_crud_helpers_and_cleanup(helpers, tmp_path, monkeypatch):
             "sport": "football",
             "team1": "Fallback",
             "team2": "Teams",
-            "match_date": "2026-03-05",
+            "match_date": fallback_date,
             "match_time": "19:00",
         }
     )
@@ -315,7 +364,7 @@ def test_match_crud_helpers_and_cleanup(helpers, tmp_path, monkeypatch):
             "sport": "football",
             "team1": "Fallback",
             "team2": "Teams",
-            "match_date": "2026-03-05",
+            "match_date": fallback_date,
             "match_time": "22:00",
         }
     )
