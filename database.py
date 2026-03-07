@@ -1416,27 +1416,47 @@ def get_matches_by_date_filtered(sport, match_date):
         ''', (sport, match_date))
         matches = cursor.fetchall()
 
-    # Фильтруем по времени - не показываем матчи старше 3 часов
-    now = datetime.now()
+    return _filter_recent_visible_matches(matches)
+
+
+def _filter_recent_visible_matches(matches, now=None):
+    """Оставляет матчи в будущем или не старше 3 часов назад."""
+    current_time = now or datetime.now()
     filtered_matches = []
 
     for match in matches:
         try:
-            # Парсим дату и время матча
             match_datetime_str = f"{match['match_date']} {match['match_time']}"
             match_datetime = datetime.strptime(match_datetime_str, '%Y-%m-%d %H:%M')
-
-            # Вычисляем разницу (матч в МСК, мы тоже в МСК)
-            time_diff = now - match_datetime
-
-            # Показываем только если:
-            # 1. Матч в будущем (time_diff < 0)
-            # 2. Матч начался менее 3 часов назад (LIVE или недавно завершен)
-            if time_diff.total_seconds() < 3 * 3600:  # 3 часа
+            if (current_time - match_datetime).total_seconds() < 3 * 3600:
                 filtered_matches.append(match)
-
         except Exception:
-            # Если не можем распарсить время - показываем матч
             filtered_matches.append(match)
 
     return filtered_matches
+
+
+def get_visible_profile_candidates(sport='football', days_ahead=3, now=None):
+    """Получить кандидатов для Description из реально видимой витрины."""
+    current_time = now or datetime.now()
+    start_date = current_time.strftime('%Y-%m-%d')
+    end_date = (current_time + timedelta(days=max(days_ahead - 1, 0))).strftime('%Y-%m-%d')
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT *
+            FROM matches
+            WHERE sport = ?
+              AND is_active = 1
+              AND coverage_ok = 1
+              AND match_date >= ?
+              AND match_date <= ?
+            ORDER BY match_date, match_time
+            ''',
+            (sport, start_date, end_date)
+        )
+        matches = cursor.fetchall()
+
+    return _filter_recent_visible_matches(matches, now=current_time)

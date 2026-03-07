@@ -1457,20 +1457,19 @@ async def handle_check_topup(query, user_id, token, context):
     min_acceptable = int(expected_kopeks * 0.85)
 
     if received_kopeks < min_acceptable:
-        received_rub = received_kopeks / 100
-        amount_rub = topup['amount_rub']
         keyboard = [
+            [InlineKeyboardButton("🔄 Проверить ещё раз",
+                                  callback_data=f'check_topup_{token}')],
             [InlineKeyboardButton("✅ Перейти к оплате", url=DA_PROFILE_URL)],
             [InlineKeyboardButton("🏠 В главное меню",
                                   callback_data='back_to_menu')]
         ]
         await safe_edit_message(
             query,
-            f"❌ <b>Недостаточная сумма</b>\n\n"
-            f"Получено: <b>{received_rub:.2f}</b> 💎\n"
-            f"Требуется: <b>{amount_rub}</b> 💎 "
-            f"(с учётом комиссии: от {min_acceptable / 100:.2f} 💎)\n\n"
-            "Пожалуйста, отправьте донат на полную сумму с тем же кодом.",
+            "⏳ <b>Пополнение пока не зачислено</b>\n\n"
+            "Если вы уже отправили донат — подождите 1-2 минуты и нажмите "
+            "«Проверить ещё раз».\n\n"
+            "Если проблема повторяется — обратитесь в поддержку.",
             InlineKeyboardMarkup(keyboard),
             parse_mode='HTML'
         )

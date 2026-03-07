@@ -1,6 +1,7 @@
 """Интеграционные тесты для sync_matches.py."""
 import sys
 import os
+import logging
 import sqlite3
 import tempfile
 from datetime import datetime, timedelta
@@ -68,6 +69,28 @@ MOCK_EVENTS_RESPONSE = {
         },
     ]
 }
+
+
+def _build_match(
+    api_event_id,
+    team1,
+    team2,
+    match_date,
+    match_time,
+    league,
+):
+    return {
+        "sport": "football",
+        "team1": team1,
+        "team2": team2,
+        "match_date": match_date,
+        "match_time": match_time,
+        "league": league,
+        "api_event_id": api_event_id,
+        "price": 150,
+        "is_active": 1,
+        "source": "TheSportsDB",
+    }
 
 # SQL для создания тестовой схемы
 CREATE_MATCHES_SQL = '''
@@ -299,6 +322,383 @@ class TestBulkMode:
             assert results['inserted'] + results['skipped'] == results['total']
         finally:
             os.unlink(db_path)
+
+
+class TestTop3Ranking:
+    """Тесты гибридного рейтинга и мягких квот по дням."""
+
+    def test_normalize_team_name_strips_diacritics(self):
+        syncer = SportsDBSyncer(mode="top3", limit=15)
+
+        assert syncer._normalize_team_name("Atlético Madrid") == "atletico madrid"
+        assert syncer._normalize_team_name("Paris SG") == "paris saint-germain"
+        assert syncer._normalize_team_name("Inter Milan") == "inter"
+
+    def test_accented_team_name_gets_same_weight(self):
+        syncer = SportsDBSyncer(mode="top3", limit=15)
+
+        assert syncer._get_team_weight("Atlético Madrid") == syncer._get_team_weight("Atletico Madrid")
+        assert syncer._get_team_weight("Atlético Madrid") == 8
+
+    def test_accented_tier_team_outranks_non_tier_match(self):
+        syncer = SportsDBSyncer(mode="top3", limit=15)
+        accented_match = _build_match(
+            "accented",
+            "Atlético Madrid",
+            "Real Sociedad",
+            _today,
+            "20:30",
+            "La Liga. 27 тур",
+        )
+        regular_match = _build_match(
+            "regular-accent",
+            "Osasuna",
+            "Mallorca",
+            _today,
+            "20:30",
+            "La Liga. 27 тур",
+        )
+
+        assert syncer._score_match(accented_match) > syncer._score_match(regular_match)
+
+    def test_day_quotas_keep_all_three_days_in_limit_15(self):
+        syncer = SportsDBSyncer(mode="top3", limit=15)
+        day0 = _today
+        day1 = _today + timedelta(days=1)
+        day2 = _today + timedelta(days=2)
+        matches = []
+
+        for idx in range(6):
+            matches.append(
+                _build_match(
+                    f"d0-{idx}",
+                    f"Day0 Team {idx}",
+                    f"Day0 Opp {idx}",
+                    day0,
+                    f"{12 + idx:02d}:00",
+                    "Premier League. 30 тур",
+                )
+            )
+        for idx in range(6):
+            matches.append(
+                _build_match(
+                    f"d1-{idx}",
+                    f"Day1 Team {idx}",
+                    f"Day1 Opp {idx}",
+                    day1,
+                    f"{12 + idx:02d}:00",
+                    "La Liga. 27 тур",
+                )
+            )
+        matches.extend([
+            _build_match("d2-0", "Real Madrid", "Barcelona", day2, "20:00", "UEFA Champions League. 1/8 финала"),
+            _build_match("d2-1", "Arsenal", "Chelsea", day2, "18:00", "Premier League. 30 тур"),
+            _build_match("d2-2", "Benfica", "Roma", day2, "16:00", "UEFA Europa League. 1/8 финала"),
+            _build_match("d2-3", "Day2 Team 3", "Day2 Opp 3", day2, "14:00", "Ligue 1. 22 тур"),
+            _build_match("d2-4", "Day2 Team 4", "Day2 Opp 4", day2, "12:00", "Bundesliga. 24 тур"),
+        ])
+
+        selected = syncer._select_top_matches_with_day_quotas(matches, limit=15)
+
+        counts = {}
+        for match in selected:
+            counts[str(match["match_date"])] = counts.get(str(match["match_date"]), 0) + 1
+
+        assert len(selected) == 15
+        assert counts[str(day0)] >= 3
+        assert counts[str(day1)] >= 3
+        assert counts[str(day2)] >= 3
+
+    def test_missing_day_capacity_is_redistributed(self):
+        syncer = SportsDBSyncer(mode="top3", limit=15)
+        day0 = _today
+        day1 = _today + timedelta(days=1)
+        day2 = _today + timedelta(days=2)
+        matches = [
+            _build_match("d2-0", "Real Madrid", "Barcelona", day2, "20:00", "UEFA Champions League. 1/8 финала"),
+            _build_match("d2-1", "Arsenal", "Chelsea", day2, "18:00", "Premier League. 30 тур"),
+        ]
+
+        for idx in range(8):
+            matches.append(
+                _build_match(
+                    f"d0-{idx}",
+                    f"Day0 Team {idx}",
+                    f"Day0 Opp {idx}",
+                    day0,
+                    f"{10 + idx:02d}:00",
+                    "Premier League. 30 тур",
+                )
+            )
+        for idx in range(8):
+            matches.append(
+                _build_match(
+                    f"d1-{idx}",
+                    f"Day1 Team {idx}",
+                    f"Day1 Opp {idx}",
+                    day1,
+                    f"{10 + idx:02d}:00",
+                    "Serie A. 28 тур",
+                )
+            )
+
+        selected = syncer._select_top_matches_with_day_quotas(matches, limit=15)
+        counts = {}
+        for match in selected:
+            counts[str(match["match_date"])] = counts.get(str(match["match_date"]), 0) + 1
+
+        assert len(selected) == 15
+        assert counts[str(day2)] == 2
+        assert counts[str(day0)] + counts[str(day1)] == 13
+
+    def test_strong_match_on_third_day_survives_dense_first_days(self):
+        syncer = SportsDBSyncer(mode="top3", limit=15)
+        day0 = _today
+        day1 = _today + timedelta(days=1)
+        day2 = _today + timedelta(days=2)
+        matches = []
+
+        for idx in range(10):
+            matches.append(
+                _build_match(
+                    f"d0-{idx}",
+                    f"Mid Day0 {idx}",
+                    f"Opp Day0 {idx}",
+                    day0,
+                    f"{10 + idx:02d}:00",
+                    "Ligue 1. 22 тур",
+                )
+            )
+        for idx in range(10):
+            matches.append(
+                _build_match(
+                    f"d1-{idx}",
+                    f"Mid Day1 {idx}",
+                    f"Opp Day1 {idx}",
+                    day1,
+                    f"{10 + idx:02d}:00",
+                    "Bundesliga. 24 тур",
+                )
+            )
+        marquee = _build_match(
+            "d2-marquee",
+            "Real Madrid",
+            "Barcelona",
+            day2,
+            "21:00",
+            "UEFA Champions League. 1/4 финала",
+        )
+        matches.extend([
+            marquee,
+            _build_match("d2-1", "Arsenal", "Chelsea", day2, "19:00", "Premier League. 30 тур"),
+            _build_match("d2-2", "Benfica", "Roma", day2, "17:00", "UEFA Europa League. 1/8 финала"),
+        ])
+
+        selected = syncer._select_top_matches_with_day_quotas(matches, limit=15)
+
+        assert any(match["api_event_id"] == "d2-marquee" for match in selected)
+
+    def test_tier_a_match_outranks_regular_same_league_match(self):
+        syncer = SportsDBSyncer(mode="top3", limit=15)
+        big_match = _build_match(
+            "big",
+            "Arsenal",
+            "Chelsea",
+            _today,
+            "19:00",
+            "Premier League. 30 тур",
+        )
+        regular_match = _build_match(
+            "regular",
+            "Wolves",
+            "Brentford",
+            _today,
+            "18:00",
+            "Premier League. 30 тур",
+        )
+
+        assert syncer._score_match(big_match) > syncer._score_match(regular_match)
+
+    def test_tier_a_and_tier_b_match_outranks_regular_same_league_match(self):
+        syncer = SportsDBSyncer(mode="top3", limit=15)
+        premium_match = _build_match(
+            "premium",
+            "Arsenal",
+            "Roma",
+            _today,
+            "19:00",
+            "Premier League. 30 С‚СѓСЂ",
+        )
+        regular_match = _build_match(
+            "regular-ab",
+            "Wolves",
+            "Brentford",
+            _today,
+            "18:00",
+            "Premier League. 30 С‚СѓСЂ",
+        )
+
+        assert syncer._score_match(premium_match) > syncer._score_match(regular_match)
+
+    def test_ucl_outranks_mid_tier_league_match(self):
+        syncer = SportsDBSyncer(mode="top3", limit=15)
+        ucl_match = _build_match(
+            "ucl",
+            "Benfica",
+            "Roma",
+            _today,
+            "20:00",
+            "UEFA Champions League. 1/8 финала",
+        )
+        league_match = _build_match(
+            "league",
+            "Day Team 1",
+            "Day Team 2",
+            _today,
+            "18:00",
+            "Ligue 1. 22 тур",
+        )
+
+        assert syncer._score_match(ucl_match) > syncer._score_match(league_match)
+
+    def test_stage_bonus_boosts_playoff_match(self):
+        syncer = SportsDBSyncer(mode="top3", limit=15)
+        playoff_match = _build_match(
+            "playoff",
+            "Benfica",
+            "Roma",
+            _today,
+            "20:00",
+            "UEFA Europa League. 1/4 финала",
+        )
+        league_match = _build_match(
+            "league",
+            "Benfica",
+            "Roma",
+            _today,
+            "20:00",
+            "UEFA Europa League",
+        )
+
+        assert syncer._score_match(playoff_match) > syncer._score_match(league_match)
+
+    def test_neutral_match_penalty_is_applied(self):
+        syncer = SportsDBSyncer(mode="top3", limit=15)
+        neutral_match = _build_match(
+            "neutral",
+            "Team A",
+            "Team B",
+            _today,
+            "20:00",
+            "La Liga. 27 С‚СѓСЂ",
+        )
+
+        breakdown = syncer._score_match_breakdown(neutral_match)
+
+        assert breakdown["penalty"] == 4
+        assert breakdown["total"] == 26
+
+    def test_neutral_match_penalty_not_applied_to_playoff_match(self):
+        syncer = SportsDBSyncer(mode="top3", limit=15)
+        playoff_match = _build_match(
+            "neutral-playoff",
+            "Team A",
+            "Team B",
+            _today,
+            "20:00",
+            "UEFA Europa League. Quarter-final",
+        )
+
+        breakdown = syncer._score_match_breakdown(playoff_match)
+
+        assert breakdown["stage"] == 10
+        assert breakdown["penalty"] == 0
+
+    def test_premium_pair_bonus_applies_only_for_strong_league_and_team_weight(self):
+        syncer = SportsDBSyncer(mode="top3", limit=15)
+        premium_match = _build_match(
+            "premium-pair",
+            "Arsenal",
+            "Roma",
+            _today,
+            "20:00",
+            "Premier League. 30 С‚СѓСЂ",
+        )
+        not_premium_match = _build_match(
+            "not-premium-pair",
+            "Arsenal",
+            "Roma",
+            _today,
+            "20:00",
+            "Ligue 1. 22 С‚СѓСЂ",
+        )
+
+        assert syncer._get_premium_pair_bonus(premium_match) == 4
+        assert syncer._get_premium_pair_bonus(not_premium_match) == 0
+
+    def test_limit_below_9_skips_day_quotas(self):
+        syncer = SportsDBSyncer(mode="top3", limit=2)
+        day0 = _today
+        day1 = _today + timedelta(days=1)
+        matches = [
+            _build_match("day1-big", "Real Madrid", "Barcelona", day1, "21:00", "UEFA Champions League. 1/4 финала"),
+            _build_match("day1-mid", "Arsenal", "Chelsea", day1, "19:00", "Premier League. 30 тур"),
+            _build_match("day0-low", "Team A", "Team B", day0, "11:00", "Ligue 1. 22 тур"),
+            _build_match("day0-low2", "Team C", "Team D", day0, "12:00", "Ligue 1. 22 тур"),
+        ]
+
+        selected = syncer._select_top_matches_with_day_quotas(matches, limit=2)
+
+        assert len(selected) == 2
+        assert [match["api_event_id"] for match in selected] == ["day1-big", "day1-mid"]
+
+    def test_selected_matches_are_logged_in_info(self, caplog):
+        syncer = SportsDBSyncer(mode="top3", limit=15)
+        day0 = _today
+        day1 = _today + timedelta(days=1)
+        day2 = _today + timedelta(days=2)
+        matches = []
+
+        for idx in range(4):
+            matches.append(
+                _build_match(
+                    f"d0-{idx}",
+                    f"Day0 Team {idx}",
+                    f"Day0 Opp {idx}",
+                    day0,
+                    f"{12 + idx:02d}:00",
+                    "Premier League. 30 С‚СѓСЂ",
+                )
+            )
+            matches.append(
+                _build_match(
+                    f"d1-{idx}",
+                    f"Day1 Team {idx}",
+                    f"Day1 Opp {idx}",
+                    day1,
+                    f"{12 + idx:02d}:00",
+                    "La Liga. 27 С‚СѓСЂ",
+                )
+            )
+        matches.extend([
+            _build_match("d2-0", "Real Madrid", "Barcelona", day2, "20:00", "UEFA Champions League. 1/8 С„РёРЅР°Р»Р°"),
+            _build_match("d2-1", "Arsenal", "Chelsea", day2, "18:00", "Premier League. 30 С‚СѓСЂ"),
+            _build_match("d2-2", "Benfica", "Roma", day2, "16:00", "UEFA Europa League. 1/8 С„РёРЅР°Р»Р°"),
+            _build_match("d2-3", "Day2 Team 3", "Day2 Opp 3", day2, "14:00", "Ligue 1. 22 С‚СѓСЂ"),
+        ])
+
+        with caplog.at_level(logging.INFO, logger="sync_matches"):
+            selected = syncer._select_top_matches_with_day_quotas(matches, limit=10)
+
+        assert len(selected) == 10
+        selected_logs = [
+            record.message for record in caplog.records
+            if record.message.startswith("Top3 selected [")
+        ]
+        assert len(selected_logs) == 10
+        assert any("Top3 selected [Q]" in message for message in selected_logs)
+        assert any("Top3 selected [G]" in message for message in selected_logs)
+        assert any("score=" in message for message in selected_logs)
 
 
 class TestCoverageCheck:

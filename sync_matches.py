@@ -8,17 +8,78 @@ from threading import Lock
 import requests
 import time
 import re
+import unicodedata
 from collections import defaultdict
 import urllib3
 from urllib3.exceptions import InsecureRequestWarning
 from config import THESPORTSDB_KEY, THESPORTSDB_VERIFY_TLS
 
-# Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
+
+
+LEAGUE_WEIGHTS = {
+    'uefa champions league': 40,
+    'uefa europa league': 34,
+    'premier league': 32,
+    'la liga': 30,
+    'serie a': 29,
+    'bundesliga': 28,
+    'ligue 1': 24,
+}
+
+TEAM_TIER_WEIGHTS = {
+    'real madrid': 12,
+    'barcelona': 12,
+    'bayern munich': 12,
+    'liverpool': 12,
+    'manchester city': 12,
+    'paris saint-germain': 12,
+    'arsenal': 12,
+    'chelsea': 12,
+    'inter': 12,
+    'manchester united': 12,
+    'atletico madrid': 8,
+    'borussia dortmund': 8,
+    'juventus': 8,
+    'ac milan': 8,
+    'tottenham hotspur': 8,
+    'newcastle united': 8,
+    'bayer leverkusen': 8,
+    'napoli': 8,
+    'roma': 8,
+    'benfica': 8,
+}
+
+TEAM_ALIASES = {
+    'psg': 'paris saint-germain',
+    'paris sg': 'paris saint-germain',
+    'paris saint germain': 'paris saint-germain',
+    'man city': 'manchester city',
+    'manchester city': 'manchester city',
+    'man utd': 'manchester united',
+    'man united': 'manchester united',
+    'manchester utd': 'manchester united',
+    'manchester united': 'manchester united',
+    'atletico': 'atletico madrid',
+    'atletico de madrid': 'atletico madrid',
+    'inter milan': 'inter',
+    'internazionale': 'inter',
+    'milan': 'ac milan',
+    'tottenham': 'tottenham hotspur',
+    'spurs': 'tottenham hotspur',
+    'newcastle': 'newcastle united',
+    'bayern': 'bayern munich',
+    'atletico madrid': 'atletico madrid',
+    'borussia monchengladbach': 'borussia monchengladbach',
+}
+
+STAGE_BONUSES = (
+    (('1/2 финала', 'semi'), 14),
+    (('1/4 финала', 'quarter'), 10),
+    (('1/8 финала', 'round of 16'), 7),
+    (('1/16 финала', 'round of 32'), 5),
+    (('. финал', ' final'), 18),
+)
 
 
 def _extract_coverage_metrics(table_data: Dict) -> Tuple[int, int]:
@@ -170,6 +231,13 @@ class SportsDBSyncer:
         """Получить top-N матчей на ближайшие 3 дня (default mode)"""
         all_matches = []
         sync_dates = self._get_sync_dates()
+        candidates = self._collect_top3_candidates(sync_dates)
+        selected = self._select_top_matches_with_day_quotas(
+            candidates,
+            self.limit
+        )
+        selected.sort(key=lambda x: (x['match_date'], x['match_time']))
+        return selected
 
         logger.info(
             f"Режим top3: получение {self.limit} матчей "
@@ -205,6 +273,262 @@ class SportsDBSyncer:
         # Сортируем по дате/времени (ближайшие первые)
         unique.sort(key=lambda x: (x['match_date'], x['match_time']))
         return unique
+
+    def _collect_top3_candidates(self, sync_dates) -> List[Dict]:
+        """Собрать и дедуплицировать кандидатов для top3 за окно sync_days."""
+        all_matches = []
+        all_tournaments = self.top_leagues + self.cups
+
+        logger.info(
+            "Режим top3: получение %s матчей на %s - %s...",
+            self.limit,
+            sync_dates[0],
+            sync_dates[-1],
+        )
+
+        for league in all_tournaments:
+            try:
+                logger.info("Получение матчей из: %s", league['name'])
+                data = self.api.make_request(
+                    "eventsnextleague.php", {"id": league['id']}
+                )
+                if not data or 'events' not in data or not data['events']:
+                    continue
+                for event in data['events']:
+                    match = self._parse_event(event)
+                    if not match or match['match_date'] not in sync_dates:
+                        continue
+                    all_matches.append(match)
+                time.sleep(0.5)
+            except Exception as e:
+                logger.error("Ошибка для %s: %s", league['name'], e)
+                continue
+
+        logger.info("Top3 кандидатов собрано до дедупликации: %s", len(all_matches))
+        unique = self._remove_duplicates(all_matches)
+        logger.info("Top3 кандидатов после дедупликации: %s", len(unique))
+        return unique
+
+    @staticmethod
+    def _canonicalize_text(value: str) -> str:
+        text = str(value or '').strip().lower()
+        text = unicodedata.normalize('NFKD', text)
+        text = ''.join(char for char in text if not unicodedata.combining(char))
+        text = (
+            text.replace('\u2019', "'")
+            .replace('\u2018', "'")
+            .replace('\u2010', '-')
+            .replace('\u2011', '-')
+            .replace('\u2012', '-')
+            .replace('\u2013', '-')
+            .replace('\u2014', '-')
+            .replace('\u2212', '-')
+        )
+        text = text.replace('-', ' ')
+        text = text.replace("'", ' ')
+        text = re.sub(r'\s+', ' ', text)
+        return text.strip()
+
+    @staticmethod
+    def _normalize_team_name(team_name: str) -> str:
+        normalized = SportsDBSyncer._canonicalize_text(team_name)
+        return TEAM_ALIASES.get(normalized, normalized)
+
+    def _get_team_weight(self, team_name: str) -> int:
+        normalized = self._normalize_team_name(team_name)
+        return TEAM_TIER_WEIGHTS.get(normalized, 0)
+
+    def _get_league_weight(self, league_name: str) -> int:
+        league_lc = str(league_name or '').lower()
+        for label, weight in LEAGUE_WEIGHTS.items():
+            if label in league_lc:
+                return weight
+        return 12
+
+    def _get_stage_bonus(self, league_name: str) -> int:
+        league_lc = str(league_name or '').lower()
+        for markers, bonus in STAGE_BONUSES:
+            if any(marker in league_lc for marker in markers):
+                return bonus
+        return 0
+
+    def _get_matchup_bonus(self, team1: str, team2: str) -> int:
+        team1_weight = self._get_team_weight(team1)
+        team2_weight = self._get_team_weight(team2)
+        is_team1_tier_a = team1_weight >= 12
+        is_team2_tier_a = team2_weight >= 12
+        is_team1_tier_b = team1_weight >= 8
+        is_team2_tier_b = team2_weight >= 8
+
+        if is_team1_tier_a and is_team2_tier_a:
+            return 12
+        if (is_team1_tier_a and is_team2_tier_b) or (is_team2_tier_a and is_team1_tier_b):
+            return 7
+        if is_team1_tier_b and is_team2_tier_b:
+            return 5
+        return 0
+
+    def _get_premium_pair_bonus(self, match: Dict) -> int:
+        league_weight = self._get_league_weight(match.get('league'))
+        team_weight = (
+            self._get_team_weight(match.get('team1'))
+            + self._get_team_weight(match.get('team2'))
+        )
+        if league_weight >= 28 and team_weight >= 16:
+            return 4
+        return 0
+
+    def _get_neutral_match_penalty(self, match: Dict) -> int:
+        team1_weight = self._get_team_weight(match.get('team1'))
+        team2_weight = self._get_team_weight(match.get('team2'))
+        matchup_bonus = self._get_matchup_bonus(match.get('team1'), match.get('team2'))
+        stage_bonus = self._get_stage_bonus(match.get('league'))
+        if (
+            team1_weight == 0
+            and team2_weight == 0
+            and matchup_bonus == 0
+            and stage_bonus == 0
+        ):
+            return 4
+        return 0
+
+    def _score_match_breakdown(self, match: Dict) -> Dict[str, int]:
+        league_weight = self._get_league_weight(match.get('league'))
+        team1_weight = self._get_team_weight(match.get('team1'))
+        team2_weight = self._get_team_weight(match.get('team2'))
+        matchup_bonus = self._get_matchup_bonus(match.get('team1'), match.get('team2'))
+        stage_bonus = self._get_stage_bonus(match.get('league'))
+        premium_pair_bonus = self._get_premium_pair_bonus(match)
+        neutral_match_penalty = self._get_neutral_match_penalty(match)
+        return {
+            'league': league_weight,
+            'team': team1_weight + team2_weight,
+            'matchup': matchup_bonus,
+            'stage': stage_bonus,
+            'premium_pair': premium_pair_bonus,
+            'penalty': neutral_match_penalty,
+            'total': (
+                league_weight
+                + team1_weight
+                + team2_weight
+                + matchup_bonus
+                + stage_bonus
+                + premium_pair_bonus
+                - neutral_match_penalty
+            ),
+        }
+
+    def _score_match(self, match: Dict) -> int:
+        return self._score_match_breakdown(match)['total']
+
+    def _match_sort_key(self, match: Dict):
+        return (
+            -self._score_match(match),
+            match['match_date'],
+            match['match_time'],
+            match.get('league', ''),
+            match.get('team1', ''),
+            match.get('team2', ''),
+        )
+
+    def _match_identity(self, match: Dict):
+        return match.get('api_event_id') or (
+            match.get('team1'),
+            match.get('team2'),
+            str(match.get('match_date')),
+        )
+
+    def _log_selected_match(self, prefix: str, match: Dict) -> None:
+        breakdown = self._score_match_breakdown(match)
+        logger.debug(
+            "%s %s vs %s [%s %s] league=%s team=%s matchup=%s stage=%s premium_pair=%s penalty=%s total=%s",
+            prefix,
+            match.get('team1'),
+            match.get('team2'),
+            match.get('match_date'),
+            match.get('match_time'),
+            breakdown['league'],
+            breakdown['team'],
+            breakdown['matchup'],
+            breakdown['stage'],
+            breakdown['premium_pair'],
+            breakdown['penalty'],
+            breakdown['total'],
+        )
+
+    def _log_selected_match_info(self, origin: str, match: Dict) -> None:
+        logger.info(
+            "Top3 selected [%s] %s %s | %s vs %s | score=%s",
+            origin,
+            match.get('match_date'),
+            match.get('match_time'),
+            match.get('team1'),
+            match.get('team2'),
+            self._score_match(match),
+        )
+
+    def _select_top_matches_with_day_quotas(self, matches: List[Dict], limit: int) -> List[Dict]:
+        """Выбрать top-N матчей по score с мягкими квотами по дням."""
+        if not matches or limit <= 0:
+            return []
+
+        ranked_matches = sorted(matches, key=self._match_sort_key)
+        if limit < 9:
+            selected = ranked_matches[:limit]
+            logger.info(
+                "Top3: лимит %s < 9, квоты по дням не применяются, выбран глобальный score",
+                limit
+            )
+            for match in selected:
+                self._log_selected_match("Top3 score:", match)
+                self._log_selected_match_info("G", match)
+            return selected
+
+        matches_by_date = defaultdict(list)
+        for match in ranked_matches:
+            matches_by_date[match['match_date']].append(match)
+
+        min_per_day = 3
+        selected = []
+        selected_ids = set()
+        quota_counts = {}
+
+        for match_date in sorted(matches_by_date.keys()):
+            day_selected = 0
+            for match in matches_by_date[match_date]:
+                if day_selected >= min_per_day or len(selected) >= limit:
+                    break
+                match_key = self._match_identity(match)
+                if match_key in selected_ids:
+                    continue
+                selected.append(match)
+                selected_ids.add(match_key)
+                day_selected += 1
+                self._log_selected_match("Top3 quota:", match)
+                self._log_selected_match_info("Q", match)
+            quota_counts[str(match_date)] = day_selected
+
+        logger.info("Top3: квоты по дням применены %s", quota_counts)
+
+        for match in ranked_matches:
+            if len(selected) >= limit:
+                break
+            match_key = self._match_identity(match)
+            if match_key in selected_ids:
+                continue
+            selected.append(match)
+            selected_ids.add(match_key)
+            self._log_selected_match("Top3 global:", match)
+            self._log_selected_match_info("G", match)
+
+        logger.info(
+            "Top3: отобрано %s матчей из %s кандидатов (quota=%s, global=%s)",
+            len(selected),
+            len(matches),
+            sum(quota_counts.values()),
+            max(0, len(selected) - sum(quota_counts.values()))
+        )
+        return selected[:limit]
 
     def get_week_matches(self) -> List[Dict]:
         """Получить ВСЕ матчи из всех лиг и кубков на ближайшие 3 дня"""
@@ -700,6 +1024,12 @@ def run_coverage_check(
 
 
 def main():
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+
     parser = argparse.ArgumentParser(
         description='Синхронизация матчей из TheSportsDB API'
     )

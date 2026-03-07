@@ -87,10 +87,6 @@ async def _process_topup(topup, amount_kopeks, donation_id):
     user_id = topup['user_id']
     is_flexible = (topup['amount_rub'] == 0)  # любая сумма
 
-    from telegram import Bot
-    from config import TOKEN
-    bot = Bot(token=TOKEN)
-
     if is_flexible:
         # Гибкий топап — зачисляем ровно столько, сколько пришло (целые рубли)
         received_rub = int(amount_kopeks / 100)
@@ -108,26 +104,10 @@ async def _process_topup(topup, amount_kopeks, donation_id):
         expected_kopeks = topup['amount_kopeks']
         min_acceptable = int(expected_kopeks * 0.85)
         if amount_kopeks < min_acceptable:
-            received_rub = amount_kopeks / 100
             logger.warning(
                 f"⚠️ Сумма слишком мала для топапа {topup_id}: "
                 f"получено {amount_kopeks} коп., минимум {min_acceptable} коп."
             )
-            try:
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=(
-                        f"❌ <b>Недостаточная сумма для зачисления 💎</b>\n\n"
-                        f"Получено: <b>{received_rub:.2f} руб.</b>\n"
-                        f"Требуется не менее: "
-                        f"<b>{min_acceptable / 100:.2f} руб.</b>\n\n"
-                        f"Ваш код остаётся активным. Отправьте донат на "
-                        f"<b>{topup['amount_rub']} руб.</b> с тем же кодом."
-                    ),
-                    parse_mode='HTML'
-                )
-            except Exception as e:
-                logger.error(f"Не удалось отправить уведомление: {e}")
             return
         ok = database.complete_balance_topup(topup_id, str(donation_id))
         amount_rub = topup['amount_rub']
