@@ -41,3 +41,11 @@ def test_analysis_view_keyboard_text_button_noop_when_active():
     callbacks = _callbacks(markup)
 
     assert callbacks[0] == ["show_table_42_purchased", "noop"]
+
+
+def test_match_detail_keyboard_adds_terms_button_for_payment_paths():
+    enough_balance = keyboards.match_detail_keyboard(42, False, user_balance=5, price=1)
+    low_balance = keyboards.match_detail_keyboard(42, False, user_balance=0, price=1)
+
+    assert enough_balance.inline_keyboard[1][0].callback_data == "terms_from_match_detail"
+    assert low_balance.inline_keyboard[1][0].callback_data == "terms_from_match_detail"

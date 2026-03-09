@@ -237,3 +237,27 @@ def test_go_back_from_match_detail_without_match_id_returns_main_menu(monkeypatc
 
     assert context.user_data["menu_history"] == []
     send_main_menu.assert_awaited_once_with(update, context)
+
+
+def test_go_back_from_deposit_routes_to_deposit_menu(monkeypatch):
+    update, query = make_update("back")
+    context = FakeContext({"menu_history": [user_handlers.MENU_DEPOSIT]})
+    handler = AsyncMock()
+    monkeypatch.setattr(user_handlers, "handle_deposit_menu", handler)
+
+    run_async(user_handlers.go_back(update, context))
+
+    assert context.user_data["menu_history"] == []
+    handler.assert_awaited_once_with(query, context, 42)
+
+
+def test_go_back_from_how_it_works_routes_to_how_it_works(monkeypatch):
+    update, query = make_update("back")
+    context = FakeContext({"menu_history": [user_handlers.MENU_HOW_IT_WORKS]})
+    handler = AsyncMock()
+    monkeypatch.setattr(user_handlers, "handle_how_it_works", handler)
+
+    run_async(user_handlers.go_back(update, context))
+
+    assert context.user_data["menu_history"] == []
+    handler.assert_awaited_once_with(query)

@@ -180,6 +180,32 @@ def test_button_handler_valid_hiw_page_routes(monkeypatch):
     handler.assert_awaited_once_with(query, page=2)
 
 
+def test_button_handler_terms_from_hiw_routes_and_pushes_history(monkeypatch):
+    update, query = make_update("terms_from_hiw")
+    context = FakeContext({"menu_history": []})
+    patch_common(monkeypatch)
+    handler = AsyncMock()
+    monkeypatch.setattr(user_handlers, "handle_terms_screen", handler)
+
+    run_async(user_handlers.button_handler(update, context))
+
+    assert context.user_data["menu_history"] == [user_handlers.MENU_HOW_IT_WORKS]
+    handler.assert_awaited_once_with(query)
+
+
+def test_button_handler_terms_from_deposit_routes_and_pushes_history(monkeypatch):
+    update, query = make_update("terms_from_deposit")
+    context = FakeContext({"menu_history": []})
+    patch_common(monkeypatch)
+    handler = AsyncMock()
+    monkeypatch.setattr(user_handlers, "handle_terms_screen", handler)
+
+    run_async(user_handlers.button_handler(update, context))
+
+    assert context.user_data["menu_history"] == [user_handlers.MENU_DEPOSIT]
+    handler.assert_awaited_once_with(query)
+
+
 def test_button_handler_invalid_sport_answers_only(monkeypatch):
     update, query = make_update("sport_volleyball")
     context = FakeContext({"menu_history": []})
@@ -542,6 +568,13 @@ def test_show_deposit_payment_screen_sends_message_and_updates_instruction(monke
 
     assert len(bot.sent_messages) == 1
     assert "TOKN1234ABCD" in bot.sent_messages[0]["text"]
+    callbacks = [
+        button.callback_data
+        for row in bot.sent_messages[0]["reply_markup"].inline_keyboard
+        for button in row
+        if getattr(button, "callback_data", None)
+    ]
+    assert "terms_from_deposit" not in callbacks
     assert updated == {"token": "TOKN1234ABCD", "message_id": 999}
     assert message.deleted is True
 

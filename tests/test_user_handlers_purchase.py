@@ -91,6 +91,7 @@ def test_handle_purchase_rejects_insufficient_balance(monkeypatch):
     assert "Недостаточно" in safe_edit.await_args.args[1]
     button = safe_edit.await_args.args[2].inline_keyboard[0][0]
     assert button.callback_data == "deposit"
+    assert safe_edit.await_args.args[2].inline_keyboard[1][0].callback_data == "terms_from_match_detail"
 
 
 def test_handle_purchase_when_already_owned_shows_existing_message(monkeypatch):

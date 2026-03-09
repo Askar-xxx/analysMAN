@@ -57,6 +57,7 @@ def test_handle_deposit_menu_reuses_pending_topup_and_saves_return_target(monkey
 
     assert captured == {"token": "TOKEN1234567", "match_id": 55, "match_source": "purchased"}
     assert "TOKEN1234567" in safe_edit.await_args.args[1]
+    assert safe_edit.await_args.args[2].inline_keyboard[1][0].callback_data == "terms_from_deposit"
 
 
 def test_handle_deposit_menu_creates_new_topup_when_pending_missing(monkeypatch):
@@ -81,6 +82,7 @@ def test_handle_deposit_menu_creates_new_topup_when_pending_missing(monkeypatch)
 
     assert captured == {"token": "NEWTOKEN1234", "match_id": None, "match_source": "browse"}
     assert "NEWTOKEN1234" in safe_edit.await_args.args[1]
+    assert safe_edit.await_args.args[2].inline_keyboard[1][0].callback_data == "terms_from_deposit"
 
 
 def test_handle_check_balance_status_shows_not_found(monkeypatch):

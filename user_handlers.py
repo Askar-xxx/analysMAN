@@ -26,6 +26,7 @@ MENU_DATE_SELECTION = 'date_selection'
 MENU_MATCHES_LIST = 'matches_list'
 MENU_MATCH_DETAIL = 'match_detail'
 MENU_DEPOSIT = 'deposit'
+MENU_HOW_IT_WORKS = 'how_it_works'
 
 logger = logging.getLogger(__name__)
 
@@ -252,11 +253,34 @@ def _build_terms_text() -> str:
     )
 
 
+def _build_terms_inline_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура экрана условий с возвратом по menu_history."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Назад", callback_data='go_back')],
+        [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
+    ])
+
+
+def _build_terms_notice(action_text: str = "Оплачивая") -> str:
+    """Короткая приписка про согласие с условиями использования."""
+    return f"\n\n<i>{action_text}, вы соглашаетесь с условиями использования.</i>"
+
+
 async def terms(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /terms."""
     await update.message.reply_html(
         _build_terms_text(),
         reply_markup=keyboards.back_to_main_keyboard()
+    )
+
+
+async def handle_terms_screen(query):
+    """Экран условий использования для callback-навигации."""
+    await safe_edit_message(
+        query,
+        _build_terms_text(),
+        _build_terms_inline_keyboard(),
+        parse_mode='HTML'
     )
 
 
@@ -306,6 +330,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Сохраняем предыдущее меню
         context.user_data['menu_history'].append(MENU_MAIN)
         await handle_how_it_works(query)
+    elif query.data == 'terms_from_hiw':
+        context.user_data['menu_history'].append(MENU_HOW_IT_WORKS)
+        await handle_terms_screen(query)
+    elif query.data == 'terms_from_deposit':
+        context.user_data['menu_history'].append(MENU_DEPOSIT)
+        await handle_terms_screen(query)
+    elif query.data == 'terms_from_match_detail':
+        context.user_data['menu_history'].append(MENU_MATCH_DETAIL)
+        await handle_terms_screen(query)
     elif query.data.startswith('hiw_page_'):
         page = _safe_int(query.data.split('_')[-1])
         if page is None:
@@ -680,6 +713,10 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             else:
                 await send_main_menu(update, context)
+        elif previous_menu == MENU_DEPOSIT:
+            await handle_deposit_menu(query, context, user_id)
+        elif previous_menu == MENU_HOW_IT_WORKS:
+            await handle_how_it_works(query)
         else:
             # По умолчанию возвращаемся в главное меню
             await send_main_menu(update, context)
@@ -720,6 +757,12 @@ async def handle_match_detail(query, user_id, match_id, match_source='browse'):
             f"Стоимость: <b>{price}</b> 💎\n"
             "Недостаточно 💎. Пополните баланс для покупки анализа."
         )
+
+    if not has_purchased:
+        if user_balance >= price:
+            text += _build_terms_notice()
+        else:
+            text += _build_terms_notice('Пополняя баланс и оплачивая анализ')
 
     keyboard = keyboards.match_detail_keyboard(
         match_id, has_purchased, user_balance, price
@@ -768,10 +811,13 @@ async def handle_purchase(query, user_id):
         keyboard = [
             [InlineKeyboardButton("💰 Пополнить баланс",
                                   callback_data='deposit')],
+            [InlineKeyboardButton("📄 Условия использования",
+                                  callback_data='terms_from_match_detail')],
             [InlineKeyboardButton("◀️ Назад", callback_data='back')],
             [InlineKeyboardButton("🏠 В главное меню",
                                   callback_data='back_to_menu')]
         ]
+        text += _build_terms_notice('Пополняя баланс и оплачивая анализ')
         await safe_edit_message(
             query, text, InlineKeyboardMarkup(keyboard), parse_mode='HTML'
         )
@@ -1758,6 +1804,7 @@ async def _show_deposit_payment_screen(query, context, user_id, token):
             logger.warning(f"Не удалось отправить скриншот {image_path}: {e}")
 
     # Затем отправляем привычный текст/кнопки отдельным сообщением.
+    text += _build_terms_notice('Пополняя баланс и оплачивая анализ')
     sent_message = await bot.send_message(
         chat_id=chat_id,
         text=text,
@@ -1826,9 +1873,12 @@ async def handle_deposit_menu(query, context, user_id):
     keyboard = [
         [InlineKeyboardButton("Я СКОПИРОВАЛ КОД",
                               callback_data=f'confirm_code_copy_{token}')],
+        [InlineKeyboardButton("📄 Условия использования",
+                              callback_data='terms_from_deposit')],
         [InlineKeyboardButton("🏠 В главное меню",
                               callback_data='back_to_menu')]
     ]
+    text += _build_terms_notice('Пополняя баланс и оплачивая анализ')
     await safe_edit_message(
         query, text, InlineKeyboardMarkup(keyboard), parse_mode='HTML'
     )
@@ -1920,6 +1970,7 @@ def _how_it_works_keyboard(page: int, total: int) -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup([
         nav_buttons,
+        [InlineKeyboardButton("📄 Условия использования", callback_data='terms_from_hiw')],
         [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_menu')]
     ])
 
