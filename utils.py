@@ -427,7 +427,7 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_new else ""
     )
     welcome_text = f"""
-🎉 <b>Добро пожаловать в бот "Спортивная аналитика"!</b> 🎉
+🎉 <b>Добро пожаловать в бот "Sovunya AI"!</b> 🎉
 
 Приветствую, {update.effective_user.mention_html()}! 👋
 
